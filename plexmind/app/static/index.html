@@ -522,6 +522,11 @@ async function fetchUsers() {
   if (DEMO) return MOCK.users;
   try {
     const res = await apiFetch(`${API_BASE}/api/users`, { signal: AbortSignal.timeout(3000) });
+    if (res.status === 403) {
+      setApiStatus(true); // API is up, just needs key
+      renderUsers('forbidden');
+      return 'forbidden';
+    }
     if (!res.ok) throw new Error();
     setApiStatus(true);
     const data = await res.json();
@@ -600,6 +605,11 @@ async function fetchStorage() {
 
 function renderUsers(users) {
   const tbody = document.getElementById('users-tbody');
+  if (users === 'forbidden') {
+    tbody.innerHTML = `<tr><td colspan="4" class="px-5 py-8 text-center text-slate-500 text-sm">API key required — set it in <button class="underline text-violet-400" onclick="document.querySelector('[data-page=settings]').click()">Settings</button></td></tr>`;
+    document.getElementById('stat-users').textContent = '—';
+    return;
+  }
   if (!users || users.length === 0) {
     tbody.innerHTML = `<tr><td colspan="4" class="px-5 py-8 text-center text-slate-500 text-sm">${!users ? 'API unreachable — check connection' : 'No Plex users found'}</td></tr>`;
     document.getElementById('stat-users').textContent = users ? '0' : '—';

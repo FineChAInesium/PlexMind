@@ -88,8 +88,15 @@ app.add_middleware(
 _API_KEY = os.getenv("PLEXMIND_API_KEY", "")
 _api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
 
-async def _require_key(key: str | None = Depends(_api_key_header)) -> None:
-    if _API_KEY and key != _API_KEY:
+async def _require_key(
+    request: Request,
+    key: str | None = Depends(_api_key_header),
+) -> None:
+    """Accept key via X-API-Key header OR ?api_key= query param (for Plex webhooks)."""
+    if not _API_KEY:
+        return
+    provided = key or request.query_params.get("api_key", "")
+    if provided != _API_KEY:
         raise HTTPException(status_code=403, detail="Invalid or missing API key")
 
 # ---------------------------------------------------------------------------
@@ -136,7 +143,7 @@ async def health():
 
 
 @app.get("/api/users")
-def list_users():
+def list_users(_: None = Depends(_require_key)):
     """List all Plex users available on this server."""
     try:
         users = plex_client.get_users()
@@ -146,8 +153,9 @@ def list_users():
 
 
 @app.get("/api/users/{user_id}/history")
-def user_history(user_id: str):
+def user_history(user_id: str, _: None = Depends(_require_key)):
     """Return the deduplicated watch history for a specific user."""
+    _validate_user_id(user_id)
     try:
         history = plex_client.get_watch_history(user_id)
     except Exception as exc:
@@ -304,13 +312,15 @@ def storage_info():
 
 
 @app.post("/webhook")
-async def plex_webhook(request: Request):
+async def plex_webhook(request: Request, _: None = Depends(_require_key)):
     """
     Plex media server webhook receiver.
     On library.new: invalidate all recommendation caches so the next request
     regenerates with the freshly added content included in the candidate pool.
 
     Configure in Plex: Settings → Webhooks → Add Webhook → http://<host>:8000/webhook
+    If PLEXMIND_API_KEY is set, add ?api_key=<key> to the webhook URL since Plex
+    cannot send custom headers.
     """
     try:
         form = await request.form()
@@ -379,14 +389,19 @@ async def trending(
 
 
 # ---------------------------------------------------------------------------
-# Dashboard UI (static)
+# Dashboard UI (static) — disable with PLEXMIND_NO_GUI=true
 # ---------------------------------------------------------------------------
 
 import os as _os
 _static_dir = _os.path.join(_os.path.dirname(__file__), "static")
-if _os.path.isdir(_static_dir):
+_no_gui = os.getenv("PLEXMIND_NO_GUI", "").lower() in ("1", "true", "yes")
+if not _no_gui and _os.path.isdir(_static_dir):
     app.mount("/static", StaticFiles(directory=_static_dir), name="static")
 
     @app.get("/", include_in_schema=False)
     async def dashboard():
         return FileResponse(_os.path.join(_static_dir, "index.html"))
+else:
+    @app.get("/", include_in_schema=False)
+    async def api_root():
+        return {"name": "PlexMind", "docs": "/docs", "health": "/health"}
