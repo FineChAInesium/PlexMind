@@ -22,6 +22,8 @@ logging.basicConfig(
 )
 
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Query, Request
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 from app import cache, llm_client, plex_client, plex_sync, recommender, scheduler, tmdb_client
@@ -313,3 +315,17 @@ async def trending(
             for m in items
         ],
     }
+
+
+# ---------------------------------------------------------------------------
+# Dashboard UI (static)
+# ---------------------------------------------------------------------------
+
+import os as _os
+_static_dir = _os.path.join(_os.path.dirname(__file__), "static")
+if _os.path.isdir(_static_dir):
+    app.mount("/static", StaticFiles(directory=_static_dir), name="static")
+
+    @app.get("/", include_in_schema=False)
+    async def dashboard():
+        return FileResponse(_os.path.join(_static_dir, "index.html"))

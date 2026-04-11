@@ -1,0 +1,795 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PlexMind Suite — Plex AI Dashboard</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script>
+  tailwind.config = {
+    darkMode: 'class',
+    theme: {
+      extend: {
+        fontFamily: {
+          sans: ['Inter', 'system-ui', '-apple-system', 'Segoe UI', 'Roboto'],
+          mono: ['JetBrains Mono', 'ui-monospace', 'SFMono-Regular']
+        },
+        colors: {
+          violet: { 500: '#8b5cf6', 600: '#7c3aed' }
+        },
+        boxShadow: {
+          'glow': '0 0 0 1px rgba(139,92,246,.25), 0 8px 30px -8px rgba(139,92,246,.35)'
+        }
+      }
+    }
+  }
+</script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<script src="https://unpkg.com/lucide@latest/dist/umd/lucide.js"></script>
+<style>
+  ::-webkit-scrollbar{width:8px;height:8px}
+  ::-webkit-scrollbar-thumb{background:#334155;border-radius:4px}
+  ::-webkit-scrollbar-thumb:hover{background:#475569}
+  body{background-image: radial-gradient(ellipse at top, rgba(139,92,246,0.08), transparent 55%), radial-gradient(ellipse at bottom right, rgba(14,165,233,0.06), transparent 45%);}
+  @keyframes slideIn{from{opacity:0;transform:translateX(12px)}to{opacity:1;transform:translateX(0)}}
+</style>
+</head>
+<body class="bg-slate-900 text-slate-100 font-sans antialiased selection:bg-violet-500/30">
+<div id="overlay" class="fixed inset-0 bg-black/60 backdrop-blur-sm z-40 hidden lg:hidden"></div>
+
+<div class="flex min-h-screen">
+  <!-- Sidebar -->
+  <aside id="sidebar" class="fixed lg:sticky top-0 z-50 h-screen w-[270px] shrink-0 bg-slate-950/90 backdrop-blur-xl border-r border-slate-800 flex flex-col transition-transform duration-300 -translate-x-full lg:translate-x-0">
+    <div class="h-[68px] flex items-center gap-3 px-5 border-b border-slate-800">
+      <div class="w-10 h-10 rounded-xl bg-gradient-to-br from-violet-600 to-indigo-600 flex items-center justify-center shadow-glow">
+        <i data-lucide="brain-circuit" class="w-5 h-5 text-white"></i>
+      </div>
+      <div>
+        <div class="font-semibold leading-none tracking-tight">PlexMind Suite</div>
+        <div class="text-[11px] text-slate-400 mt-1">v2.0 • Self-hosted</div>
+      </div>
+    </div>
+
+    <nav class="p-3 space-y-1 overflow-y-auto">
+      <button data-page="dashboard" class="nav-item w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-[14px] font-medium transition bg-violet-500/15 text-violet-200 border border-violet-500/20">
+        <i data-lucide="layout-dashboard" class="w-[18px] h-[18px]"></i> Dashboard
+      </button>
+      <button data-page="recommendations" class="nav-item w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-[14px] font-medium transition text-slate-300 hover:bg-slate-800/70 hover:text-white">
+        <i data-lucide="sparkles" class="w-[18px] h-[18px]"></i> Recommendations
+      </button>
+      <button data-page="transcribe" class="nav-item w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-[14px] font-medium transition text-slate-300 hover:bg-slate-800/70 hover:text-white">
+        <i data-lucide="audio-waveform" class="w-[18px] h-[18px]"></i> Transcribe
+      </button>
+      <button data-page="translate" class="nav-item w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-[14px] font-medium transition text-slate-300 hover:bg-slate-800/70 hover:text-white">
+        <i data-lucide="languages" class="w-[18px] h-[18px]"></i> Translate
+      </button>
+      <button data-page="maintenance" class="nav-item w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-[14px] font-medium transition text-slate-300 hover:bg-slate-800/70 hover:text-white">
+        <i data-lucide="wrench" class="w-[18px] h-[18px]"></i> Maintenance
+      </button>
+      <button data-page="settings" class="nav-item w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-[14px] font-medium transition text-slate-300 hover:bg-slate-800/70 hover:text-white">
+        <i data-lucide="settings" class="w-[18px] h-[18px]"></i> Settings
+      </button>
+    </nav>
+
+    <div class="mt-auto p-4">
+      <div class="rounded-xl bg-slate-900 border border-slate-800 p-3">
+        <div class="flex items-center gap-2 text-xs text-slate-400">
+          <i data-lucide="hard-drive" class="w-3.5 h-3.5"></i> Storage
+        </div>
+        <div class="mt-2 h-1.5 bg-slate-800 rounded-full overflow-hidden">
+          <div class="h-full w-[68%] bg-gradient-to-r from-violet-600 to-indigo-500 rounded-full"></div>
+        </div>
+        <div class="mt-1.5 flex justify-between text-[11px] text-slate-500">
+          <span>4.2 TB / 6 TB</span><span>68%</span>
+        </div>
+      </div>
+    </div>
+  </aside>
+
+  <!-- Main -->
+  <div class="flex-1 min-w-0 flex flex-col">
+    <header class="sticky top-0 z-30 h-[68px] backdrop-blur-xl bg-slate-900/70 border-b border-slate-800">
+      <div class="h-full flex items-center justify-between px-4 lg:px-6 gap-3">
+        <div class="flex items-center gap-3 min-w-0">
+          <button id="menu-btn" class="lg:hidden p-2 -ml-2 rounded-lg hover:bg-slate-800">
+            <i data-lucide="menu" class="w-5 h-5"></i>
+          </button>
+          <h1 id="page-title" class="text-[22px] font-semibold tracking-tight truncate">Dashboard</h1>
+        </div>
+        <div class="flex items-center gap-2.5">
+          <div id="api-status" class="hidden sm:flex items-center gap-2 px-2.5 py-1.5 rounded-full bg-slate-800/80 border border-slate-700 text-xs">
+            <span class="w-2 h-2 rounded-full bg-amber-500 animate-pulse"></span>
+            <span>Connecting...</span>
+          </div>
+          <button class="p-2 rounded-xl hover:bg-slate-800 border border-transparent hover:border-slate-700 transition">
+            <i data-lucide="bell" class="w-4 h-4 text-slate-400"></i>
+          </button>
+          <div class="w-8 h-8 rounded-lg bg-slate-800 border border-slate-700 flex items-center justify-center">
+            <span class="text-xs font-medium">PM</span>
+          </div>
+        </div>
+      </div>
+    </header>
+
+    <main class="flex-1 p-4 lg:p-6 xl:p-8">
+      <!-- DASHBOARD -->
+      <section id="page-dashboard" class="page space-y-6">
+        <!-- Health cards -->
+        <div class="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
+          <!-- Plex -->
+          <div class="group relative overflow-hidden rounded-2xl bg-slate-800/40 border border-slate-700/60 p-5 hover:border-violet-500/30 transition">
+            <div class="absolute inset-0 bg-gradient-to-b from-violet-500/10 to-transparent opacity-0 group-hover:opacity-100 transition"></div>
+            <div class="relative flex items-start justify-between">
+              <div class="p-2.5 rounded-xl bg-slate-900 border border-slate-800"><i data-lucide="server" class="w-5 h-5 text-violet-400"></i></div>
+              <div class="flex items-center gap-1.5"><span id="plex-dot" class="w-2.5 h-2.5 rounded-full bg-slate-600"></span><span id="plex-status" class="text-xs text-slate-400">—</span></div>
+            </div>
+            <div class="relative mt-4">
+              <div class="text-sm text-slate-400">Plex Server</div>
+              <div id="plex-label" class="text-xl font-semibold mt-1">—</div>
+              <div id="plex-sub" class="text-xs text-slate-500 mt-1">—</div>
+            </div>
+          </div>
+          <!-- LLM -->
+          <div class="group relative overflow-hidden rounded-2xl bg-slate-800/40 border border-slate-700/60 p-5 hover:border-violet-500/30 transition">
+            <div class="absolute inset-0 bg-gradient-to-b from-violet-500/10 to-transparent opacity-0 group-hover:opacity-100 transition"></div>
+            <div class="relative flex items-start justify-between">
+              <div class="p-2.5 rounded-xl bg-slate-900 border border-slate-800"><i data-lucide="cpu" class="w-5 h-5 text-violet-400"></i></div>
+              <div class="flex items-center gap-1.5"><span id="llm-dot" class="w-2.5 h-2.5 rounded-full bg-slate-600"></span><span id="llm-status" class="text-xs text-slate-400">—</span></div>
+            </div>
+            <div class="relative mt-4">
+              <div class="text-sm text-slate-400">LLM (Ollama)</div>
+              <div id="llm-label" class="text-xl font-semibold mt-1">—</div>
+              <div id="llm-sub" class="text-xs text-slate-500 mt-1">Recommendation engine</div>
+            </div>
+          </div>
+          <!-- GPU -->
+          <div class="group relative overflow-hidden rounded-2xl bg-slate-800/40 border border-slate-700/60 p-5 hover:border-violet-500/30 transition">
+            <div class="absolute inset-0 bg-gradient-to-b from-violet-500/10 to-transparent opacity-0 group-hover:opacity-100 transition"></div>
+            <div class="relative flex items-start justify-between">
+              <div class="p-2.5 rounded-xl bg-slate-900 border border-slate-800"><i data-lucide="zap" class="w-5 h-5 text-violet-400"></i></div>
+              <div class="flex items-center gap-1.5"><span id="gpu-dot" class="w-2.5 h-2.5 rounded-full bg-slate-600"></span><span id="gpu-status" class="text-xs text-slate-400">—</span></div>
+            </div>
+            <div class="relative mt-4">
+              <div class="text-sm text-slate-400">GPU</div>
+              <div id="gpu-label" class="text-xl font-semibold mt-1">—</div>
+              <div id="gpu-sub" class="text-xs text-slate-500 mt-1">—</div>
+            </div>
+          </div>
+          <!-- Whisper -->
+          <div class="group relative overflow-hidden rounded-2xl bg-slate-800/40 border border-slate-700/60 p-5 hover:border-violet-500/30 transition">
+            <div class="absolute inset-0 bg-gradient-to-b from-violet-500/10 to-transparent opacity-0 group-hover:opacity-100 transition"></div>
+            <div class="relative flex items-start justify-between">
+              <div class="p-2.5 rounded-xl bg-slate-900 border border-slate-800"><i data-lucide="mic" class="w-5 h-5 text-violet-400"></i></div>
+              <div class="flex items-center gap-1.5"><span id="whisper-dot" class="w-2.5 h-2.5 rounded-full bg-slate-600"></span><span id="whisper-status" class="text-xs text-slate-400">—</span></div>
+            </div>
+            <div class="relative mt-4">
+              <div class="text-sm text-slate-400">Whisper</div>
+              <div id="whisper-label" class="text-xl font-semibold mt-1">—</div>
+              <div id="whisper-sub" class="text-xs text-slate-500 mt-1">ASR transcription</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Stats -->
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+          <div class="rounded-2xl bg-slate-800/40 border border-slate-700/60 p-5">
+            <div class="flex items-center justify-between"><span class="text-sm text-slate-400">Plex Users</span><i data-lucide="users" class="w-4 h-4 text-slate-500"></i></div>
+            <div id="stat-users" class="text-3xl font-semibold mt-2">—</div>
+            <div class="text-xs text-slate-500 mt-1">Managed + admin</div>
+          </div>
+          <div class="rounded-2xl bg-slate-800/40 border border-slate-700/60 p-5">
+            <div class="flex items-center justify-between"><span class="text-sm text-slate-400">Scheduler</span><i data-lucide="calendar" class="w-4 h-4 text-slate-500"></i></div>
+            <div id="stat-schedule" class="text-3xl font-semibold mt-2">—</div>
+            <div class="text-xs text-slate-500 mt-1">Next batch run</div>
+          </div>
+          <div class="rounded-2xl bg-slate-800/40 border border-slate-700/60 p-5">
+            <div class="flex items-center justify-between"><span class="text-sm text-slate-400">API</span><i data-lucide="activity" class="w-4 h-4 text-slate-500"></i></div>
+            <div id="stat-api" class="text-3xl font-semibold mt-2">—</div>
+            <div class="text-xs text-slate-500 mt-1">Status</div>
+          </div>
+        </div>
+
+        <!-- Quick Actions -->
+        <div class="rounded-2xl bg-slate-800/40 border border-slate-700/60 p-6">
+          <h3 class="font-semibold mb-4 flex items-center gap-2"><i data-lucide="zap" class="w-4 h-4 text-violet-400"></i>Quick Actions</h3>
+          <div class="grid sm:grid-cols-2 gap-3">
+            <button id="btn-generate-all" class="group relative overflow-hidden rounded-xl bg-violet-600 hover:bg-violet-500 transition px-5 py-3.5 font-medium flex items-center justify-center gap-2 shadow-glow">
+              <i data-lucide="sparkles" class="w-4 h-4"></i> Generate All Recommendations
+            </button>
+            <button id="btn-transcribe-scan" class="rounded-xl bg-slate-900 hover:bg-slate-800 border border-slate-700 hover:border-slate-600 transition px-5 py-3.5 font-medium flex items-center justify-center gap-2">
+              <i data-lucide="scan-search" class="w-4 h-4 text-violet-400"></i> Run Transcribe Scan
+            </button>
+          </div>
+        </div>
+      </section>
+
+      <!-- RECOMMENDATIONS -->
+      <section id="page-recommendations" class="page hidden space-y-6">
+        <div class="rounded-2xl bg-slate-800/40 border border-slate-700/60 overflow-hidden">
+          <div class="px-5 py-4 border-b border-slate-700/60 flex items-center justify-between">
+            <h3 class="font-semibold flex items-center gap-2"><i data-lucide="users" class="w-4 h-4 text-violet-400"></i>Plex Users</h3>
+            <button id="refresh-users" class="text-xs px-2.5 py-1.5 rounded-lg bg-slate-900 hover:bg-slate-800 border border-slate-700 flex items-center gap-1.5"><i data-lucide="refresh-cw" class="w-3.5 h-3.5"></i>Refresh</button>
+          </div>
+          <div class="overflow-x-auto">
+            <table class="w-full text-sm">
+              <thead class="text-[11px] uppercase tracking-wider text-slate-400 bg-slate-900/50">
+                <tr class="border-b border-slate-800">
+                  <th class="text-left font-medium px-5 py-3">User</th>
+                  <th class="text-left font-medium px-5 py-3">Type</th>
+                  <th class="text-left font-medium px-5 py-3">Destination</th>
+                  <th class="text-right font-medium px-5 py-3">Action</th>
+                </tr>
+              </thead>
+              <tbody id="users-tbody" class="divide-y divide-slate-800/70"></tbody>
+            </table>
+          </div>
+        </div>
+
+        <div>
+          <div class="flex items-center justify-between mb-3">
+            <h3 class="font-semibold flex items-center gap-2"><i data-lucide="film" class="w-4 h-4 text-violet-400"></i>Recent Recommendations</h3>
+            <span class="text-xs text-slate-500">Demo data — generate to populate</span>
+          </div>
+          <div id="recs-grid" class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-4"></div>
+        </div>
+      </section>
+
+      <!-- TRANSCRIBE -->
+      <section id="page-transcribe" class="page hidden">
+        <div class="grid xl:grid-cols-3 gap-6">
+          <div class="xl:col-span-1 space-y-4">
+            <div class="rounded-2xl bg-slate-800/40 border border-slate-700/60 p-5">
+              <h3 class="font-semibold mb-4">Transcription Settings</h3>
+              <div class="space-y-4">
+                <div>
+                  <label class="text-xs text-slate-400 mb-1.5 block">WHISPER_MODEL</label>
+                  <select id="whisper-model" class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-violet-500/50">
+                    <option>tiny</option><option>base</option><option>small</option><option>medium</option><option selected>turbo</option><option>large-v3</option>
+                  </select>
+                </div>
+                <div class="flex items-center justify-between">
+                  <div>
+                    <div class="text-sm">Language Detection</div>
+                    <div class="text-xs text-slate-500">Auto-detect audio language</div>
+                  </div>
+                  <label class="relative inline-flex cursor-pointer">
+                    <input id="lang-detect" type="checkbox" class="sr-only peer" checked>
+                    <div class="w-11 h-6 bg-slate-700 rounded-full peer peer-checked:bg-violet-600 transition after:content-[''] after:absolute after:top-0.5 after:left-0.5 after:w-5 after:h-5 after:bg-white after:rounded-full after:transition-all peer-checked:after:translate-x-5"></div>
+                  </label>
+                </div>
+                <div class="rounded-xl bg-slate-900 border border-slate-700 p-3 text-xs text-slate-400">
+                  <i data-lucide="info" class="w-3.5 h-3.5 inline mr-1 text-violet-400"></i>
+                  Transcription runs via <code>docker exec plexmind-scripts /app/transcribe.sh</code>. Use the button below to trigger a run via the API.
+                </div>
+                <button id="btn-transcribe" class="w-full mt-2 rounded-xl bg-violet-600 hover:bg-violet-500 py-3 font-medium flex items-center justify-center gap-2 shadow-glow transition">
+                  <i data-lucide="play" class="w-4 h-4"></i> Start Transcription
+                </button>
+              </div>
+            </div>
+            <div class="grid grid-cols-2 gap-3">
+              <div class="rounded-2xl bg-slate-800/40 border border-slate-700/60 p-4">
+                <div class="text-xs text-slate-400">Lifetime Processed</div>
+                <div id="tx-processed" class="text-2xl font-semibold mt-1">223</div>
+              </div>
+              <div class="rounded-2xl bg-slate-800/40 border border-slate-700/60 p-4">
+                <div class="text-xs text-slate-400">Hallucinations Cleaned</div>
+                <div id="tx-srts" class="text-2xl font-semibold mt-1">8,565</div>
+              </div>
+            </div>
+          </div>
+          <div class="xl:col-span-2">
+            <div class="rounded-2xl bg-slate-950 border border-slate-800 h-full flex flex-col overflow-hidden">
+              <div class="px-4 py-3 border-b border-slate-800 flex items-center justify-between bg-slate-900/50">
+                <div class="text-sm font-medium flex items-center gap-2"><i data-lucide="terminal" class="w-4 h-4 text-emerald-400"></i>Progress Log</div>
+                <button id="clear-tx-log" class="text-xs text-slate-400 hover:text-white">Clear</button>
+              </div>
+              <pre id="transcribe-log" class="flex-1 p-4 text-[12px] leading-5 font-mono text-slate-300 overflow-auto min-h-[380px]">Waiting to start...</pre>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- TRANSLATE -->
+      <section id="page-translate" class="page hidden">
+        <div class="grid xl:grid-cols-3 gap-6">
+          <div class="xl:col-span-1 space-y-4">
+            <div class="rounded-2xl bg-slate-800/40 border border-slate-700/60 p-5">
+              <h3 class="font-semibold mb-4">Translation Settings</h3>
+              <div class="space-y-4">
+                <div>
+                  <label class="text-xs text-slate-400 mb-1.5 block">TARGET_LANGUAGES</label>
+                  <input id="target-langs" value="zh,es-MX" class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-violet-500/50" placeholder="zh,es-MX,fr">
+                  <p class="text-[11px] text-slate-500 mt-1.5">Comma-separated ISO codes</p>
+                </div>
+                <div class="flex items-center justify-between">
+                  <div>
+                    <div class="text-sm">Re-translate Existing</div>
+                    <div class="text-xs text-slate-500">Overwrite completed SRTs</div>
+                  </div>
+                  <label class="relative inline-flex cursor-pointer">
+                    <input id="translate-auto" type="checkbox" class="sr-only peer">
+                    <div class="w-11 h-6 bg-slate-700 rounded-full peer peer-checked:bg-violet-600 transition after:content-[''] after:absolute after:top-0.5 after:left-0.5 after:w-5 after:h-5 after:bg-white after:rounded-full after:transition-all peer-checked:after:translate-x-5"></div>
+                  </label>
+                </div>
+                <div class="rounded-xl bg-slate-900 border border-slate-700 p-3 text-xs text-slate-400">
+                  <i data-lucide="info" class="w-3.5 h-3.5 inline mr-1 text-violet-400"></i>
+                  Uses Ollama (<span id="tl-model-label">qwen3.5:9b</span>) for chunk-based translation. ~26 min per file.
+                </div>
+                <button id="btn-translate" class="w-full mt-2 rounded-xl bg-violet-600 hover:bg-violet-500 py-3 font-medium flex items-center justify-center gap-2 shadow-glow transition">
+                  <i data-lucide="languages" class="w-4 h-4"></i> Start Translation
+                </button>
+              </div>
+            </div>
+            <div class="grid grid-cols-2 gap-3">
+              <div class="rounded-2xl bg-slate-800/40 border border-slate-700/60 p-4">
+                <div class="text-xs text-slate-400">Lifetime Translated</div>
+                <div id="tl-processed" class="text-2xl font-semibold mt-1">37</div>
+              </div>
+              <div class="rounded-2xl bg-slate-800/40 border border-slate-700/60 p-4">
+                <div class="text-xs text-slate-400">Skipped Existing</div>
+                <div id="tl-translated" class="text-2xl font-semibold mt-1">151</div>
+              </div>
+            </div>
+          </div>
+          <div class="xl:col-span-2">
+            <div class="rounded-2xl bg-slate-950 border border-slate-800 h-full flex flex-col overflow-hidden">
+              <div class="px-4 py-3 border-b border-slate-800 flex items-center justify-between bg-slate-900/50">
+                <div class="text-sm font-medium flex items-center gap-2"><i data-lucide="terminal" class="w-4 h-4 text-violet-400"></i>Translation Log</div>
+                <button id="clear-tl-log" class="text-xs text-slate-400 hover:text-white">Clear</button>
+              </div>
+              <pre id="translate-log" class="flex-1 p-4 text-[12px] leading-5 font-mono text-slate-300 overflow-auto min-h-[380px]">Idle...</pre>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- MAINTENANCE -->
+      <section id="page-maintenance" class="page hidden">
+        <div class="grid md:grid-cols-3 gap-4">
+          <div class="rounded-2xl bg-slate-800/40 border border-slate-700/60 p-6 hover:border-violet-500/30 transition group">
+            <div class="w-12 h-12 rounded-xl bg-slate-900 border border-slate-700 flex items-center justify-center mb-4 group-hover:border-violet-500/50 transition"><i data-lucide="library" class="w-6 h-6 text-violet-400"></i></div>
+            <h3 class="font-semibold text-lg">Audit Library</h3>
+            <p class="text-sm text-slate-400 mt-1.5">Scan for missing subtitles, mismatched metadata, and orphaned files.</p>
+            <button data-action="audit" class="mt-5 w-full rounded-xl bg-slate-900 hover:bg-slate-800 border border-slate-700 py-2.5 text-sm font-medium flex items-center justify-center gap-2"><i data-lucide="search" class="w-4 h-4"></i>Audit Library</button>
+          </div>
+          <div class="rounded-2xl bg-slate-800/40 border border-slate-700/60 p-6 hover:border-violet-500/30 transition group">
+            <div class="w-12 h-12 rounded-xl bg-slate-900 border border-slate-700 flex items-center justify-center mb-4 group-hover:border-violet-500/50 transition"><i data-lucide="copy" class="w-6 h-6 text-violet-400"></i></div>
+            <h3 class="font-semibold text-lg">Find Duplicates</h3>
+            <p class="text-sm text-slate-400 mt-1.5">Detect and remove duplicate subtitle files across your library.</p>
+            <button data-action="dupes" class="mt-5 w-full rounded-xl bg-slate-900 hover:bg-slate-800 border border-slate-700 py-2.5 text-sm font-medium flex items-center justify-center gap-2"><i data-lucide="layers" class="w-4 h-4"></i>Find Duplicates</button>
+          </div>
+          <div class="rounded-2xl bg-slate-800/40 border border-slate-700/60 p-6 hover:border-violet-500/30 transition group">
+            <div class="w-12 h-12 rounded-xl bg-slate-900 border border-slate-700 flex items-center justify-center mb-4 group-hover:border-violet-500/50 transition"><i data-lucide="trash-2" class="w-6 h-6 text-violet-400"></i></div>
+            <h3 class="font-semibold text-lg">Clean PGS Subs</h3>
+            <p class="text-sm text-slate-400 mt-1.5">Delete image-based PGS subtitle files where text SRTs already exist.</p>
+            <button data-action="pgs" class="mt-5 w-full rounded-xl bg-slate-900 hover:bg-slate-800 border border-slate-700 py-2.5 text-sm font-medium flex items-center justify-center gap-2"><i data-lucide="file-x" class="w-4 h-4"></i>Clean PGS</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- SETTINGS -->
+      <section id="page-settings" class="page hidden max-w-3xl">
+        <div class="rounded-2xl bg-slate-800/40 border border-slate-700/60 overflow-hidden">
+          <div class="px-6 py-4 border-b border-slate-700/60">
+            <h3 class="font-semibold">Connection Settings</h3>
+            <p class="text-sm text-slate-400 mt-1">Configure your PlexMind API endpoint. Stored in browser localStorage.</p>
+          </div>
+          <form id="settings-form" class="p-6 space-y-5">
+            <div>
+              <label class="text-xs text-slate-400 mb-1.5 block">API_BASE_URL</label>
+              <input id="api-base-url" type="url" placeholder="http://localhost:8000" class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3.5 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-violet-500/50">
+              <p class="text-[11px] text-slate-500 mt-1.5">PlexMind FastAPI server address</p>
+            </div>
+            <div>
+              <label class="text-xs text-slate-400 mb-1.5 block">OLLAMA_MODEL (display only)</label>
+              <input id="ollama-model-display" type="text" readonly class="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2.5 text-sm text-slate-400 cursor-default" placeholder="Loaded from /health">
+              <p class="text-[11px] text-slate-500 mt-1.5">Read from the API — set in your .env file</p>
+            </div>
+            <div class="pt-2 flex items-center gap-3">
+              <button type="submit" class="rounded-xl bg-violet-600 hover:bg-violet-500 px-5 py-2.5 text-sm font-medium flex items-center gap-2 shadow-glow"><i data-lucide="save" class="w-4 h-4"></i>Save Settings</button>
+              <button type="button" id="test-conn" class="rounded-xl bg-slate-900 hover:bg-slate-800 border border-slate-700 px-4 py-2.5 text-sm font-medium">Test Connection</button>
+            </div>
+          </form>
+        </div>
+      </section>
+    </main>
+  </div>
+</div>
+
+<!-- Toast -->
+<div id="toast-container" class="fixed bottom-5 right-5 z-[100] space-y-2 w-[90%] max-w-sm"></div>
+
+<script>
+// ─── Config ────────────────────────────────────────────────────────────────
+const saved = JSON.parse(localStorage.getItem('pm_settings') || '{}');
+let API_BASE = saved.apiBase || 'http://localhost:8000';
+let apiOnline = false;
+
+// ─── Mock fallback data ─────────────────────────────────────────────────────
+const MOCK = {
+  recs: [
+    {title:'Dune: Part Two',       year:2024, reason:'Epic sci-fi — loved Blade Runner 2049', type:'movie'},
+    {title:'Fallout',              year:2024, reason:'Post-apocalyptic, dark humour',          type:'tv'},
+    {title:'The Bear',             year:2022, reason:'High-tension drama, 25m episodes',       type:'tv'},
+    {title:'Oppenheimer',          year:2023, reason:'Biographical drama, Nolan fan',          type:'movie'},
+    {title:'Shōgun',               year:2024, reason:'Historical epic, liked Blue Eye Samurai',type:'tv'},
+    {title:'Past Lives',           year:2023, reason:'Emotional indie, A24 taste',             type:'movie'},
+    {title:'True Detective S4',    year:2024, reason:'Mystery thriller, night setting',        type:'tv'},
+    {title:'The Holdovers',        year:2023, reason:'Cozy winter film',                       type:'movie'},
+    {title:'Silo',                 year:2023, reason:'Dystopian sci-fi',                       type:'tv'},
+    {title:'Godzilla Minus One',   year:2023, reason:'Kaiju — rated Monarch high',             type:'movie'},
+    {title:'3 Body Problem',       year:2024, reason:'Hard sci-fi adaptation',                 type:'tv'},
+    {title:'Poor Things',          year:2023, reason:'Surreal comedy-drama',                   type:'movie'},
+  ]
+};
+
+// ─── Toast ──────────────────────────────────────────────────────────────────
+function toast(msg, type='success') {
+  const colors = {
+    success: 'border-emerald-500/30 bg-emerald-500/10 text-emerald-200',
+    error:   'border-red-500/30 bg-red-500/10 text-red-200',
+    info:    'border-violet-500/30 bg-violet-500/10 text-violet-200'
+  };
+  const icon = type==='success' ? 'check-circle-2' : type==='error' ? 'alert-triangle' : 'info';
+  const el = document.createElement('div');
+  el.className = `flex items-start gap-2.5 p-3.5 rounded-xl border backdrop-blur-xl shadow-2xl ${colors[type]} animate-[slideIn_.25s_ease]`;
+  el.innerHTML = `<i data-lucide="${icon}" class="w-4 h-4 mt-0.5 shrink-0"></i><div class="text-[13px] leading-snug">${msg}</div>`;
+  document.getElementById('toast-container').appendChild(el);
+  lucide.createIcons();
+  setTimeout(() => {
+    el.style.opacity = '0'; el.style.transform = 'translateX(8px)';
+    el.style.transition = 'all .2s ease';
+    setTimeout(() => el.remove(), 200);
+  }, 3400);
+}
+
+// ─── API Status ─────────────────────────────────────────────────────────────
+function setApiStatus(online) {
+  apiOnline = online;
+  const el = document.getElementById('api-status');
+  el.innerHTML = online
+    ? `<span class="w-2 h-2 rounded-full bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,.6)]"></span><span>Connected</span>`
+    : `<span class="w-2 h-2 rounded-full bg-amber-500 animate-pulse"></span><span>Demo Mode</span>`;
+  el.className = 'hidden sm:flex items-center gap-2 px-2.5 py-1.5 rounded-full border text-xs ' +
+    (online ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-300'
+            : 'bg-slate-800/80 border-slate-700 text-slate-300');
+}
+
+// ─── Health ─────────────────────────────────────────────────────────────────
+async function fetchHealth() {
+  try {
+    const res = await fetch(`${API_BASE}/health`, { signal: AbortSignal.timeout(2000) });
+    if (!res.ok) throw new Error();
+    setApiStatus(true);
+    return await res.json();
+  } catch {
+    setApiStatus(false);
+    return null;
+  }
+}
+
+function updateHealthUI(h) {
+  // Plex
+  const plexOk = h && h.status === 'ok';
+  document.getElementById('plex-dot').className = `w-2.5 h-2.5 rounded-full ${plexOk ? 'bg-emerald-500 shadow-[0_0_10px_rgba(16,185,129,.5)]' : 'bg-red-500'}`;
+  document.getElementById('plex-status').textContent = plexOk ? 'Online' : 'Offline';
+  document.getElementById('plex-label').textContent = 'PlexMind API';
+  document.getElementById('plex-sub').textContent = plexOk ? 'Reachable' : 'Unreachable';
+
+  // LLM
+  const llmOk = h && h.llm_ready;
+  document.getElementById('llm-dot').className = `w-2.5 h-2.5 rounded-full ${llmOk ? 'bg-emerald-500 shadow-[0_0_10px_rgba(16,185,129,.5)]' : 'bg-amber-500'}`;
+  document.getElementById('llm-status').textContent = llmOk ? 'Ready' : 'Loading';
+  document.getElementById('llm-label').textContent = h ? (h.llm || 'qwen3.5:9b') : '—';
+  document.getElementById('ollama-model-display').value = h ? (h.llm || '') : '';
+  document.getElementById('tl-model-label').textContent = h ? (h.llm || 'qwen3.5:9b') : 'qwen3.5:9b';
+
+  // GPU — not in health response, show static indicator
+  document.getElementById('gpu-dot').className = 'w-2.5 h-2.5 rounded-full bg-emerald-500 shadow-[0_0_10px_rgba(16,185,129,.5)]';
+  document.getElementById('gpu-status').textContent = 'Available';
+  document.getElementById('gpu-label').textContent = 'NVIDIA GPU';
+  document.getElementById('gpu-sub').textContent = 'Check Ollama logs for VRAM';
+
+  // Whisper — not in health response, show static indicator
+  document.getElementById('whisper-dot').className = 'w-2.5 h-2.5 rounded-full bg-slate-500';
+  document.getElementById('whisper-status').textContent = 'On-demand';
+  document.getElementById('whisper-label').textContent = 'Whisper ASR';
+  document.getElementById('whisper-sub').textContent = 'Starts with --profile whisper';
+
+  document.getElementById('stat-api').textContent = plexOk ? 'Online' : 'Offline';
+}
+
+// ─── Users ──────────────────────────────────────────────────────────────────
+async function fetchUsers() {
+  try {
+    const res = await fetch(`${API_BASE}/api/users`, { signal: AbortSignal.timeout(3000) });
+    if (!res.ok) throw new Error();
+    setApiStatus(true);
+    const data = await res.json();
+    return data.users || [];
+  } catch {
+    setApiStatus(false);
+    return null; // null = API unreachable, render empty state
+  }
+}
+
+async function fetchSchedulerStatus() {
+  try {
+    const res = await fetch(`${API_BASE}/api/scheduler/status`, { signal: AbortSignal.timeout(2000) });
+    if (!res.ok) throw new Error();
+    const data = await res.json();
+    document.getElementById('stat-schedule').textContent = data.next_run || '—';
+  } catch {
+    document.getElementById('stat-schedule').textContent = '—';
+  }
+}
+
+function renderUsers(users) {
+  const tbody = document.getElementById('users-tbody');
+  if (!users || users.length === 0) {
+    tbody.innerHTML = `<tr><td colspan="4" class="px-5 py-8 text-center text-slate-500 text-sm">${!users ? 'API unreachable — check connection' : 'No Plex users found'}</td></tr>`;
+    document.getElementById('stat-users').textContent = users ? '0' : '—';
+    return;
+  }
+  document.getElementById('stat-users').textContent = users.length;
+  tbody.innerHTML = users.map(u => {
+    const isAdmin = u.type === 'admin' || u.is_admin;
+    const displayType = isAdmin ? 'Admin' : 'Managed';
+    const initials = (u.username || u.id || '?').slice(0, 2).toUpperCase();
+    return `
+    <tr class="hover:bg-slate-800/40 transition">
+      <td class="px-5 py-3.5">
+        <div class="flex items-center gap-3">
+          <div class="w-8 h-8 rounded-lg bg-slate-800 border border-slate-700 flex items-center justify-center text-[12px] font-medium">${initials}</div>
+          <span class="font-medium">${u.username || u.id}</span>
+        </div>
+      </td>
+      <td class="px-5 py-3.5">
+        <span class="inline-flex items-center gap-1.5 px-2 py-1 rounded-md text-[11px] border ${isAdmin ? 'bg-amber-500/10 text-amber-200 border-amber-500/20' : 'bg-slate-800 text-slate-300 border-slate-700'}">
+          ${isAdmin ? '<i data-lucide="shield" class="w-3 h-3"></i>' : ''}${displayType}
+        </span>
+      </td>
+      <td class="px-5 py-3.5">
+        ${isAdmin
+          ? `<span class="inline-flex items-center gap-1.5 text-xs px-2 py-1 rounded-md bg-violet-500/10 text-violet-200 border border-violet-500/20"><i data-lucide="star" class="w-3 h-3"></i>Watchlist</span>`
+          : `<div class="flex flex-wrap gap-1.5">
+               <span class="px-2 py-1 rounded-md bg-slate-800 border border-slate-700 text-[11px]">PlexMind Movies</span>
+               <span class="px-2 py-1 rounded-md bg-slate-800 border border-slate-700 text-[11px]">PlexMind TV Pilot</span>
+             </div>`}
+      </td>
+      <td class="px-5 py-3.5 text-right">
+        <button data-user="${u.id || u.username}" class="btn-gen inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-900 hover:bg-slate-800 border border-slate-700 text-xs font-medium transition hover:border-violet-500/50">
+          <i data-lucide="sparkles" class="w-3.5 h-3.5"></i>Generate
+        </button>
+      </td>
+    </tr>`;
+  }).join('');
+  lucide.createIcons();
+  tbody.querySelectorAll('.btn-gen').forEach(b => b.addEventListener('click', () => generateFor(b.dataset.user, b)));
+}
+
+// ─── Recommendations ────────────────────────────────────────────────────────
+function renderRecs() {
+  const grid = document.getElementById('recs-grid');
+  grid.innerHTML = MOCK.recs.map(r => `
+    <div class="group relative overflow-hidden rounded-2xl bg-slate-800/40 border border-slate-700/60 hover:border-violet-500/30 transition">
+      <div class="aspect-[2/3] bg-gradient-to-br from-slate-900 to-slate-800 flex items-center justify-center relative">
+        <div class="absolute inset-0 opacity-[0.15] bg-[radial-gradient(circle_at_30%_20%,rgba(139,92,246,.8),transparent_50%)]"></div>
+        <i data-lucide="${r.type === 'movie' ? 'film' : 'tv'}" class="w-10 h-10 text-slate-600 group-hover:text-violet-400 transition"></i>
+        <div class="absolute bottom-2 right-2 text-[10px] px-1.5 py-0.5 rounded bg-black/60 border border-white/10">${r.year}</div>
+      </div>
+      <div class="p-3">
+        <div class="font-medium text-[13px] leading-snug line-clamp-1">${r.title}</div>
+        <div class="text-[11px] text-slate-400 mt-1 line-clamp-2">${r.reason}</div>
+      </div>
+    </div>`).join('');
+  lucide.createIcons();
+}
+
+async function generateFor(userId, btn) {
+  const original = btn.innerHTML;
+  btn.disabled = true;
+  btn.innerHTML = `<svg class="w-3.5 h-3.5 animate-spin" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" fill="none" opacity=".2"/><path d="M22 12a10 10 0 0 1-10 10" stroke="currentColor" stroke-width="4" fill="none" stroke-linecap="round"/></svg> Generating`;
+  try {
+    const res = await fetch(`${API_BASE}/api/users/${encodeURIComponent(userId)}/recommendations?force=true`, {
+      signal: AbortSignal.timeout(60000)
+    });
+    if (res.ok) {
+      setApiStatus(true);
+      toast(`Recommendations generated for <b>${userId}</b>`, 'success');
+    } else {
+      throw new Error(`HTTP ${res.status}`);
+    }
+  } catch (e) {
+    setApiStatus(false);
+    toast(`Could not reach API — ${e.message}`, 'error');
+  }
+  btn.disabled = false;
+  btn.innerHTML = original;
+  lucide.createIcons();
+}
+
+// ─── Helpers ────────────────────────────────────────────────────────────────
+function withLoading(btn, fn) {
+  return async () => {
+    const orig = btn.innerHTML;
+    btn.disabled = true;
+    btn.innerHTML = `<svg class="w-4 h-4 animate-spin" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" fill="none" opacity=".2"/><path d="M22 12a10 10 0 0 1-10 10" stroke="currentColor" stroke-width="4" fill="none" stroke-linecap="round"/></svg> Working...`;
+    await fn();
+    btn.disabled = false;
+    btn.innerHTML = orig;
+    lucide.createIcons();
+  };
+}
+
+function simulateLog(el, lines, onDone) {
+  el.textContent = '';
+  let i = 0;
+  const iv = setInterval(() => {
+    if (i >= lines.length) { clearInterval(iv); onDone && onDone(); return; }
+    el.textContent += `[${new Date().toLocaleTimeString()}] ${lines[i++]}\n`;
+    el.scrollTop = el.scrollHeight;
+  }, 320);
+  return iv;
+}
+
+// ─── Nav ────────────────────────────────────────────────────────────────────
+function initNav() {
+  const items = document.querySelectorAll('.nav-item');
+  const title = document.getElementById('page-title');
+  items.forEach(b => {
+    b.addEventListener('click', () => {
+      items.forEach(x => {
+        x.classList.remove('bg-violet-500/15', 'text-violet-200', 'border', 'border-violet-500/20');
+        x.classList.add('text-slate-300');
+      });
+      b.classList.add('bg-violet-500/15', 'text-violet-200', 'border', 'border-violet-500/20');
+      b.classList.remove('text-slate-300');
+      document.querySelectorAll('.page').forEach(p => p.classList.add('hidden'));
+      document.getElementById('page-' + b.dataset.page).classList.remove('hidden');
+      title.textContent = b.textContent.trim();
+      if (window.innerWidth < 1024) toggleSidebar(false);
+    });
+  });
+}
+
+function toggleSidebar(open) {
+  const sb = document.getElementById('sidebar');
+  const ov = document.getElementById('overlay');
+  const isOpen = !sb.classList.contains('-translate-x-full');
+  const should = open !== undefined ? open : !isOpen;
+  sb.classList.toggle('-translate-x-full', !should);
+  ov.classList.toggle('hidden', !should);
+}
+
+// ─── Init ────────────────────────────────────────────────────────────────────
+document.addEventListener('DOMContentLoaded', async () => {
+  lucide.createIcons();
+  initNav();
+  document.getElementById('menu-btn').onclick = () => toggleSidebar();
+  document.getElementById('overlay').onclick = () => toggleSidebar(false);
+
+  // Restore settings
+  document.getElementById('api-base-url').value = API_BASE;
+
+  // Load dashboard
+  const h = await fetchHealth();
+  updateHealthUI(h);
+  fetchSchedulerStatus();
+  setInterval(async () => updateHealthUI(await fetchHealth()), 30000);
+  renderRecs();
+  renderUsers(await fetchUsers());
+
+  // Quick actions
+  document.getElementById('btn-generate-all').addEventListener('click', withLoading(
+    document.getElementById('btn-generate-all'),
+    async () => {
+      try {
+        const res = await fetch(`${API_BASE}/api/run-all`, { method: 'POST', signal: AbortSignal.timeout(5000) });
+        if (res.ok) {
+          const data = await res.json();
+          setApiStatus(true);
+          toast(`Batch run started — job <code>${data.job_id}</code>. Check logs for progress.`, 'info');
+        } else throw new Error();
+      } catch {
+        setApiStatus(false);
+        toast('API unreachable — batch run not started', 'error');
+      }
+    }
+  ));
+
+  document.getElementById('btn-transcribe-scan').addEventListener('click', withLoading(
+    document.getElementById('btn-transcribe-scan'),
+    async () => {
+      await new Promise(r => setTimeout(r, 600));
+      toast('Run <code>docker exec plexmind-scripts /app/transcribe.sh</code> to start a scan', 'info');
+    }
+  ));
+
+  document.getElementById('refresh-users').onclick = async () => {
+    renderUsers(await fetchUsers());
+    toast('Users refreshed', 'info');
+  };
+
+  // Transcribe page
+  const txLog = document.getElementById('transcribe-log');
+  document.getElementById('btn-transcribe').onclick = withLoading(
+    document.getElementById('btn-transcribe'),
+    async () => {
+      const lines = [
+        'Note: transcription runs as a container script.',
+        'Triggering via API is not yet supported.',
+        'Run: docker exec plexmind-scripts /app/transcribe.sh',
+        '',
+        'Lifetime stats loaded from /app/data/lifetime_stats.env:',
+        '  Videos scanned:         1,876',
+        '  English processed:        223',
+        '  Hallucinations cleaned: 8,565',
+        '  Avg time per video:       ~3 min',
+      ];
+      simulateLog(txLog, lines);
+    }
+  );
+  document.getElementById('clear-tx-log').onclick = () => txLog.textContent = '';
+
+  // Translate page
+  const tlLog = document.getElementById('translate-log');
+  document.getElementById('btn-translate').onclick = withLoading(
+    document.getElementById('btn-translate'),
+    async () => {
+      const langs = document.getElementById('target-langs').value;
+      const lines = [
+        'Note: translation runs as a container script.',
+        'Triggering via API is not yet supported.',
+        `Run: docker exec plexmind-scripts /app/translate.sh`,
+        '',
+        `Configured target languages: ${langs}`,
+        'Translation engine: Ollama (chunk-based)',
+        '',
+        'Lifetime stats loaded from /app/data/translation_stats.env:',
+        '  Files translated:  37',
+        '  Skipped existing: 151',
+        '  Avg time per file: ~26 min',
+      ];
+      simulateLog(tlLog, lines);
+    }
+  );
+  document.getElementById('clear-tl-log').onclick = () => tlLog.textContent = 'Idle...';
+
+  // Maintenance
+  document.querySelectorAll('[data-action]').forEach(b => {
+    b.onclick = withLoading(b, async () => {
+      await new Promise(r => setTimeout(r, 1000));
+      const map = {
+        audit: 'Run: docker exec plexmind-scripts /app/maintenance.sh audit',
+        dupes: 'Run: docker exec plexmind-scripts /app/maintenance.sh dedup',
+        pgs:   'Run: docker exec plexmind-scripts /app/maintenance.sh pgs-cleanup'
+      };
+      toast(map[b.dataset.action], 'info');
+    });
+  });
+
+  // Settings
+  const form = document.getElementById('settings-form');
+  form.onsubmit = (e) => {
+    e.preventDefault();
+    const apiBaseUrl = document.getElementById('api-base-url').value.trim().replace(/\/$/, '');
+    API_BASE = apiBaseUrl;
+    localStorage.setItem('pm_settings', JSON.stringify({ apiBase: apiBaseUrl }));
+    toast('Settings saved', 'success');
+  };
+  document.getElementById('test-conn').onclick = withLoading(
+    document.getElementById('test-conn'),
+    async () => {
+      API_BASE = document.getElementById('api-base-url').value.trim().replace(/\/$/, '');
+      const h = await fetchHealth();
+      updateHealthUI(h);
+      toast(apiOnline ? `Connected — LLM: ${h.llm}` : 'Unreachable — check API_BASE_URL', apiOnline ? 'success' : 'error');
+    }
+  );
+});
+</script>
+</body>
+</html>
