@@ -29,7 +29,7 @@ jobs:
         run: |
           mkdir -p _site
           # Inject a demo-mode banner into the dashboard
-          sed 's|</body>|<script>window.__PLEXMIND_DEMO__=true;</script></body>|' \
+          sed 's|</head>|<script>window.__PLEXMIND_DEMO__=true;</script></head>|' \
             plexmind/app/static/index.html > _site/index.html
 
       - uses: actions/configure-pages@v5
