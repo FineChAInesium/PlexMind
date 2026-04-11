@@ -7,7 +7,7 @@ services:
     container_name: plexmind-ollama
     restart: unless-stopped
     ports:
-      - "11434:11434"
+      - "127.0.0.1:11434:11434"
     volumes:
       - ollama_data:/root/.ollama
     deploy:
@@ -27,8 +27,8 @@ services:
     image: ${WHISPER_IMAGE:-onerahmet/openai-whisper-asr-webservice:latest-gpu}
     container_name: plexmind-whisper
     restart: unless-stopped
-    ports:
-      - "9000:9000"
+    expose:
+      - "9000"
     environment:
       - ASR_MODEL=${WHISPER_MODEL:-turbo}
       - ASR_DEVICE=${WHISPER_DEVICE:-cuda}
@@ -57,9 +57,18 @@ services:
       - "8000:8000"
     volumes:
       - ./data:/app/data
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
     environment:
       - PLEX_URL=${PLEX_URL:-http://host.docker.internal:32400}
       - PLEX_TOKEN=${PLEX_TOKEN}
+      - PLEXMIND_API_KEY=${PLEXMIND_API_KEY:-}
+      - CORS_ORIGINS=${CORS_ORIGINS:-}
       - TMDB_API_KEY=${TMDB_API_KEY:-}
       - TVDB_API_KEY=${TVDB_API_KEY:-}
       - OMDB_API_KEY=${OMDB_API_KEY:-}

@@ -103,12 +103,6 @@
             <span class="w-2 h-2 rounded-full bg-amber-500 animate-pulse"></span>
             <span>Connecting...</span>
           </div>
-          <button class="p-2 rounded-xl hover:bg-slate-800 border border-transparent hover:border-slate-700 transition">
-            <i data-lucide="bell" class="w-4 h-4 text-slate-400"></i>
-          </button>
-          <div class="w-8 h-8 rounded-lg bg-slate-800 border border-slate-700 flex items-center justify-center">
-            <span class="text-xs font-medium">PM</span>
-          </div>
         </div>
       </div>
     </header>
@@ -383,6 +377,11 @@
               <p class="text-[11px] text-slate-500 mt-1.5">PlexMind FastAPI server address</p>
             </div>
             <div>
+              <label class="text-xs text-slate-400 mb-1.5 block">API_KEY (optional)</label>
+              <input id="api-key-input" type="password" placeholder="Leave blank for open LAN access" class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3.5 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-violet-500/50">
+              <p class="text-[11px] text-slate-500 mt-1.5">Matches <code>PLEXMIND_API_KEY</code> in your .env — sent as <code>X-API-Key</code> header</p>
+            </div>
+            <div>
               <label class="text-xs text-slate-400 mb-1.5 block">OLLAMA_MODEL (display only)</label>
               <input id="ollama-model-display" type="text" readonly class="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2.5 text-sm text-slate-400 cursor-default" placeholder="Loaded from /health">
               <p class="text-[11px] text-slate-500 mt-1.5">Read from the API — set in your .env file</p>
@@ -405,7 +404,14 @@
 // ─── Config ────────────────────────────────────────────────────────────────
 const saved = JSON.parse(localStorage.getItem('pm_settings') || '{}');
 let API_BASE = saved.apiBase || window.location.origin;
+let API_KEY  = saved.apiKey  || '';
 let apiOnline = false;
+
+function apiFetch(url, opts = {}) {
+  const headers = { ...(opts.headers || {}) };
+  if (API_KEY) headers['X-API-Key'] = API_KEY;
+  return fetch(url, { ...opts, headers });
+}
 
 // ─── Mock fallback data ─────────────────────────────────────────────────────
 const MOCK = {
@@ -460,7 +466,7 @@ function setApiStatus(online) {
 // ─── Health ─────────────────────────────────────────────────────────────────
 async function fetchHealth() {
   try {
-    const res = await fetch(`${API_BASE}/health`, { signal: AbortSignal.timeout(2000) });
+    const res = await apiFetch(`${API_BASE}/health`, { signal: AbortSignal.timeout(2000) });
     if (!res.ok) throw new Error();
     setApiStatus(true);
     return await res.json();
@@ -490,7 +496,7 @@ function updateHealthUI(h) {
   document.getElementById('whisper-dot').className = 'w-2.5 h-2.5 rounded-full bg-slate-500';
   document.getElementById('whisper-status').textContent = 'On-demand';
   document.getElementById('whisper-label').textContent = 'Whisper ASR';
-  document.getElementById('whisper-sub').textContent = 'Starts with --profile whisper';
+  document.getElementById('whisper-sub').textContent = 'Run: docker compose --profile whisper up -d';
 
   document.getElementById('stat-api').textContent = plexOk ? 'Online' : 'Offline';
 }
@@ -498,7 +504,7 @@ function updateHealthUI(h) {
 // ─── Users ──────────────────────────────────────────────────────────────────
 async function fetchUsers() {
   try {
-    const res = await fetch(`${API_BASE}/api/users`, { signal: AbortSignal.timeout(3000) });
+    const res = await apiFetch(`${API_BASE}/api/users`, { signal: AbortSignal.timeout(3000) });
     if (!res.ok) throw new Error();
     setApiStatus(true);
     const data = await res.json();
@@ -511,7 +517,7 @@ async function fetchUsers() {
 
 async function fetchSchedulerStatus() {
   try {
-    const res = await fetch(`${API_BASE}/api/scheduler/status`, { signal: AbortSignal.timeout(2000) });
+    const res = await apiFetch(`${API_BASE}/api/scheduler/status`, { signal: AbortSignal.timeout(2000) });
     if (!res.ok) throw new Error();
     const data = await res.json();
 
@@ -534,15 +540,15 @@ async function fetchSchedulerStatus() {
   } catch {
     document.getElementById('stat-schedule').textContent = '—';
     document.getElementById('gpu-dot').className = 'w-2.5 h-2.5 rounded-full bg-slate-500';
-    document.getElementById('gpu-status').textContent = 'Unknown';
+    document.getElementById('gpu-status').textContent = 'Unavailable';
     document.getElementById('gpu-label').textContent = 'NVIDIA GPU';
-    document.getElementById('gpu-sub').textContent = 'Scheduler unreachable';
+    document.getElementById('gpu-sub').textContent = 'Needs --gpus flag on container';
   }
 }
 
 async function fetchStorage() {
   try {
-    const res = await fetch(`${API_BASE}/api/storage`, { signal: AbortSignal.timeout(2000) });
+    const res = await apiFetch(`${API_BASE}/api/storage`, { signal: AbortSignal.timeout(2000) });
     if (!res.ok) throw new Error();
     const d = await res.json();
     const usedTB = (d.used_bytes / 1e12).toFixed(1);
@@ -623,7 +629,7 @@ async function generateFor(userId, btn) {
   btn.disabled = true;
   btn.innerHTML = `<svg class="w-3.5 h-3.5 animate-spin" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" fill="none" opacity=".2"/><path d="M22 12a10 10 0 0 1-10 10" stroke="currentColor" stroke-width="4" fill="none" stroke-linecap="round"/></svg> Generating`;
   try {
-    const res = await fetch(`${API_BASE}/api/users/${encodeURIComponent(userId)}/recommendations?force=true`, {
+    const res = await apiFetch(`${API_BASE}/api/users/${encodeURIComponent(userId)}/recommendations?force=true`, {
       signal: AbortSignal.timeout(60000)
     });
     if (res.ok) {
@@ -704,6 +710,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   // Restore settings
   document.getElementById('api-base-url').value = API_BASE;
   document.getElementById('api-base-url').placeholder = window.location.origin;
+  document.getElementById('api-key-input').value = API_KEY;
 
   // Load dashboard
   const h = await fetchHealth();
@@ -721,7 +728,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     document.getElementById('btn-generate-all'),
     async () => {
       try {
-        const res = await fetch(`${API_BASE}/api/run-all`, { method: 'POST', signal: AbortSignal.timeout(5000) });
+        const res = await apiFetch(`${API_BASE}/api/run-all`, { method: 'POST', signal: AbortSignal.timeout(5000) });
         if (res.ok) {
           const data = await res.json();
           setApiStatus(true);
@@ -810,14 +817,17 @@ document.addEventListener('DOMContentLoaded', async () => {
   form.onsubmit = (e) => {
     e.preventDefault();
     const apiBaseUrl = document.getElementById('api-base-url').value.trim().replace(/\/$/, '');
+    const apiKey = document.getElementById('api-key-input').value.trim();
     API_BASE = apiBaseUrl;
-    localStorage.setItem('pm_settings', JSON.stringify({ apiBase: apiBaseUrl }));
+    API_KEY  = apiKey;
+    localStorage.setItem('pm_settings', JSON.stringify({ apiBase: apiBaseUrl, apiKey }));
     toast('Settings saved', 'success');
   };
   document.getElementById('test-conn').onclick = withLoading(
     document.getElementById('test-conn'),
     async () => {
       API_BASE = document.getElementById('api-base-url').value.trim().replace(/\/$/, '');
+      API_KEY  = document.getElementById('api-key-input').value.trim();
       const h = await fetchHealth();
       updateHealthUI(h);
       toast(apiOnline ? `Connected — LLM: ${h.llm}` : 'Unreachable — check API_BASE_URL', apiOnline ? 'success' : 'error');

@@ -21,7 +21,11 @@ logging.basicConfig(
     format="%(asctime)s [%(name)s] %(levelname)s %(message)s",
 )
 
-from fastapi import BackgroundTasks, FastAPI, HTTPException, Query, Request
+import re
+
+from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Query, Request
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.security import APIKeyHeader
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
@@ -64,6 +68,39 @@ app = FastAPI(
     version="1.0.0",
     lifespan=lifespan,
 )
+
+# ---------------------------------------------------------------------------
+# CORS
+# ---------------------------------------------------------------------------
+_cors_origins = [o.strip() for o in os.getenv("CORS_ORIGINS", "").split(",") if o.strip()] or ["*"]
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_cors_origins,
+    allow_methods=["GET", "POST", "DELETE"],
+    allow_headers=["X-API-Key", "Content-Type"],
+)
+
+# ---------------------------------------------------------------------------
+# Optional API key auth
+# Protect mutation / expensive endpoints when PLEXMIND_API_KEY is set in .env.
+# Leave unset to run open on a trusted LAN (default).
+# ---------------------------------------------------------------------------
+_API_KEY = os.getenv("PLEXMIND_API_KEY", "")
+_api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
+
+async def _require_key(key: str | None = Depends(_api_key_header)) -> None:
+    if _API_KEY and key != _API_KEY:
+        raise HTTPException(status_code=403, detail="Invalid or missing API key")
+
+# ---------------------------------------------------------------------------
+# Input validation
+# ---------------------------------------------------------------------------
+_USER_ID_RE = re.compile(r'^[a-zA-Z0-9_@.\- ]{1,60}$')
+
+def _validate_user_id(user_id: str) -> str:
+    if not _USER_ID_RE.match(user_id):
+        raise HTTPException(status_code=400, detail="Invalid user_id")
+    return user_id
 
 
 # ---------------------------------------------------------------------------
@@ -134,11 +171,13 @@ def user_history(user_id: str):
 async def user_recommendations(
     user_id: str,
     force: bool = Query(False, description="Bypass cache and regenerate"),
+    _: None = Depends(_require_key),
 ):
     """
     Return personalised recommendations for a specific user.
     Results are cached per-user and invalidated on new feedback.
     """
+    _validate_user_id(user_id)
     try:
         recs = await recommender.get_recommendations(user_id, force=force)
     except RuntimeError as exc:
@@ -149,11 +188,12 @@ async def user_recommendations(
 
 
 @app.post("/api/users/{user_id}/feedback")
-def user_feedback(user_id: str, body: FeedbackRequest):
+def user_feedback(user_id: str, body: FeedbackRequest, _: None = Depends(_require_key)):
     """
     Record like / dislike / watched feedback for a recommendation.
     Automatically invalidates the user's recommendation cache.
     """
+    _validate_user_id(user_id)
     if body.rating not in ("like", "dislike", "watched"):
         raise HTTPException(status_code=422, detail="rating must be 'like', 'dislike', or 'watched'")
     cache.add_feedback(user_id, body.title, body.rating, body.note)
@@ -161,8 +201,9 @@ def user_feedback(user_id: str, body: FeedbackRequest):
 
 
 @app.get("/api/users/{user_id}/feedback")
-def get_feedback(user_id: str):
+def get_feedback(user_id: str, _: None = Depends(_require_key)):
     """Return all feedback entries for a user."""
+    _validate_user_id(user_id)
     return {
         "user_id": user_id,
         "feedback": cache.get_user_feedback(user_id),
@@ -170,12 +211,13 @@ def get_feedback(user_id: str):
 
 
 @app.post("/api/users/{user_id}/sync")
-async def sync_plex(user_id: str, force: bool = Query(False)):
+async def sync_plex(user_id: str, force: bool = Query(False), _: None = Depends(_require_key)):
     """
     Push the current recommendations for this user into a Plex collection
     and pin it to the home screen between Continue Watching and Recently Added.
     Re-runs recommendation generation if force=True or cache is empty.
     """
+    _validate_user_id(user_id)
     recs = await recommender.get_recommendations(user_id, force=force)
     if not recs:
         raise HTTPException(status_code=404, detail="No recommendations to sync — generate them first.")
@@ -189,8 +231,9 @@ async def sync_plex(user_id: str, force: bool = Query(False)):
 
 
 @app.delete("/api/users/{user_id}/sync")
-def remove_plex_sync(user_id: str):
+def remove_plex_sync(user_id: str, _: None = Depends(_require_key)):
     """Remove the PlexMind collection from Plex for this user."""
+    _validate_user_id(user_id)
     try:
         users = plex_client.get_users()
         username = next((u["username"] for u in users if str(u["id"]) == str(user_id)), str(user_id))
@@ -204,6 +247,7 @@ def remove_plex_sync(user_id: str):
 async def run_all(
     background_tasks: BackgroundTasks,
     force: bool = Query(True),
+    _: None = Depends(_require_key),
 ):
     """
     Trigger recommendation generation + Plex sync for all users with sufficient
