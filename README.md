@@ -28,6 +28,17 @@ Plex's built-in recommendations are generic. Third-party tools phone home. PlexM
 - **Privacy-first** — everything runs locally. Your watch history never leaves your network
 - **Plex-native** — creates per-user playlists, respects managed users, syncs automatically
 
+## Where Recommendations Appear
+
+PlexMind syncs directly to Plex — no separate app needed:
+
+- **Admin user:** Recommendations appear in your **Watchlist** (as a smart collection)
+- **Managed users:** Get two separate playlists:
+  - **"PlexMind Movies"** — Movie recommendations
+  - **"PlexMind TV Pilot"** — TV show recommendations (first episodes only)
+
+This keeps recommendations isolated per user and avoids cluttering the admin's library.
+
 ## Requirements
 
 - Docker + Docker Compose
@@ -38,7 +49,7 @@ Plex's built-in recommendations are generic. Third-party tools phone home. PlexM
 ## Quick Start
 
 ```bash
-git clone https://github.com/s93simon0807-wq/PlexMind
+git clone https://github.com/FineChAInesium/PlexMind
 cd PlexMind
 cp .env.example .env
 
@@ -154,12 +165,12 @@ Not just "run Whisper on everything":
 
 ## Performance
 
-Typical runtime on a 2,000-title library (RTX 3060 12GB):
+Typical runtime on a 2,000-title library (RTX 3060 12GB), based on real lifetime stats:
 
 - **Initial scan:** ~45 seconds (prefilters to top 100 candidates, enriches via TMDB)
-- **Recommendations per user:** ~12 seconds
-- **Transcription:** ~3 minutes per movie, ~20 min per TV season
-- **Translation:** ~30 seconds per subtitle file
+- **Recommendations per user:** ~12–24 seconds (scales with watch history size)
+- **Transcription:** ~3 minutes per video (Whisper turbo)
+- **Translation:** ~26 minutes per subtitle file (Ollama chunk-based, scales with subtitle length)
 
 No API rate limits. No monthly fees. Just your hardware.
 
@@ -171,6 +182,9 @@ Plex Server → PlexMind (FastAPI) → Ollama (LLM)
 Watch History                      Generates Picks
      ↓                                      ↓
 TMDB/OMDB Enrichment ←─────────── Plex Playlist Sync
+     ↓
+Admin → Watchlist
+Users → "PlexMind Movies" + "PlexMind TV Pilot" playlists
 ```
 
 Everything is cached locally. Second run is instant.
