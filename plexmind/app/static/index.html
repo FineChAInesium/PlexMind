@@ -273,6 +273,11 @@
                 </button>
               </div>
             </div>
+            <div class="rounded-2xl bg-slate-800/40 border border-slate-700/60 p-5">
+              <h3 class="font-semibold mb-4 flex items-center gap-2"><i data-lucide="clock" class="w-4 h-4 text-violet-400"></i>Schedule</h3>
+              <div data-sched="transcribe" data-cmd="docker exec plexmind-scripts /app/transcribe.sh"></div>
+              </div>
+            </div>
             <div class="grid grid-cols-2 gap-3">
               <div class="rounded-2xl bg-slate-800/40 border border-slate-700/60 p-4">
                 <div class="text-xs text-slate-400">Lifetime Processed</div>
@@ -327,6 +332,9 @@
                 </button>
               </div>
             </div>
+            <div class="rounded-2xl bg-slate-800/40 border border-slate-700/60 p-5">
+              <h3 class="font-semibold mb-4 flex items-center gap-2"><i data-lucide="clock" class="w-4 h-4 text-violet-400"></i>Schedule</h3>
+              <div data-sched="translate" data-cmd="docker exec plexmind-scripts /app/translate.sh"></div>
             <div class="grid grid-cols-2 gap-3">
               <div class="rounded-2xl bg-slate-800/40 border border-slate-700/60 p-4">
                 <div class="text-xs text-slate-400">Lifetime Translated</div>
@@ -353,23 +361,35 @@
       <!-- MAINTENANCE -->
       <section id="page-maintenance" class="page hidden">
         <div class="grid md:grid-cols-3 gap-4">
-          <div class="rounded-2xl bg-slate-800/40 border border-slate-700/60 p-6 hover:border-violet-500/30 transition group">
+          <div class="rounded-2xl bg-slate-800/40 border border-slate-700/60 p-6 hover:border-violet-500/30 transition group flex flex-col">
             <div class="w-12 h-12 rounded-xl bg-slate-900 border border-slate-700 flex items-center justify-center mb-4 group-hover:border-violet-500/50 transition"><i data-lucide="library" class="w-6 h-6 text-violet-400"></i></div>
             <h3 class="font-semibold text-lg">Audit Library</h3>
             <p class="text-sm text-slate-400 mt-1.5">Scan for missing subtitles, mismatched metadata, and orphaned files.</p>
             <button data-action="audit" class="mt-5 w-full rounded-xl bg-slate-900 hover:bg-slate-800 border border-slate-700 py-2.5 text-sm font-medium flex items-center justify-center gap-2"><i data-lucide="search" class="w-4 h-4"></i>Audit Library</button>
+            <div class="mt-4 pt-4 border-t border-slate-700/60">
+              <div class="text-xs text-slate-400 mb-2 flex items-center gap-1.5"><i data-lucide="clock" class="w-3.5 h-3.5 text-violet-400"></i>Schedule</div>
+              <div data-sched="maintenance-audit" data-cmd="docker exec plexmind-scripts /app/maintenance.sh audit"></div>
+            </div>
           </div>
-          <div class="rounded-2xl bg-slate-800/40 border border-slate-700/60 p-6 hover:border-violet-500/30 transition group">
+          <div class="rounded-2xl bg-slate-800/40 border border-slate-700/60 p-6 hover:border-violet-500/30 transition group flex flex-col">
             <div class="w-12 h-12 rounded-xl bg-slate-900 border border-slate-700 flex items-center justify-center mb-4 group-hover:border-violet-500/50 transition"><i data-lucide="copy" class="w-6 h-6 text-violet-400"></i></div>
             <h3 class="font-semibold text-lg">Find Duplicates</h3>
             <p class="text-sm text-slate-400 mt-1.5">Detect and remove duplicate subtitle files across your library.</p>
             <button data-action="dupes" class="mt-5 w-full rounded-xl bg-slate-900 hover:bg-slate-800 border border-slate-700 py-2.5 text-sm font-medium flex items-center justify-center gap-2"><i data-lucide="layers" class="w-4 h-4"></i>Find Duplicates</button>
+            <div class="mt-4 pt-4 border-t border-slate-700/60">
+              <div class="text-xs text-slate-400 mb-2 flex items-center gap-1.5"><i data-lucide="clock" class="w-3.5 h-3.5 text-violet-400"></i>Schedule</div>
+              <div data-sched="maintenance-dupes" data-cmd="docker exec plexmind-scripts /app/maintenance.sh dedup"></div>
+            </div>
           </div>
-          <div class="rounded-2xl bg-slate-800/40 border border-slate-700/60 p-6 hover:border-violet-500/30 transition group">
+          <div class="rounded-2xl bg-slate-800/40 border border-slate-700/60 p-6 hover:border-violet-500/30 transition group flex flex-col">
             <div class="w-12 h-12 rounded-xl bg-slate-900 border border-slate-700 flex items-center justify-center mb-4 group-hover:border-violet-500/50 transition"><i data-lucide="trash-2" class="w-6 h-6 text-violet-400"></i></div>
             <h3 class="font-semibold text-lg">Clean PGS Subs</h3>
             <p class="text-sm text-slate-400 mt-1.5">Delete image-based PGS subtitle files where text SRTs already exist.</p>
             <button data-action="pgs" class="mt-5 w-full rounded-xl bg-slate-900 hover:bg-slate-800 border border-slate-700 py-2.5 text-sm font-medium flex items-center justify-center gap-2"><i data-lucide="file-x" class="w-4 h-4"></i>Clean PGS</button>
+            <div class="mt-4 pt-4 border-t border-slate-700/60">
+              <div class="text-xs text-slate-400 mb-2 flex items-center gap-1.5"><i data-lucide="clock" class="w-3.5 h-3.5 text-violet-400"></i>Schedule</div>
+              <div data-sched="maintenance-pgs" data-cmd="docker exec plexmind-scripts /app/maintenance.sh pgs-cleanup"></div>
+            </div>
           </div>
         </div>
       </section>
@@ -879,6 +899,99 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
   );
   document.getElementById('clear-tl-log').onclick = () => tlLog.textContent = 'Idle...';
+
+  // Schedule widgets
+  function initScheduleWidgets() {
+    document.querySelectorAll('[data-sched]').forEach(el => {
+      const key = `pm_sched_${el.dataset.sched}`;
+      const cmd = el.dataset.cmd;
+      const saved = JSON.parse(localStorage.getItem(key) || 'null');
+
+      function buildCron(freq, time, weekday, monthday) {
+        const [h, m] = time.split(':');
+        if (freq === 'daily')   return `${m} ${h} * * *`;
+        if (freq === 'weekly')  return `${m} ${h} * * ${weekday}`;
+        if (freq === 'monthly') return `${m} ${h} ${monthday} * *`;
+        return `${m} ${h} * * *`;
+      }
+
+      function nextRun(freq, time, weekday, monthday) {
+        const now = new Date();
+        const [h, m] = time.split(':').map(Number);
+        const d = new Date(now);
+        d.setSeconds(0, 0);
+        d.setHours(h, m);
+        if (freq === 'daily') {
+          if (d <= now) d.setDate(d.getDate() + 1);
+        } else if (freq === 'weekly') {
+          const wd = parseInt(weekday);
+          const diff = (wd - d.getDay() + 7) % 7 || (d <= now ? 7 : 0);
+          d.setDate(d.getDate() + diff);
+        } else if (freq === 'monthly') {
+          const md = parseInt(monthday);
+          d.setDate(md);
+          if (d <= now) { d.setMonth(d.getMonth() + 1); d.setDate(md); }
+        }
+        return d.toLocaleString([], { weekday:'short', month:'short', day:'numeric', hour:'2-digit', minute:'2-digit' });
+      }
+
+      function render(vals) {
+        const freq = vals?.freq || 'daily';
+        const time = vals?.time || '03:00';
+        const weekday = vals?.weekday || '1';
+        const monthday = vals?.monthday || '1';
+        const active = !!vals?.active;
+        const cron = buildCron(freq, time, weekday, monthday);
+        el.innerHTML = `
+          <div class="space-y-2 text-xs">
+            <div class="flex gap-2">
+              <select data-f="freq" class="flex-1 bg-slate-900 border border-slate-700 rounded-lg px-2 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-violet-500/50">
+                <option value="daily" ${freq==='daily'?'selected':''}>Daily</option>
+                <option value="weekly" ${freq==='weekly'?'selected':''}>Weekly</option>
+                <option value="monthly" ${freq==='monthly'?'selected':''}>Monthly</option>
+              </select>
+              <input data-f="time" type="time" value="${time}" class="w-24 bg-slate-900 border border-slate-700 rounded-lg px-2 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-violet-500/50">
+            </div>
+            <div data-extra class="${freq==='daily'?'hidden':''}">
+              ${freq==='weekly' ? `<select data-f="weekday" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-2 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-violet-500/50">
+                <option value="1" ${weekday==='1'?'selected':''}>Monday</option><option value="2" ${weekday==='2'?'selected':''}>Tuesday</option>
+                <option value="3" ${weekday==='3'?'selected':''}>Wednesday</option><option value="4" ${weekday==='4'?'selected':''}>Thursday</option>
+                <option value="5" ${weekday==='5'?'selected':''}>Friday</option><option value="6" ${weekday==='6'?'selected':''}>Saturday</option>
+                <option value="0" ${weekday==='0'?'selected':''}>Sunday</option>
+              </select>` : ''}
+              ${freq==='monthly' ? `<input data-f="monthday" type="number" min="1" max="28" value="${monthday}" placeholder="Day of month (1–28)" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-2 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-violet-500/50">` : ''}
+            </div>
+            <button data-save class="w-full rounded-lg ${active?'bg-violet-600 hover:bg-violet-500':'bg-slate-900 hover:bg-slate-800 border border-slate-700'} py-1.5 font-medium flex items-center justify-center gap-1.5 transition">
+              <i data-lucide="${active?'check':'clock'}" class="w-3 h-3"></i>${active?'Scheduled':'Save Schedule'}
+            </button>
+            ${active ? `<div class="text-slate-400">Next: <span class="text-slate-200">${nextRun(freq,time,weekday,monthday)}</span></div>
+            <div class="rounded-lg bg-slate-950 border border-slate-800 p-2 font-mono text-[10px] text-slate-400 break-all">${cron} ${cmd}</div>` : ''}
+          </div>`;
+        lucide.createIcons({ nodes: [el] });
+
+        el.querySelector('[data-f="freq"]').onchange = e => {
+          const v = JSON.parse(localStorage.getItem(key) || 'null') || { freq:'daily', time:'03:00', weekday:'1', monthday:'1', active:false };
+          v.freq = e.target.value; v.active = false;
+          localStorage.setItem(key, JSON.stringify(v));
+          render(v);
+        };
+        el.querySelector('[data-save]').onclick = () => {
+          const v = {
+            freq: el.querySelector('[data-f="freq"]').value,
+            time: el.querySelector('[data-f="time"]').value,
+            weekday: el.querySelector('[data-f="weekday"]')?.value || '1',
+            monthday: el.querySelector('[data-f="monthday"]')?.value || '1',
+            active: true,
+          };
+          localStorage.setItem(key, JSON.stringify(v));
+          render(v);
+          toast(`Schedule saved — <code>${buildCron(v.freq,v.time,v.weekday,v.monthday)} ${cmd}</code>`, 'success');
+        };
+      }
+      render(saved);
+    });
+  }
+  initScheduleWidgets();
 
   // Maintenance
   document.querySelectorAll('[data-action]').forEach(b => {
