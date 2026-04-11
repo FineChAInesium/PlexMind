@@ -11,17 +11,20 @@ Endpoints:
 """
 import asyncio
 from contextlib import asynccontextmanager
-
+from ipaddress import ip_address, ip_network
 import json
 import logging
 import os
+import re
+import secrets
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(name)s] %(levelname)s %(message)s",
 )
-
-import re
+# Prevent httpx/httpcore from logging full URLs (which contain TMDB api_key in query params)
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -29,6 +32,9 @@ from fastapi.security import APIKeyHeader
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from slowapi.util import get_remote_address
 
 from app import cache, llm_client, plex_client, plex_sync, recommender, scheduler, tmdb_client
 
@@ -62,12 +68,16 @@ async def lifespan(app: FastAPI):
     scheduler.stop()
 
 
+limiter = Limiter(key_func=get_remote_address)
+
 app = FastAPI(
     title="PlexMind",
     description="Gemma 3 powered movie/TV recommendation engine for Plex",
     version="1.0.0",
     lifespan=lifespan,
 )
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 # ---------------------------------------------------------------------------
 # CORS
@@ -86,18 +96,41 @@ app.add_middleware(
 # Leave unset to run open on a trusted LAN (default).
 # ---------------------------------------------------------------------------
 _API_KEY = os.getenv("PLEXMIND_API_KEY", "")
+if not _API_KEY:
+    logging.getLogger("plexmind").warning(
+        "SECURITY: PLEXMIND_API_KEY is not set — all endpoints are open to the network. "
+        "Set it in your .env: PLEXMIND_API_KEY=$(openssl rand -hex 32)"
+    )
+
 _api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
 
 async def _require_key(
     request: Request,
     key: str | None = Depends(_api_key_header),
 ) -> None:
-    """Accept key via X-API-Key header OR ?api_key= query param (for Plex webhooks)."""
+    """Accept key via X-API-Key header OR ?api_key= query param (for Plex webhooks).
+    Uses secrets.compare_digest for timing-safe comparison."""
     if not _API_KEY:
         return
     provided = key or request.query_params.get("api_key", "")
-    if provided != _API_KEY:
+    if not provided or not secrets.compare_digest(provided.encode(), _API_KEY.encode()):
         raise HTTPException(status_code=403, detail="Invalid or missing API key")
+
+# ---------------------------------------------------------------------------
+# LAN allowlist (used as defence-in-depth on webhook)
+# ---------------------------------------------------------------------------
+_LAN_NETS = [
+    ip_network("10.0.0.0/8"),
+    ip_network("172.16.0.0/12"),
+    ip_network("192.168.0.0/16"),
+    ip_network("127.0.0.0/8"),
+]
+
+def _is_lan(host: str) -> bool:
+    try:
+        return any(ip_address(host) in net for net in _LAN_NETS)
+    except ValueError:
+        return False
 
 # ---------------------------------------------------------------------------
 # Input validation
@@ -176,7 +209,9 @@ def user_history(user_id: str, _: None = Depends(_require_key)):
 
 
 @app.get("/api/users/{user_id}/recommendations", response_model=list[RecommendationItem])
+@limiter.limit("20/minute")
 async def user_recommendations(
+    request: Request,
     user_id: str,
     force: bool = Query(False, description="Bypass cache and regenerate"),
     _: None = Depends(_require_key),
@@ -252,7 +287,9 @@ def remove_plex_sync(user_id: str, _: None = Depends(_require_key)):
 
 
 @app.post("/api/run-all")
+@limiter.limit("3/hour")
 async def run_all(
+    request: Request,
     background_tasks: BackgroundTasks,
     force: bool = Query(True),
     _: None = Depends(_require_key),
@@ -312,6 +349,7 @@ def storage_info():
 
 
 @app.post("/webhook")
+@limiter.limit("30/minute")
 async def plex_webhook(request: Request, _: None = Depends(_require_key)):
     """
     Plex media server webhook receiver.
@@ -322,6 +360,9 @@ async def plex_webhook(request: Request, _: None = Depends(_require_key)):
     If PLEXMIND_API_KEY is set, add ?api_key=<key> to the webhook URL since Plex
     cannot send custom headers.
     """
+    # Defence-in-depth: Plex is always on the LAN; reject internet sources
+    if request.client and not _is_lan(request.client.host):
+        raise HTTPException(status_code=403, detail="Webhook only accepted from LAN")
     try:
         form = await request.form()
         payload = json.loads(form.get("payload", "{}"))
