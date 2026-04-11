@@ -74,7 +74,7 @@
       <Value/>
       <Name>PLEXMIND_API_KEY</Name>
       <Mode/>
-      <Description>Optional API key — protects all endpoints. Leave blank for open LAN access. Generate: openssl rand -hex 32</Description>
+      <Description>STRONGLY RECOMMENDED — Protects all API endpoints. Generate a key with: openssl rand -hex 32 and paste it here. If left blank, all endpoints are open to anyone on your network (a WARNING is logged at every startup). If set, add ?api_key=YOUR_KEY to your Plex webhook URL.</Description>
     </Variable>
     <Variable>
       <Value>10</Value>

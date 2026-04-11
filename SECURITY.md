@@ -51,6 +51,19 @@ chmod 600 .env
 # 4. Only expose PlexMind via Tailscale — do not port-forward to internet
 ```
 
+## v2.0.1 Security Improvements
+
+The following hardening was applied after an independent security audit:
+
+| Fix | Detail |
+|---|---|
+| Timing-safe key comparison | `secrets.compare_digest` prevents timing oracle attacks on API key validation |
+| Rate limiting | `/api/run-all` 3/hr, `/api/users/{id}/recommendations` 20/min, `/webhook` 30/min |
+| Webhook LAN-only | RFC 1918 + loopback allowlist rejects any non-private source IP regardless of key |
+| HTTP log suppression | `httpx` and `httpcore` loggers set to WARNING — TMDB `api_key` query param never appears in logs |
+| Startup warning | Loud `WARNING` log at every start if `PLEXMIND_API_KEY` is not set |
+| Input validation | `user_id` path params validated against `^[a-zA-Z0-9_@.\- ]{1,60}$` — rejects path traversal and injection attempts |
+
 ## Huntarr Comparison
 
 PlexMind was designed with the Huntarr incident in mind:
