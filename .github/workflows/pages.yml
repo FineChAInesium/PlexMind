@@ -1,0 +1,42 @@
+name: Deploy Demo to GitHub Pages
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'plexmind/app/static/index.html'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Prepare demo page
+        run: |
+          mkdir -p _site
+          # Inject a demo-mode banner into the dashboard
+          sed 's|</body>|<script>window.__PLEXMIND_DEMO__=true;</script></body>|' \
+            plexmind/app/static/index.html > _site/index.html
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: '_site'
+
+      - uses: actions/deploy-pages@v4
+        id: deployment
