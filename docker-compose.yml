@@ -1,0 +1,135 @@
+services:
+  # ---------------------------------------------------------------------------
+  # Ollama — Local LLM server (recommendations + translation)
+  # ---------------------------------------------------------------------------
+  ollama:
+    image: ollama/ollama:latest
+    container_name: plexmind-ollama
+    restart: unless-stopped
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+
+  # ---------------------------------------------------------------------------
+  # Whisper ASR — Speech-to-text transcription
+  # ---------------------------------------------------------------------------
+  whisper:
+    image: ${WHISPER_IMAGE:-onerahmet/openai-whisper-asr-webservice:latest-gpu}
+    container_name: plexmind-whisper
+    restart: unless-stopped
+    ports:
+      - "9000:9000"
+    environment:
+      - ASR_MODEL=${WHISPER_MODEL:-turbo}
+      - ASR_DEVICE=${WHISPER_DEVICE:-cuda}
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    # Whisper stays stopped until transcription scripts start it
+    profiles:
+      - whisper
+
+  # ---------------------------------------------------------------------------
+  # PlexMind — AI recommendation engine (FastAPI)
+  # ---------------------------------------------------------------------------
+  plexmind:
+    build:
+      context: ./plexmind
+      dockerfile: Dockerfile
+    image: plexmind:latest
+    container_name: plexmind-api
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./data:/app/data
+    environment:
+      - PLEX_URL=${PLEX_URL:-http://host.docker.internal:32400}
+      - PLEX_TOKEN=${PLEX_TOKEN}
+      - TMDB_API_KEY=${TMDB_API_KEY:-}
+      - TVDB_API_KEY=${TVDB_API_KEY:-}
+      - OMDB_API_KEY=${OMDB_API_KEY:-}
+      - OLLAMA_URL=http://ollama:11434
+      - OLLAMA_MODEL=${OLLAMA_MODEL:-gemma3:12b}
+      - MAX_RECOMMENDATIONS=${MAX_RECOMMENDATIONS:-10}
+      - CANDIDATE_POOL_SIZE=${CANDIDATE_POOL_SIZE:-40}
+      - MIN_HISTORY_ITEMS=${MIN_HISTORY_ITEMS:-3}
+      - SUPPRESSION_DAYS=${SUPPRESSION_DAYS:-60}
+      - CACHE_TTL_SECONDS=${CACHE_TTL_SECONDS:-3600}
+      - GPU_THRESHOLD_PCT=${GPU_THRESHOLD_PCT:-30}
+      - GPU_BACKOFF_MINUTES=${GPU_BACKOFF_MINUTES:-30}
+      - FEEDBACK_FILE=${FEEDBACK_FILE:-data/feedback.json}
+      - SHOWN_RECS_FILE=${SHOWN_RECS_FILE:-data/shown_recs.json}
+      - WATCHLIST_TRACK_FILE=${WATCHLIST_TRACK_FILE:-data/watchlist_track.json}
+      - TZ=${TZ:-America/New_York}
+    depends_on:
+      - ollama
+
+  # ---------------------------------------------------------------------------
+  # Scripts — Transcription, translation, maintenance pipeline
+  # ---------------------------------------------------------------------------
+  scripts:
+    build:
+      context: ./scripts
+      dockerfile: Dockerfile
+    image: plexmind-scripts:latest
+    container_name: plexmind-scripts
+    restart: unless-stopped
+    volumes:
+      - "${MOVIES_DIR:-/mnt/data/media/Movies}:/media/movies"
+      - "${TV_DIR:-/mnt/data/media/TV Shows}:/media/tv"
+      - ./data:/app/data
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      - WHISPER_API_URL=http://whisper:9000/asr
+      - OLLAMA_API_URL=http://ollama:11434/api/chat
+      - OLLAMA_MODEL=${OLLAMA_MODEL:-gemma3:12b}
+      - WHISPER_MODEL=${WHISPER_MODEL:-turbo}
+      - MOVIES_DIR=/media/movies
+      - TV_DIR=/media/tv
+      - TARGET_LANGUAGES=${TARGET_LANGUAGES:-zh,es-MX}
+      - WATERMARK_TEXT=${WATERMARK_TEXT:-Brought to you by PlexMind}
+      - TRANSCRIBE_START_HOUR=${TRANSCRIBE_START_HOUR:-5}
+      - TRANSCRIBE_END_HOUR=${TRANSCRIBE_END_HOUR:-12}
+      - TRANSLATE_START_HOUR=${TRANSLATE_START_HOUR:-23}
+      - TRANSLATE_END_HOUR=${TRANSLATE_END_HOUR:-3}
+      - GPU_THRESHOLD_PCT=${GPU_THRESHOLD_PCT:-30}
+      - TZ=${TZ:-America/New_York}
+    depends_on:
+      - ollama
+
+  # ---------------------------------------------------------------------------
+  # FFmpeg — GPU-accelerated media processing
+  # ---------------------------------------------------------------------------
+  ffmpeg:
+    image: linuxserver/ffmpeg:latest
+    container_name: plexmind-ffmpeg
+    restart: "no"
+    entrypoint: ["tail", "-f", "/dev/null"]
+    volumes:
+      - "${MOVIES_DIR:-/mnt/data/media/Movies}:/media/movies"
+      - "${TV_DIR:-/mnt/data/media/TV Shows}:/media/tv"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+volumes:
+  ollama_data:
