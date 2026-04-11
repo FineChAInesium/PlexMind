@@ -242,6 +242,23 @@ def scheduler_status():
     }
 
 
+@app.get("/api/storage")
+def storage_info():
+    """Return disk usage for the data volume."""
+    import shutil
+    data_dir = os.getenv("DATA_DIR", "/app/data")
+    try:
+        usage = shutil.disk_usage(data_dir)
+        return {
+            "total_bytes": usage.total,
+            "used_bytes": usage.used,
+            "free_bytes": usage.free,
+            "used_pct": round(usage.used / usage.total * 100, 1),
+        }
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
 @app.post("/webhook")
 async def plex_webhook(request: Request):
     """

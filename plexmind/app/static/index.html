@@ -79,10 +79,10 @@
           <i data-lucide="hard-drive" class="w-3.5 h-3.5"></i> Storage
         </div>
         <div class="mt-2 h-1.5 bg-slate-800 rounded-full overflow-hidden">
-          <div class="h-full w-[68%] bg-gradient-to-r from-violet-600 to-indigo-500 rounded-full"></div>
+          <div id="storage-bar" class="h-full w-0 bg-gradient-to-r from-violet-600 to-indigo-500 rounded-full transition-all duration-700"></div>
         </div>
         <div class="mt-1.5 flex justify-between text-[11px] text-slate-500">
-          <span>4.2 TB / 6 TB</span><span>68%</span>
+          <span id="storage-label">Loading…</span><span id="storage-pct"></span>
         </div>
       </div>
     </div>
@@ -404,7 +404,7 @@
 <script>
 // ─── Config ────────────────────────────────────────────────────────────────
 const saved = JSON.parse(localStorage.getItem('pm_settings') || '{}');
-let API_BASE = saved.apiBase || 'http://localhost:8000';
+let API_BASE = saved.apiBase || window.location.origin;
 let apiOnline = false;
 
 // ─── Mock fallback data ─────────────────────────────────────────────────────
@@ -480,17 +480,11 @@ function updateHealthUI(h) {
 
   // LLM
   const llmOk = h && h.llm_ready;
-  document.getElementById('llm-dot').className = `w-2.5 h-2.5 rounded-full ${llmOk ? 'bg-emerald-500 shadow-[0_0_10px_rgba(16,185,129,.5)]' : 'bg-amber-500'}`;
-  document.getElementById('llm-status').textContent = llmOk ? 'Ready' : 'Loading';
-  document.getElementById('llm-label').textContent = h ? (h.llm || 'qwen3.5:9b') : '—';
+  document.getElementById('llm-dot').className = `w-2.5 h-2.5 rounded-full ${llmOk ? 'bg-emerald-500 shadow-[0_0_10px_rgba(16,185,129,.5)]' : h ? 'bg-amber-500' : 'bg-red-500'}`;
+  document.getElementById('llm-status').textContent = llmOk ? 'Ready' : h ? 'Not ready' : 'Offline';
+  document.getElementById('llm-label').textContent = h ? (h.llm || 'qwen3.5:9b') : 'API Offline';
   document.getElementById('ollama-model-display').value = h ? (h.llm || '') : '';
   document.getElementById('tl-model-label').textContent = h ? (h.llm || 'qwen3.5:9b') : 'qwen3.5:9b';
-
-  // GPU — not in health response, show static indicator
-  document.getElementById('gpu-dot').className = 'w-2.5 h-2.5 rounded-full bg-emerald-500 shadow-[0_0_10px_rgba(16,185,129,.5)]';
-  document.getElementById('gpu-status').textContent = 'Available';
-  document.getElementById('gpu-label').textContent = 'NVIDIA GPU';
-  document.getElementById('gpu-sub').textContent = 'Check Ollama logs for VRAM';
 
   // Whisper — not in health response, show static indicator
   document.getElementById('whisper-dot').className = 'w-2.5 h-2.5 rounded-full bg-slate-500';
@@ -520,9 +514,45 @@ async function fetchSchedulerStatus() {
     const res = await fetch(`${API_BASE}/api/scheduler/status`, { signal: AbortSignal.timeout(2000) });
     if (!res.ok) throw new Error();
     const data = await res.json();
-    document.getElementById('stat-schedule').textContent = data.next_run || '—';
+
+    // Scheduler next run
+    if (data.next_run_utc) {
+      const d = new Date(data.next_run_utc);
+      document.getElementById('stat-schedule').textContent = d.toLocaleDateString(undefined, {month:'short',day:'numeric',year:'numeric'});
+    } else {
+      document.getElementById('stat-schedule').textContent = '—';
+    }
+
+    // GPU from real data
+    const util = data.gpu_utilization_pct;
+    const busy = data.gpu_busy;
+    const hasUtil = util !== null && util !== undefined;
+    document.getElementById('gpu-dot').className = `w-2.5 h-2.5 rounded-full ${busy ? 'bg-amber-500 animate-pulse' : hasUtil ? 'bg-emerald-500 shadow-[0_0_10px_rgba(16,185,129,.5)]' : 'bg-slate-500'}`;
+    document.getElementById('gpu-status').textContent = busy ? 'Busy' : hasUtil ? 'Available' : 'Unknown';
+    document.getElementById('gpu-label').textContent = hasUtil ? `${util}% utilized` : 'NVIDIA GPU';
+    document.getElementById('gpu-sub').textContent = hasUtil ? `Threshold: ${data.gpu_threshold_pct}%` : 'Run nvidia-smi in container';
   } catch {
     document.getElementById('stat-schedule').textContent = '—';
+    document.getElementById('gpu-dot').className = 'w-2.5 h-2.5 rounded-full bg-slate-500';
+    document.getElementById('gpu-status').textContent = 'Unknown';
+    document.getElementById('gpu-label').textContent = 'NVIDIA GPU';
+    document.getElementById('gpu-sub').textContent = 'Scheduler unreachable';
+  }
+}
+
+async function fetchStorage() {
+  try {
+    const res = await fetch(`${API_BASE}/api/storage`, { signal: AbortSignal.timeout(2000) });
+    if (!res.ok) throw new Error();
+    const d = await res.json();
+    const usedTB = (d.used_bytes / 1e12).toFixed(1);
+    const totalTB = (d.total_bytes / 1e12).toFixed(1);
+    document.getElementById('storage-bar').style.width = d.used_pct + '%';
+    document.getElementById('storage-label').textContent = `${usedTB} TB / ${totalTB} TB`;
+    document.getElementById('storage-pct').textContent = `${d.used_pct}%`;
+  } catch {
+    document.getElementById('storage-label').textContent = 'N/A';
+    document.getElementById('storage-pct').textContent = '';
   }
 }
 
@@ -673,12 +703,16 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   // Restore settings
   document.getElementById('api-base-url').value = API_BASE;
+  document.getElementById('api-base-url').placeholder = window.location.origin;
 
   // Load dashboard
   const h = await fetchHealth();
   updateHealthUI(h);
   fetchSchedulerStatus();
+  fetchStorage();
   setInterval(async () => updateHealthUI(await fetchHealth()), 30000);
+  setInterval(fetchSchedulerStatus, 30000);
+  setInterval(fetchStorage, 60000);
   renderRecs();
   renderUsers(await fetchUsers());
 
