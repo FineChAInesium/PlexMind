@@ -74,4 +74,4 @@ PlexMind was designed with the Huntarr incident in mind:
 | All endpoints unauthenticated by default | Optional key; loud startup warning if unset |
 | Ran as root in container | Runs as uid 1000 |
 | No rate limiting | slowapi rate limits on GPU-heavy endpoints |
-| Docker socket mounted | Not mounted in PlexMind container |
+| Docker socket mounted | `/var/run/docker.sock` is not mounted — PlexMind cannot control other containers or escalate to host root |
