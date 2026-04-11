@@ -1,7 +1,7 @@
 # PlexMind Suite
 
 <p align="center">
-  <a href="https://finechinesium.github.io/PlexMind/"><img src="https://img.shields.io/badge/demo-live-violet?style=flat-square&logo=github" alt="Live Demo"></a>
+  <a href="https://finechainesium.github.io/PlexMind/"><img src="https://img.shields.io/badge/demo-live-violet?style=flat-square&logo=github" alt="Live Demo"></a>
   <img src="https://img.shields.io/badge/python-3.12-blue?style=flat-square&logo=python" alt="Python 3.12">
   <img src="https://img.shields.io/badge/fastapi-0.111+-green?style=flat-square&logo=fastapi" alt="FastAPI">
   <img src="https://img.shields.io/badge/ollama-local%20LLM-orange?style=flat-square" alt="Ollama">
@@ -15,7 +15,7 @@ Stop scrolling. PlexMind is a fully-local AI stack that generates eerily accurat
 
 No cloud. No subscriptions. No data leaving your server.
 
-> **[Try the interactive demo →](https://finechinesium.github.io/PlexMind/)**  
+> **[Try the interactive demo →](https://finechainesium.github.io/PlexMind/)**  
 > Runs in demo mode with mock data. Deploy locally to connect your actual Plex server.
 
 ## Why PlexMind?
@@ -111,7 +111,7 @@ All settings in [`.env.example`](.env.example). Key ones:
 
 PlexMind ships with a built-in dashboard at `http://<your-server>:8000/`.
 
-No separate install — served directly from the FastAPI container. **[Try the demo](https://finechinesium.github.io/PlexMind/)** to explore it before deploying.
+No separate install — served directly from the FastAPI container. **[Try the demo](https://finechainesium.github.io/PlexMind/)** to explore it before deploying.
 
 **Dashboard tabs:**
 
