@@ -901,11 +901,20 @@ document.addEventListener('DOMContentLoaded', async () => {
   document.getElementById('clear-tl-log').onclick = () => tlLog.textContent = 'Idle...';
 
   // Schedule widgets
+  // Defaults derived from existing Unraid crontab
+  const SCHED_DEFAULTS = {
+    'transcribe':        { freq:'daily', time:'05:00', weekday:'1', monthday:'1', active:true },
+    'translate':         { freq:'daily', time:'23:00', weekday:'1', monthday:'1', active:true },
+    'maintenance-audit': { freq:'weekly', time:'04:00', weekday:'1', monthday:'1', active:false },
+    'maintenance-dupes': { freq:'weekly', time:'04:00', weekday:'1', monthday:'1', active:false },
+    'maintenance-pgs':   { freq:'weekly', time:'04:00', weekday:'1', monthday:'1', active:false },
+  };
+
   function initScheduleWidgets() {
     document.querySelectorAll('[data-sched]').forEach(el => {
       const key = `pm_sched_${el.dataset.sched}`;
       const cmd = el.dataset.cmd;
-      const saved = JSON.parse(localStorage.getItem(key) || 'null');
+      const saved = JSON.parse(localStorage.getItem(key) || 'null') || SCHED_DEFAULTS[el.dataset.sched] || null;
 
       function buildCron(freq, time, weekday, monthday) {
         const [h, m] = time.split(':');
