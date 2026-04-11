@@ -323,12 +323,37 @@ def scheduler_status():
     job = scheduler.scheduler.get_job("monthly_recs")
     next_run = job.next_run_time.isoformat() if job and job.next_run_time else None
     util = gpu_utilization()
+    # Surface current trigger params so the dashboard can show them
+    trigger = job.trigger if job else None
+    cron_day = str(getattr(getattr(trigger, 'fields', [None, None, None, None, None, None, None, None])[2], 'expressions', ['1'])[0]) if trigger else "1"
+    cron_hour = str(getattr(getattr(trigger, 'fields', [None, None, None, None, None, None, None, None])[5], 'expressions', ['3'])[0]) if trigger else "3"
+    cron_minute = str(getattr(getattr(trigger, 'fields', [None, None, None, None, None, None, None, None])[4], 'expressions', ['0'])[0]) if trigger else "0"
     return {
         "next_run_utc": next_run,
         "gpu_utilization_pct": util,
         "gpu_threshold_pct": int(os.getenv("GPU_THRESHOLD_PCT", "30")),
         "gpu_busy": (util or 0) >= int(os.getenv("GPU_THRESHOLD_PCT", "30")),
+        "cron_day": cron_day,
+        "cron_hour": cron_hour,
+        "cron_minute": cron_minute,
     }
+
+
+@app.post("/api/scheduler/configure", dependencies=[Depends(_require_key)])
+def scheduler_configure(
+    day: int = Query(1, ge=1, le=28, description="Day of month (1–28)"),
+    hour: int = Query(3, ge=0, le=23, description="Hour (UTC, 0–23)"),
+    minute: int = Query(0, ge=0, le=59, description="Minute (0–59)"),
+):
+    """Reschedule the monthly recommendation batch run."""
+    from apscheduler.triggers.cron import CronTrigger
+    scheduler.scheduler.reschedule_job(
+        "monthly_recs",
+        trigger=CronTrigger(day=day, hour=hour, minute=minute, timezone="UTC"),
+    )
+    job = scheduler.scheduler.get_job("monthly_recs")
+    next_run = job.next_run_time.isoformat() if job and job.next_run_time else None
+    return {"status": "ok", "day": day, "hour": hour, "minute": minute, "next_run_utc": next_run}
 
 
 @app.get("/api/storage")
