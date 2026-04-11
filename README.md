@@ -26,7 +26,7 @@ No cloud. No subscriptions. No data leaving your server.
 - **🧠 Smarter LLM** — Qwen 3.5 9B with 100% JSON reliability
 - **⚡ 60x faster** — Prefilter cuts TMDB calls from 3,000 to 100
 - **🔒 Hardened** — API key auth, rate limiting, network isolation
-- **📦 Unraid CA** — One-click install from Community Applications
+- **📦 Unraid CA** — CA submission pending approval
 
 ## Why PlexMind?
 
@@ -66,10 +66,13 @@ PlexMind syncs directly to Plex — no separate app needed:
 
 ## Quick Start
 
-### Unraid (Recommended)
+### Unraid
 
-1. Community Applications → Search "PlexMind"
-2. Install, set `PLEX_URL` and `PLEX_TOKEN`
+> **CA submission pending approval.** In the meantime, install manually using the template:
+> `https://raw.githubusercontent.com/FineChAInesium/PlexMind/main/templates/PlexMind.xml`
+
+1. Community Applications → Click the folder icon → paste the URL above
+2. Set `PLEX_URL` and `PLEX_TOKEN`
 3. Open `http://[unraid-ip]:8000`
 
 ### Docker Compose
@@ -180,19 +183,14 @@ Features demonstrated:
 
 ## Unraid Installation
 
-**Community Applications:**
-1. Apps → Search "PlexMind"
-2. Install template
-3. Set required variables
-4. Start
+> **CA submission pending approval.** Manual install in the meantime:
 
-**Template includes:**
-- Auto-publish to GHCR on version tags
-- Pre-configured paths for Unraid
-- NVIDIA runtime support
-- Optional GUI toggle
+1. Community Applications → click the folder icon → paste:
+   `https://raw.githubusercontent.com/FineChAInesium/PlexMind/main/templates/PlexMind.xml`
+2. Set required variables (`PLEX_URL`, `PLEX_TOKEN` at minimum)
+3. Start
 
-Manual template: `templates/PlexMind.xml`
+Template includes NVIDIA runtime support, pre-configured Unraid paths, and optional GUI toggle. Auto-publishes to GHCR on version tags.
 
 ## Security
 
