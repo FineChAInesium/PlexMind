@@ -1,10 +1,22 @@
 # PlexMind Suite
 
+<p align="center">
+  <a href="https://finechinesium.github.io/PlexMind/"><img src="https://img.shields.io/badge/demo-live-violet?style=flat-square&logo=github" alt="Live Demo"></a>
+  <img src="https://img.shields.io/badge/python-3.12-blue?style=flat-square&logo=python" alt="Python 3.12">
+  <img src="https://img.shields.io/badge/fastapi-0.111+-green?style=flat-square&logo=fastapi" alt="FastAPI">
+  <img src="https://img.shields.io/badge/ollama-local%20LLM-orange?style=flat-square" alt="Ollama">
+  <img src="https://img.shields.io/badge/license-MIT-lightgrey?style=flat-square" alt="MIT License">
+  <img src="https://img.shields.io/badge/self--hosted-no%20cloud-blueviolet?style=flat-square" alt="Self-hosted">
+</p>
+
 **Your Plex library finally understands what you actually want to watch.**
 
 Stop scrolling. PlexMind is a fully-local AI stack that generates eerily accurate movie/TV recommendations, backfills missing subtitles for your entire library, and auto-translates them into any language — all running on your own hardware with zero API costs.
 
 No cloud. No subscriptions. No data leaving your server.
+
+> **[Try the interactive demo →](https://finechinesium.github.io/PlexMind/)**  
+> Runs in demo mode with mock data. Deploy locally to connect your actual Plex server.
 
 ## Why PlexMind?
 
@@ -99,7 +111,7 @@ All settings in [`.env.example`](.env.example). Key ones:
 
 PlexMind ships with a built-in dashboard at `http://<your-server>:8000/`.
 
-No separate install — served directly from the FastAPI container.
+No separate install — served directly from the FastAPI container. **[Try the demo](https://finechinesium.github.io/PlexMind/)** to explore it before deploying.
 
 **Dashboard tabs:**
 
@@ -110,9 +122,9 @@ No separate install — served directly from the FastAPI container.
 | **Transcribe** | Settings reference, lifetime stats (223 processed, 8,565 hallucinations cleaned), and the exact `docker exec` command to run |
 | **Translate** | Same pattern — model name, target languages, lifetime stats (37 translated, 151 skipped), docker exec command |
 | **Maintenance** | Buttons for Audit Library, Find Duplicates, Clean PGS — each shows the correct `docker exec` command to run |
-| **Settings** | Set `API_BASE_URL` (persisted in localStorage). Defaults to the origin that served the page so it works out of the box when accessed from any device on your LAN |
+| **Settings** | Set `API_BASE_URL` and optional `API_KEY` (both persisted in localStorage). URL defaults to the origin that served the page so it works out of the box |
 
-**GPU card** reads live `gpu_utilization_pct` from the scheduler status endpoint — shows "Busy" (amber) or "Available" (green) with threshold %.  
+**GPU card** reads live `gpu_utilization_pct` from the scheduler status endpoint — shows "Busy" (amber) or "Available" (green) with threshold %.
 **Storage widget** reads real disk usage from the data volume via `/api/storage` — updates every 60s.
 
 ## API Usage
@@ -140,6 +152,23 @@ curl "http://192.168.1.10:8000/api/users/your_plex_username/recommendations?forc
 # Trigger all users in background
 curl -X POST http://192.168.1.10:8000/api/run-all
 ```
+
+## Security
+
+PlexMind is designed for trusted home networks. For extra hardening:
+
+**Optional API key** — set `PLEXMIND_API_KEY` in your `.env` to require authentication on all mutation endpoints. The dashboard reads it from Settings and sends it as an `X-API-Key` header automatically.
+
+```bash
+# Generate a key
+echo "PLEXMIND_API_KEY=$(openssl rand -hex 32)" >> .env
+```
+
+**Network isolation** — Ollama is bound to `127.0.0.1` in the compose file (no LAN exposure). Whisper is container-internal only. Only port `8000` is published.
+
+**Non-root container** — PlexMind runs as uid 1000 inside the container.
+
+See [`.env.example`](.env.example) for `PLEXMIND_API_KEY` and `CORS_ORIGINS` options.
 
 ## CLI Scripts
 

@@ -37,6 +37,11 @@
 </style>
 </head>
 <body class="bg-slate-900 text-slate-100 font-sans antialiased selection:bg-violet-500/30">
+<div id="demo-banner" class="hidden fixed top-0 inset-x-0 z-[200] bg-violet-600/95 backdrop-blur-sm text-white text-center text-sm py-2 px-4 flex items-center justify-center gap-3">
+  <i data-lucide="eye" class="w-4 h-4 shrink-0"></i>
+  <span>Interactive demo — mock data only. <a href="https://github.com/FineChAInesium/PlexMind" class="underline font-medium hover:text-violet-200" target="_blank">Deploy locally</a> to connect your Plex server.</span>
+  <button id="dismiss-demo" class="ml-2 text-violet-200 hover:text-white"><i data-lucide="x" class="w-4 h-4"></i></button>
+</div>
 <div id="overlay" class="fixed inset-0 bg-black/60 backdrop-blur-sm z-40 hidden lg:hidden"></div>
 
 <div class="flex min-h-screen">
@@ -704,6 +709,17 @@ function toggleSidebar(open) {
 document.addEventListener('DOMContentLoaded', async () => {
   lucide.createIcons();
   initNav();
+
+  // Demo banner — show on GitHub Pages or when API is explicitly offline
+  if (window.__PLEXMIND_DEMO__) {
+    document.getElementById('demo-banner').classList.remove('hidden');
+    document.body.style.paddingTop = '40px';
+  }
+  document.getElementById('dismiss-demo').onclick = () => {
+    document.getElementById('demo-banner').classList.add('hidden');
+    document.body.style.paddingTop = '';
+  };
+
   document.getElementById('menu-btn').onclick = () => toggleSidebar();
   document.getElementById('overlay').onclick = () => toggleSidebar(false);
 
