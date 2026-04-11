@@ -418,8 +418,18 @@ function apiFetch(url, opts = {}) {
   return fetch(url, { ...opts, headers });
 }
 
-// ─── Mock fallback data ─────────────────────────────────────────────────────
+// ─── Demo / Mock data ───────────────────────────────────────────────────────
+const DEMO = !!window.__PLEXMIND_DEMO__;
+
 const MOCK = {
+  health: { status: 'ok', llm: 'qwen3.5:9b', llm_ready: true },
+  scheduler: { next_run_utc: '2026-05-01T03:00:00Z', gpu_utilization_pct: 4, gpu_threshold_pct: 30, gpu_busy: false },
+  storage: { total_bytes: 6e12, used_bytes: 3.41e12, free_bytes: 2.59e12, used_pct: 56.8 },
+  users: [
+    { id: '1', username: 'alex',    type: 'admin',   is_admin: true  },
+    { id: '2', username: 'jamie',   type: 'managed', is_admin: false },
+    { id: '3', username: 'morgan',  type: 'managed', is_admin: false },
+  ],
   recs: [
     {title:'Dune: Part Two',       year:2024, reason:'Epic sci-fi — loved Blade Runner 2049', type:'movie'},
     {title:'Fallout',              year:2024, reason:'Post-apocalyptic, dark humour',          type:'tv'},
@@ -470,6 +480,7 @@ function setApiStatus(online) {
 
 // ─── Health ─────────────────────────────────────────────────────────────────
 async function fetchHealth() {
+  if (DEMO) { setApiStatus(true); return MOCK.health; }
   try {
     const res = await apiFetch(`${API_BASE}/health`, { signal: AbortSignal.timeout(2000) });
     if (!res.ok) throw new Error();
@@ -508,6 +519,7 @@ function updateHealthUI(h) {
 
 // ─── Users ──────────────────────────────────────────────────────────────────
 async function fetchUsers() {
+  if (DEMO) return MOCK.users;
   try {
     const res = await apiFetch(`${API_BASE}/api/users`, { signal: AbortSignal.timeout(3000) });
     if (!res.ok) throw new Error();
@@ -521,6 +533,16 @@ async function fetchUsers() {
 }
 
 async function fetchSchedulerStatus() {
+  if (DEMO) {
+    const data = MOCK.scheduler;
+    const d = new Date(data.next_run_utc);
+    document.getElementById('stat-schedule').textContent = d.toLocaleDateString(undefined, {month:'short',day:'numeric',year:'numeric'});
+    document.getElementById('gpu-dot').className = 'w-2.5 h-2.5 rounded-full bg-emerald-500 shadow-[0_0_10px_rgba(16,185,129,.5)]';
+    document.getElementById('gpu-status').textContent = 'Available';
+    document.getElementById('gpu-label').textContent = `${data.gpu_utilization_pct}% utilized`;
+    document.getElementById('gpu-sub').textContent = `Threshold: ${data.gpu_threshold_pct}%`;
+    return;
+  }
   try {
     const res = await apiFetch(`${API_BASE}/api/scheduler/status`, { signal: AbortSignal.timeout(2000) });
     if (!res.ok) throw new Error();
@@ -552,6 +574,15 @@ async function fetchSchedulerStatus() {
 }
 
 async function fetchStorage() {
+  if (DEMO) {
+    const d = MOCK.storage;
+    const usedTB = (d.used_bytes / 1e12).toFixed(1);
+    const totalTB = (d.total_bytes / 1e12).toFixed(1);
+    document.getElementById('storage-bar').style.width = d.used_pct + '%';
+    document.getElementById('storage-label').textContent = `${usedTB} TB / ${totalTB} TB`;
+    document.getElementById('storage-pct').textContent = `${d.used_pct}%`;
+    return;
+  }
   try {
     const res = await apiFetch(`${API_BASE}/api/storage`, { signal: AbortSignal.timeout(2000) });
     if (!res.ok) throw new Error();
@@ -630,6 +661,7 @@ function renderRecs() {
 }
 
 async function generateFor(userId, btn) {
+  if (DEMO) { toast(`Demo mode — deploy locally to generate real recommendations for <b>${userId}</b>`, 'info'); return; }
   const original = btn.innerHTML;
   btn.disabled = true;
   btn.innerHTML = `<svg class="w-3.5 h-3.5 animate-spin" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" fill="none" opacity=".2"/><path d="M22 12a10 10 0 0 1-10 10" stroke="currentColor" stroke-width="4" fill="none" stroke-linecap="round"/></svg> Generating`;
@@ -743,6 +775,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   document.getElementById('btn-generate-all').addEventListener('click', withLoading(
     document.getElementById('btn-generate-all'),
     async () => {
+      if (DEMO) { toast('Demo mode — deploy locally to run batch recommendations', 'info'); return; }
       try {
         const res = await apiFetch(`${API_BASE}/api/run-all`, { method: 'POST', signal: AbortSignal.timeout(5000) });
         if (res.ok) {
