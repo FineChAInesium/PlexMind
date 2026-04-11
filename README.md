@@ -95,22 +95,50 @@ All settings in [`.env.example`](.env.example). Key ones:
 | `WHISPER_MODEL` | Transcription accuracy vs speed | `turbo` (recommended) |
 | `TARGET_LANGUAGES` | Auto-translate subtitles to these | `zh,es-MX,fr` |
 
+## Web Dashboard
+
+PlexMind ships with a built-in dashboard at `http://<your-server>:8000/`.
+
+No separate install — served directly from the FastAPI container.
+
+**Dashboard tabs:**
+
+| Tab | What It Shows |
+|---|---|
+| **Dashboard** | Live health cards (API, LLM ready state, GPU utilization %, Whisper), Plex user count, next scheduler run, disk usage — all polled from real API data every 30s |
+| **Recommendations** | Per-user table with user type, playlist destination, and one-click Generate button. Refreshes against live `/api/users` |
+| **Transcribe** | Settings reference, lifetime stats (223 processed, 8,565 hallucinations cleaned), and the exact `docker exec` command to run |
+| **Translate** | Same pattern — model name, target languages, lifetime stats (37 translated, 151 skipped), docker exec command |
+| **Maintenance** | Buttons for Audit Library, Find Duplicates, Clean PGS — each shows the correct `docker exec` command to run |
+| **Settings** | Set `API_BASE_URL` (persisted in localStorage). Defaults to the origin that served the page so it works out of the box when accessed from any device on your LAN |
+
+**GPU card** reads live `gpu_utilization_pct` from the scheduler status endpoint — shows "Busy" (amber) or "Available" (green) with threshold %.  
+**Storage widget** reads real disk usage from the data volume via `/api/storage` — updates every 60s.
+
 ## API Usage
 
-PlexMind runs at `http://localhost:8000`
+PlexMind runs at `http://<your-server>:8000` — interactive docs at `/docs`.
 
 | Endpoint | Purpose |
 |---|---|
-| `GET /health` | Check LLM status, GPU, Plex connectivity |
-| `POST /recommend/{username}` | Generate picks for a user (respects their watch history) |
-| `POST /run-batch` | Update all users (runs nightly via cron) |
-| `GET /users` | List all Plex managed users |
-| `POST /feedback` | Thumbs up/down — trains future recommendations |
+| `GET /health` | LLM ready state, model name |
+| `GET /api/users` | List all Plex users (admin + managed) |
+| `GET /api/users/{id}/recommendations` | Get cached picks for a user |
+| `POST /api/users/{id}/recommendations?force=true` | Force-regenerate picks |
+| `POST /api/users/{id}/feedback` | Like / dislike / watched — invalidates cache |
+| `POST /api/run-all` | Trigger background recs + sync for all users |
+| `GET /api/scheduler/status` | Next run time, GPU utilization %, busy flag |
+| `GET /api/storage` | Disk usage for the data volume |
+| `POST /webhook` | Plex webhook receiver — clears cache on `library.new` |
 
 Example:
 
 ```bash
-curl -X POST http://localhost:8000/recommend/your_plex_username
+# Generate recommendations for a user
+curl "http://192.168.1.10:8000/api/users/your_plex_username/recommendations?force=true"
+
+# Trigger all users in background
+curl -X POST http://192.168.1.10:8000/api/run-all
 ```
 
 ## CLI Scripts
