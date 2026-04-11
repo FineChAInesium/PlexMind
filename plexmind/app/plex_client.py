@@ -36,10 +36,10 @@ def get_users() -> list[dict]:
     server = _get_server()
     users = []
     account = server.myPlexAccount()
-    users.append({"id": "admin", "username": account.username})
+    users.append({"id": "admin", "username": account.username, "type": "admin"})
     try:
         for u in account.users():
-            users.append({"id": str(u.id), "username": u.title})
+            users.append({"id": str(u.id), "username": u.title, "type": "managed"})
     except Exception:
         pass
     return users

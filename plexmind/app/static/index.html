@@ -200,6 +200,12 @@
             <button id="btn-transcribe-scan" class="rounded-xl bg-slate-900 hover:bg-slate-800 border border-slate-700 hover:border-slate-600 transition px-5 py-3.5 font-medium flex items-center justify-center gap-2">
               <i data-lucide="scan-search" class="w-4 h-4 text-violet-400"></i> Run Transcribe Scan
             </button>
+            <button id="btn-translate-quick" class="rounded-xl bg-slate-900 hover:bg-slate-800 border border-slate-700 hover:border-slate-600 transition px-5 py-3.5 font-medium flex items-center justify-center gap-2">
+              <i data-lucide="languages" class="w-4 h-4 text-violet-400"></i> Run Translation
+            </button>
+            <button id="btn-maintenance-quick" class="rounded-xl bg-slate-900 hover:bg-slate-800 border border-slate-700 hover:border-slate-600 transition px-5 py-3.5 font-medium flex items-center justify-center gap-2">
+              <i data-lucide="wrench" class="w-4 h-4 text-violet-400"></i> Run Maintenance
+            </button>
           </div>
         </div>
       </section>
@@ -805,6 +811,22 @@ document.addEventListener('DOMContentLoaded', async () => {
     async () => {
       await new Promise(r => setTimeout(r, 600));
       toast('Run <code>docker exec plexmind-scripts /app/transcribe.sh</code> to start a scan', 'info');
+    }
+  ));
+
+  document.getElementById('btn-translate-quick').addEventListener('click', withLoading(
+    document.getElementById('btn-translate-quick'),
+    async () => {
+      await new Promise(r => setTimeout(r, 600));
+      toast('Run <code>docker exec plexmind-scripts /app/translate.sh</code> to start translation', 'info');
+    }
+  ));
+
+  document.getElementById('btn-maintenance-quick').addEventListener('click', withLoading(
+    document.getElementById('btn-maintenance-quick'),
+    async () => {
+      await new Promise(r => setTimeout(r, 600));
+      toast('Run <code>docker exec plexmind-scripts /app/maintenance.sh all</code> to start maintenance', 'info');
     }
   ));
 
