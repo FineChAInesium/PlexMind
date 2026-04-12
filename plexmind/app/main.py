@@ -80,7 +80,7 @@ limiter = Limiter(key_func=get_remote_address)
 app = FastAPI(
     title="PlexMind",
     description="Gemma 3 powered movie/TV recommendation engine for Plex",
-    version="2.1.0",
+    version="2.1.1",
     lifespan=lifespan,
 )
 app.state.limiter = limiter

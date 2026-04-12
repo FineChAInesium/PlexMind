@@ -27,7 +27,7 @@
       </div>
       <div>
         <div class="font-semibold leading-none tracking-tight">PlexMind Suite</div>
-        <div class="text-[11px] text-slate-400 mt-1">v2.1.0 • Self-hosted</div>
+        <div class="text-[11px] text-slate-400 mt-1">v2.1.1 • Self-hosted</div>
       </div>
     </div>
 
@@ -1064,6 +1064,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   };
 
   const scriptPollers = {};
+  const scriptLogFailures = {};
   function getScriptDuration(job, fallback) {
     const vals = JSON.parse(localStorage.getItem(`pm_sched_${job}`) || 'null') || {};
     const n = parseInt(vals.duration || fallback, 10);
@@ -1079,16 +1080,36 @@ document.addEventListener('DOMContentLoaded', async () => {
       const data = await logRes.json();
       logEl.textContent = data.log || 'No log output yet.';
       logEl.scrollTop = logEl.scrollHeight;
+    } else {
+      throw new Error(`log HTTP ${logRes.status}`);
     }
     const statusRes = await apiFetch(`${API_BASE}/api/scripts/${job}/status`, { signal: AbortSignal.timeout(5000) });
     if (!statusRes.ok) throw new Error(`status HTTP ${statusRes.status}`);
     const status = await statusRes.json();
+    scriptLogFailures[job] = 0;
     if (!status.running && scriptPollers[job]) {
-      clearInterval(scriptPollers[job]);
+      clearTimeout(scriptPollers[job]);
       scriptPollers[job] = null;
       appendLogLine(logEl, `${job} job is not running.`);
     }
     return status;
+  }
+  function scheduleScriptLogPoll(job, logEl, delay = 3000) {
+    if (scriptPollers[job]) clearTimeout(scriptPollers[job]);
+    scriptPollers[job] = setTimeout(async () => {
+      try {
+        const status = await refreshScriptLog(job, logEl);
+        if (status.running) scheduleScriptLogPoll(job, logEl, 3000);
+      } catch (e) {
+        const failures = (scriptLogFailures[job] || 0) + 1;
+        scriptLogFailures[job] = failures;
+        const retryMs = Math.min(15000, 3000 * failures);
+        if (failures === 1 || failures % 5 === 0) {
+          appendLogLine(logEl, `Log refresh paused: ${e.message}; retrying in ${Math.round(retryMs / 1000)}s.`);
+        }
+        scheduleScriptLogPoll(job, logEl, retryMs);
+      }
+    }, delay);
   }
   async function startScriptJob(job, logEl) {
     if (DEMO) { toast('Demo mode — deploy locally to start script jobs', 'info'); return; }
@@ -1109,9 +1130,8 @@ document.addEventListener('DOMContentLoaded', async () => {
       if (res.status === 409 && detail.status === 'already_running') {
         appendLogLine(logEl, `${job} job is already running as pid ${detail.pid || 'unknown'}; attaching to log.`);
         toast(`${job} job is already running`, 'info');
-        await refreshScriptLog(job, logEl).catch(e => appendLogLine(logEl, `Log refresh failed: ${e.message}`));
-        if (scriptPollers[job]) clearInterval(scriptPollers[job]);
-        scriptPollers[job] = setInterval(() => refreshScriptLog(job, logEl).catch(e => appendLogLine(logEl, `Log refresh failed: ${e.message}`)), 3000);
+        await refreshScriptLog(job, logEl).catch(e => appendLogLine(logEl, `Log refresh paused: ${e.message}; retrying in 3s.`));
+        scheduleScriptLogPoll(job, logEl);
         return;
       }
       throw new Error(typeof detail === 'string' ? detail : (detail.detail || `HTTP ${res.status}`));
@@ -1120,8 +1140,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     appendLogLine(logEl, `Started ${job} pid ${data.pid || 'pending'}; max runtime ${payload.max_runtime_minutes || 'none'} minutes.`);
     toast(`${job} job started`, 'success');
     await refreshScriptLog(job, logEl);
-    if (scriptPollers[job]) clearInterval(scriptPollers[job]);
-    scriptPollers[job] = setInterval(() => refreshScriptLog(job, logEl).catch(e => appendLogLine(logEl, `Log refresh failed: ${e.message}`)), 3000);
+    scheduleScriptLogPoll(job, logEl);
   }
   async function stopScriptJob(job, logEl) {
     if (DEMO) { toast('Demo mode — deploy locally to stop script jobs', 'info'); return; }
@@ -1294,9 +1313,14 @@ document.addEventListener('DOMContentLoaded', async () => {
       signal: AbortSignal.timeout(10000),
     });
     if (!res.ok) {
-      let detail = `HTTP ${res.status}`;
-      try { detail = JSON.stringify(await res.json()); } catch {}
-      throw new Error(detail);
+      let payload = null;
+      try { payload = await res.json(); } catch {}
+      const detail = payload?.detail || payload || {};
+      if (res.status === 409 && detail.status === 'already_running') {
+        toast(`${job.replace('maintenance-', 'Maintenance ')} is already running`, 'info');
+        return;
+      }
+      throw new Error(typeof detail === 'string' ? detail : (detail.detail || `HTTP ${res.status}`));
     }
     const data = await res.json();
     toast(`${job.replace('maintenance-', 'Maintenance ')} started${data.pid ? ` — pid ${data.pid}` : ''}`, 'success');

@@ -1,5 +1,11 @@
 # Changelog
 
+## v2.1.1 - 2026-04-12
+
+- Make script job log polling resilient to transient API/proxy disconnects by backing off and resuming instead of appending repeated `Failed to fetch` lines every 3 seconds.
+- Keep already-running transcribe/translate jobs attached to the existing log poller without raw 409 JSON or duplicate polling intervals.
+- Fix maintenance already-running handling so maintenance jobs show a toast instead of referencing the transcribe/translate log element.
+
 ## v2.1.0 - 2026-04-12
 
 - Run transcription, translation, and maintenance jobs directly from the PlexMind API container by default, with the optional scripts sidecar still supported via `PLEXMIND_SCRIPT_MODE=sidecar`.
