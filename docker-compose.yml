@@ -102,7 +102,6 @@ services:
       - "${MOVIES_DIR:-/mnt/data/media/Movies}:/media/movies"
       - "${TV_DIR:-/mnt/data/media/TV Shows}:/media/tv"
       - ./data:/app/data
-      - /var/run/docker.sock:/var/run/docker.sock
     environment:
       - WHISPER_API_URL=http://whisper:9000/asr
       - OLLAMA_API_URL=http://ollama:11434/api/chat

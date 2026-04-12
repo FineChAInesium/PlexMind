@@ -1,296 +1,291 @@
 # PlexMind Suite
 
-**Your Plex library finally understands what you actually want to watch.**
+**Local AI recommendations, subtitle backfill, translation, and media-library cleanup for Plex.**
 
 [![Live Demo](https://img.shields.io/badge/demo-interactive-blue?style=for-the-badge)](https://finechainesium.github.io/PlexMind/)
 [![Python 3.12](https://img.shields.io/badge/python-3.12-blue.svg)](https://www.python.org/)
-[![FastAPI](https://img.shields.io/badge/FastAPI-0.115-green.svg)](https://fastapi.tiangolo.com/)
-[![Ollama](https://img.shields.io/badge/Ollama-local-orange.svg)](https://ollama.ai/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![FastAPI](https://img.shields.io/badge/FastAPI-dashboard-green.svg)](https://fastapi.tiangolo.com/)
+[![Ollama](https://img.shields.io/badge/Ollama-local_LLM-orange.svg)](https://ollama.com/)
+[![Docker](https://img.shields.io/badge/Docker-Unraid_ready-2496ED.svg)](https://www.docker.com/)
 
-Stop scrolling. PlexMind is a fully-local AI stack with a modern web GUI that generates eerily accurate movie/TV recommendations, backfills missing subtitles, and auto-translates them — all running on your own hardware with zero API costs.
+PlexMind turns your Plex history into usable, explainable recommendations without sending your viewing data to a cloud recommender. It runs a local FastAPI app, talks to Ollama for taste-aware picks, syncs those picks back into Plex, and gives you a dashboard for the parts you actually need day to day: health, users, schedules, GPU load, storage, logs, and batch progress.
 
-> **[🎮 Try the Interactive Demo →](https://finechainesium.github.io/PlexMind/)**
->
-> Full dashboard with mock data (alex/jamie/morgan). No install, no backend required.
+The suite also includes Whisper transcription, Ollama-powered subtitle translation, and maintenance scripts for subtitle audits, duplicate cleanup, encoding repair, and PGS cleanup.
 
-No cloud. No subscriptions. No data leaving your server.
+**Try the demo:** https://finechainesium.github.io/PlexMind/
+
+The demo uses mock data in the browser. A real install connects to your Plex server, Ollama, and media folders.
 
 ---
 
-## ✨ What's New in v2.0
+## What It Does
 
-- **🖥️ Web GUI** — Built-in dashboard at `http://localhost:8000` (disable with `PLEXMIND_NO_GUI=true`)
-- **📊 Live metrics** — Real GPU % and disk usage in dashboard (not demo values)
-- **👥 Per-user sync** — Admin → Watchlist, users → 2 playlists
-- **🧠 Smarter LLM** — Qwen 3.5 9B with 100% JSON reliability
-- **⚡ 60x faster** — Prefilter cuts TMDB calls from 3,000 to 100
-- **🔒 Hardened** — API key auth, rate limiting, network isolation
-- **📦 Unraid CA** — CA submission pending approval
+| Area | What PlexMind Handles |
+|---|---|
+| Recommendations | Reads Plex watch history, asks a local LLM for taste-aware picks, and explains why each title fits. |
+| Plex sync | Admin recommendations go to Watchlist; managed users get `PlexMind Movies` and `PlexMind TV Pilots` playlists. |
+| Batch runs | `/api/run-all` runs in the background and streams live SSE progress to the dashboard. |
+| Scheduling | Monthly recommendation runs, editable from the dashboard. |
+| GPU awareness | Checks NVIDIA, Intel Arc, then AMD utilization before heavy batch work. |
+| Subtitles | Whisper ASR creates missing SRTs; Ollama translates existing SRTs into target languages. |
+| Maintenance | Audits the library, removes duplicate subtitles, fixes SRT encoding, and deletes PGS/image subs when SRTs exist. |
+| Dashboard | FastAPI serves the UI directly with compiled Tailwind CSS. No CDN Tailwind runtime. |
 
-## Why PlexMind?
-
-Plex's built-in recommendations are generic. Third-party tools phone home. PlexMind runs a local LLM that actually *reads* your watch history, understands your taste, and picks from *your* library — not what's trending on Netflix.
-
-**The difference:** Instead of "because you watched Sci-Fi," you get "Because you watched *Blade Runner 2049* and *Arrival*, you'll love *Annihilation* — it's in your library, unwatched, and has that same cerebral sci-fi vibe."
-
-## 🖼️ Dashboard Preview
+## Dashboard
 
 ![Dashboard](docs/images/dashboard.png)
 
-*Real-time health monitoring, live GPU utilization, disk usage, and per-user controls — all in your browser.*
+Open `http://<server>:8000` after install.
 
-**[→ Launch Interactive Demo](https://finechainesium.github.io/PlexMind/)**
+The dashboard includes:
 
-## Where Recommendations Appear
+- API and LLM health cards
+- GPU vendor/utilization and busy threshold
+- disk usage for the data volume
+- next recommendation run and editable schedule
+- user table with per-user generation
+- live all-user batch progress with per-user status
+- transcribe/translate log download buttons
+- maintenance command helpers
+- API URL and API key settings stored in browser localStorage
 
-PlexMind syncs directly to Plex — no separate app needed:
+The production UI is built from `plexmind/app/static/css/input.css` into `plexmind/app/static/css/styles.css` with Tailwind CLI:
 
-| User Type | Destination | Location in Plex |
-|---|---|---|
-| **Admin** | **Watchlist** | Home → Watchlist |
-| **Managed users** | **"PlexMind Movies"** | Playlists → PlexMind Movies |
-| **Managed users** | **"PlexMind TV Pilots"** | Playlists → PlexMind TV Pilots |
+```bash
+cd plexmind
+npm install
+npm run build:css
+```
 
-> **Note:** TV recommendations are pilot episodes only — perfect for discovering new shows without commitment.
+## Where Picks Show Up in Plex
 
-## What's Inside
+| Plex Account | Destination |
+|---|---|
+| Server admin | Plex Watchlist |
+| Managed users | `PlexMind Movies` playlist |
+| Managed users | `PlexMind TV Pilots` playlist |
 
-| Component | What It Does | Why It Matters |
-|---|---|---|
-| **🧠 PlexMind** | FastAPI + Ollama LLM analyzes watch history | Actually understands taste, explains *why* |
-| **🎙️ Transcribe** | Whisper ASR generates `.srt` for missing subs | Works on foreign films, anime, obscure rips |
-| **🌐 Translate** | Neural translation to any language | Auto-generates bilingual tracks |
-| **🔧 Maintenance** | Audit, dedup, PGS cleanup | Finds cruft Plex misses |
-| **🖥️ Web UI** | Dashboard at `:8000` (optional) | Zero CLI required |
+TV recommendations are pilot episodes, so users can sample a show without adding a full season.
 
-## Quick Start
+## Quick Start: Unraid
 
-### Unraid
+Community Applications submission is still pending. Manual template install:
 
-> **CA submission pending approval.** In the meantime, install manually using the template:
-> `https://raw.githubusercontent.com/FineChAInesium/PlexMind/main/templates/PlexMind.xml`
+```text
+https://raw.githubusercontent.com/FineChAInesium/PlexMind/main/templates/PlexMind.xml
+```
 
-1. Community Applications → Click the folder icon → paste the URL above
-2. Set `PLEX_URL` and `PLEX_TOKEN`
-3. Open `http://[unraid-ip]:8000`
+1. Open Community Applications.
+2. Click the template URL/folder option.
+3. Paste the template URL above.
+4. Set `PLEX_URL`, `PLEX_TOKEN`, and `OLLAMA_URL`.
+5. Set `PLEXMIND_API_KEY` before exposing the dashboard outside a trusted LAN.
+6. Start the container and open `http://[unraid-ip]:8000`.
 
-### Docker Compose
+For NVIDIA GPU access, the template includes `--gpus all`. Intel/AMD utilization fallback works if the relevant CLI tools are available inside the container.
+
+## Quick Start: Docker Compose
 
 ```bash
 git clone https://github.com/FineChAInesium/PlexMind.git
 cd PlexMind
 cp .env.example .env
+```
 
-# Edit .env — set these four:
-# PLEX_URL=http://192.168.1.10:32400
-# PLEX_TOKEN=your_token_here
-# MOVIES_DIR=/mnt/media/Movies
-# TV_DIR=/mnt/media/TV
+Edit `.env`:
 
+```bash
+PLEX_URL=http://192.168.1.10:32400
+PLEX_TOKEN=your_plex_token
+PLEXMIND_API_KEY=$(openssl rand -hex 32)
+MOVIES_DIR=/mnt/media/Movies
+TV_DIR=/mnt/media/TV
+```
+
+Start it:
+
+```bash
 ./setup.sh
 ```
 
-Open **http://localhost:8000** — that's it.
+Or use Compose directly:
 
-`setup.sh` will:
-- Detect GPU VRAM and pick optimal model
-- Pull `qwen3.5:9b` (12GB) or `gemma3:4b` (8GB)
-- Start PlexMind + Ollama
-- Leave Whisper stopped (start via GUI when needed)
+```bash
+docker compose up -d --build
+```
 
-## Web Dashboard
+Open `http://localhost:8000`.
 
-The dashboard is served directly from FastAPI — no Node.js, no build step.
+## Avoiding Rebuilds During Development
 
-**Access:** `http://<your-server>:8000`
+For production, rebuild the image when app code changes:
 
-**New in v2.0:**
-- **Live GPU card** — Shows real utilization % from `/api/scheduler/status` (was "Unknown")
-- **Live storage bar** — Real disk usage from `/api/storage`, updates every 60s (was hardcoded)
-- **Settings page** — API key field saves to localStorage, auto-sent with requests. 403 errors link to Settings.
-- **Smart defaults** — Uses `window.location.origin` for API base (was hardcoded to localhost, broke LAN access)
-- **API-only mode** — Set `PLEXMIND_NO_GUI=true` to disable dashboard entirely
+```bash
+docker compose build plexmind
+docker compose up -d plexmind
+```
 
-| Tab | Features |
-|---|---|
-| **Dashboard** | Health cards (API, LLM, GPU %, Whisper), user count, next run, disk usage — polls every 30s |
-| **Recommendations** | User table, playlist destinations, one-click Generate, live previews |
-| **Transcribe** | Model selector, lifetime stats, docker command |
-| **Translate** | Target languages, stats, docker command |
-| **Maintenance** | Audit, dedup, PGS clean — with exact commands |
-| **Settings** | `API_BASE_URL` and `API_KEY` (stored in localStorage) |
+For local iteration, bind-mount the source and run uvicorn with reload:
+
+```yaml
+services:
+  plexmind:
+    volumes:
+      - ./plexmind/app:/app/app
+      - ./data:/app/data
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+```
+
+That makes Python, HTML, and compiled CSS changes visible without rebuilding. You still need `npm run build:css` after Tailwind class changes unless you run `npm run watch:css`.
 
 ## API Reference
 
-Interactive docs: `http://localhost:8000/docs`
+Interactive docs: `http://<server>:8000/docs`
 
-| Endpoint | Method | Purpose | New |
-|---|---|---|---|
-| `/health` | GET | LLM ready state | |
-| `/api/users` | GET | List Plex users | |
-| `/api/users/{id}/recommendations` | GET | Get cached picks | |
-| `/api/users/{id}/recommendations?force=true` | POST | Regenerate | |
-| `/api/users/{id}/feedback` | POST | Like/dislike/watched | |
-| `/api/run-all` | POST | Background job for all users | |
-| `/api/scheduler/status` | GET | Next run, GPU %, busy flag | ✅ v2.0 |
-| `/api/storage` | GET | Disk usage (total, used, free, pct) | ✅ v2.0 |
-| `/webhook` | POST | Plex webhook (clears cache) | |
+| Endpoint | Method | Purpose |
+|---|---|---|
+| `/health` | GET | API and LLM readiness. |
+| `/api/users` | GET | Plex users visible to the configured token. |
+| `/api/users/{id}/history` | GET | Deduplicated watch history. |
+| `/api/users/{id}/recommendations?force=true` | GET | Generate or fetch recommendations. |
+| `/api/users/{id}/feedback` | GET/POST | Read or record like/dislike/watched feedback. |
+| `/api/users/{id}/sync` | POST/DELETE | Sync or remove PlexMind Plex destinations. |
+| `/api/run-all` | POST | Start all-user batch job. |
+| `/api/jobs/{job_id}/status` | GET | Poll batch status. |
+| `/api/jobs/{job_id}/events` | GET | SSE stream for live batch progress. |
+| `/api/scheduler/status` | GET | Next run, cron values, GPU vendor/utilization, busy threshold. |
+| `/api/scheduler/configure` | POST | Update monthly recommendation schedule. |
+| `/api/storage` | GET | Disk usage for the data volume. |
+| `/api/trending` | GET | TMDB trending data when configured. |
+| `/webhook` | POST | Plex webhook handler for cache invalidation. |
 
-**Example:**
+Example:
+
 ```bash
-# Get live GPU status
-curl http://192.168.1.10:8000/api/scheduler/status
-# {"next_run": "2024-01-15T02:00:00", "gpu_utilization_pct": 45, "gpu_busy": true}
+curl -H "X-API-Key: $PLEXMIND_API_KEY" \
+  http://192.168.1.10:8000/api/scheduler/status
 
-# Get disk usage
-curl http://192.168.1.10:8000/api/storage
-# {"total": 8000000000000, "used": 5200000000000, "free": 2800000000000, "pct": 65}
-
-# Generate recommendations
-curl -X POST "http://192.168.1.10:8000/api/users/plex_user/recommendations?force=true" \
-  -H "X-API-Key: your_key_here"
+curl -X POST -H "X-API-Key: $PLEXMIND_API_KEY" \
+  http://192.168.1.10:8000/api/run-all
 ```
 
 ## Configuration
 
-Key `.env` variables:
+| Variable | Description | Default |
+|---|---|---|
+| `PLEX_URL` | Plex server URL. Use a LAN address from inside Docker. | `http://host.docker.internal:32400` |
+| `PLEX_TOKEN` | Plex admin token. | required |
+| `PLEXMIND_API_KEY` | Protects non-health endpoints. Strongly recommended. | unset |
+| `CORS_ORIGINS` | Comma-separated browser origins. Use your HTTPS origin behind a proxy. | `*` |
+| `TMDB_API_KEY` | Optional metadata enrichment. | unset |
+| `TVDB_API_KEY` | Optional TV metadata fallback. | unset |
+| `OMDB_API_KEY` | Optional IMDb/OMDB enrichment. | unset |
+| `OLLAMA_URL` | Ollama API URL. | `http://ollama:11434` |
+| `OLLAMA_MODEL` | Recommendation/translation model. | `gemma3:12b` in Compose |
+| `MAX_RECOMMENDATIONS` | Picks per user. | `10` |
+| `CANDIDATE_POOL_SIZE` | Prefiltered candidate count before LLM. | `40` |
+| `MIN_HISTORY_ITEMS` | Minimum watch history before batch generation. | `3` |
+| `SUPPRESSION_DAYS` | Days before a shown recommendation can return. | `60` |
+| `GPU_THRESHOLD_PCT` | Pause batch work at or above this utilization. | `30` |
+| `GPU_BACKOFF_MINUTES` | Wait time before checking a busy GPU again. | `30` |
+| `PLEXMIND_NO_GUI` | Disable dashboard and serve API only. | `false` |
+| `WHISPER_MODEL` | Whisper ASR model for scripts. | `turbo` |
+| `TARGET_LANGUAGES` | Comma-separated subtitle translation targets. | `zh,es-MX` |
 
-| Variable | Description | Example | New |
-|---|---|---|---|
-| `PLEX_URL` | Plex server (LAN IP) | `http://192.168.1.10:32400` | |
-| `PLEX_TOKEN` | From Plex settings | `abc123...` | |
-| `MOVIES_DIR` / `TV_DIR` | Host paths | `/mnt/media/Movies` | |
-| `OLLAMA_MODEL` | Auto-selected | `qwen3.5:9b` | |
-| `WHISPER_MODEL` | `turbo` recommended | `turbo` | |
-| `TARGET_LANGUAGES` | CSV | `zh,es-MX,fr` | |
-| `PLEXMIND_API_KEY` | API authentication | `openssl rand -hex 32` | |
-| `PLEXMIND_NO_GUI` | Disable dashboard | `true` | ✅ v2.0 |
-| `CORS_ORIGINS` | For reverse proxy | `*` or `https://plex.example.com` | |
+## Security Notes
 
-## Demo
+PlexMind is designed for trusted home networks, but it still has real write access to Plex destinations and subtitle folders.
 
-**Live demo:** https://finechainesium.github.io/PlexMind/
+Minimum hardening:
 
-The demo runs entirely in your browser with mock data for three users (alex, jamie, morgan). No backend, no install.
-
-Features demonstrated:
-- Real-time health cards
-- Per-user recommendation generation
-- GPU and storage metrics
-- Settings with API key management
-- All dashboard tabs
-
-## Unraid Installation
-
-> **CA submission pending approval.** Manual install in the meantime:
-
-1. Community Applications → click the folder icon → paste:
-   `https://raw.githubusercontent.com/FineChAInesium/PlexMind/main/templates/PlexMind.xml`
-2. Set required variables (`PLEX_URL`, `PLEX_TOKEN` at minimum)
-3. Start
-
-Template includes NVIDIA runtime support, pre-configured Unraid paths, and optional GUI toggle. Auto-publishes to GHCR on version tags.
-
-## Security
-
-Designed for trusted home networks. Hardening options:
-
-**1. API Key (recommended)**
 ```bash
-echo "PLEXMIND_API_KEY=$(openssl rand -hex 32)" >> .env
-```
-Dashboard will prompt for key and store in localStorage. 403 errors automatically link to Settings page.
-
-**2. Network isolation** (already in compose)
-- Ollama: `127.0.0.1:11434` only
-- Whisper: internal Docker network only
-- Only port 8000 exposed
-
-**3. Disable GUI** (API-only mode)
-```bash
-PLEXMIND_NO_GUI=true
+PLEXMIND_API_KEY=$(openssl rand -hex 32)
+CORS_ORIGINS=https://plexmind.example.com
+chmod 600 .env
 ```
 
-**4. Non-root**
-- Container runs as UID 1000
-- Media mounts are `:ro`
+Important details:
 
-See [SECURITY.md](SECURITY.md) for full audit.
+- No endpoint returns `.env`, Plex tokens, API keys, or app settings.
+- API key comparison uses `secrets.compare_digest`.
+- `/api/run-all`, recommendation generation, and webhooks are rate-limited.
+- `/webhook` rejects non-LAN clients, but reverse proxies can make internet traffic appear local. Use `PLEXMIND_API_KEY` if proxied.
+- The scripts container no longer mounts `/var/run/docker.sock`; it does not need Docker host control for transcription or maintenance.
+- Subtitle maintenance modes can delete `.sup`, `.sub/.idx`, and duplicate `.srt` files from mounted media folders. Run audits first and keep backups if your media library is not disposable.
+- The dashboard stores its API key in browser localStorage. Use HTTPS when accessing it through a reverse proxy.
 
-## CLI (Optional)
+See [SECURITY.md](SECURITY.md) for the full security model and current audit notes.
+
+## CLI Helpers
 
 ```bash
 # Transcribe missing subtitles
 docker exec plexmind-scripts /app/transcribe.sh
 
-# Translate to target langs
+# Translate SRTs to TARGET_LANGUAGES
 docker exec plexmind-scripts /app/translate.sh
 
 # Maintenance
-docker exec plexmind-scripts /app/maintenance.sh all
+docker exec plexmind-scripts /app/maintenance.sh audit
 docker exec plexmind-scripts /app/maintenance.sh dedup
+docker exec plexmind-scripts /app/maintenance.sh pgs-cleanup
+docker exec plexmind-scripts /app/maintenance.sh all
 ```
 
-## Performance
+## Performance Snapshot
 
-Real stats from 2,000-title library (RTX 3060 12GB):
+Observed on a roughly 2,000-title library with an RTX 3060 12GB:
 
-- **Scan:** ~45s (100 TMDB calls, not 3,000)
-- **Per-user:** 12–24s
-- **Transcription:** ~3 min/video (Whisper turbo)
-- **Translation:** ~26 min/subtitle (Ollama, chunked)
+| Task | Typical Time |
+|---|---|
+| Candidate scan | about 45 seconds |
+| Recommendation generation | about 12-24 seconds per user |
+| Whisper turbo transcription | about 3 minutes per video |
+| Ollama subtitle translation | about 26 minutes per subtitle |
 
-## Model Selection
+## Model Guide
 
-| GPU | Model | VRAM | Speed |
-|---|---|---|---|
-| 24GB+ | `gemma3:27b` | ~18GB | ~35 tok/s |
-| 12GB | `qwen3.5:9b` ⭐ | ~6.5GB | ~20 tok/s |
-| 8GB | `gemma3:4b` | ~4GB | ~30 tok/s |
-| CPU | `gemma3:4b` | RAM | ~3 tok/s |
-
-Auto-configured by `setup.sh`.
+| Hardware | Suggested model |
+|---|---|
+| 24GB+ VRAM | `gemma3:27b` |
+| 12GB VRAM | `qwen3.5:9b` |
+| 8GB VRAM | `gemma3:4b` |
+| CPU-only | `gemma3:4b`, with patience |
 
 ## Architecture
 
-```
-Browser → :8000 → FastAPI → Ollama
-              ↓                ↓
-          /api/storage    GPU metrics
-          /api/scheduler  ← nvidia-smi
-              ↓
-          Plex API → TMDB/OMDB
-              ↓
-    Admin: Watchlist
-    Users: Movies + TV Pilots playlists
+```text
+Browser dashboard
+    -> FastAPI :8000
+        -> Plex API
+        -> Ollama for recommendations
+        -> TMDB/TVDB/OMDB metadata when keys are configured
+        -> scheduler + GPU utilization checks
+
+Scripts container
+    -> mounted media folders
+    -> Whisper ASR
+    -> Ollama translation
+    -> subtitle audit/dedup/cleanup
 ```
 
-All cached locally. Second run is instant.
+Runtime state lives under `data/`. Secrets belong in `.env`. Neither should be committed.
 
 ## Development
 
 ```bash
-# Local dev
 cd plexmind
 pip install -r requirements.txt
 uvicorn app.main:app --reload
 
-# Build
-docker compose build plexmind
-
-# Disable GUI for testing
-PLEXMIND_NO_GUI=true uvicorn app.main:app
+npm install
+npm run build:css
 ```
 
 ## Credits
 
-**Structured and originally built by [@FineChAInesium](https://github.com/FineChAInesium), rebuilt from scratch by Claude Opus.**
+Built and maintained by [@FineChAInesium](https://github.com/FineChAInesium), with AI-assisted iteration.
 
 ## License
 
-MIT — see [LICENSE](LICENSE)
-
----
-
-**Star ⭐ if you use it**
+MIT.

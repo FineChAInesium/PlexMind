@@ -456,6 +456,12 @@ function apiFetch(url, opts = {}) {
   return fetch(url, { ...opts, headers });
 }
 
+function escapeHtml(value) {
+  return String(value ?? '').replace(/[&<>"']/g, ch => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+  }[ch]));
+}
+
 // ─── Demo / Mock data ───────────────────────────────────────────────────────
 const DEMO = !!window.__PLEXMIND_DEMO__;
 
@@ -664,13 +670,15 @@ function renderUsers(users) {
   tbody.innerHTML = users.map(u => {
     const isAdmin = u.type === 'admin' || u.is_admin;
     const displayType = isAdmin ? 'Admin' : 'Managed';
-    const initials = (u.username || u.id || '?').slice(0, 2).toUpperCase();
+    const displayName = escapeHtml(u.username || u.id || '?');
+    const userId = escapeHtml(u.id || u.username || '');
+    const initials = escapeHtml((u.username || u.id || '?').slice(0, 2).toUpperCase());
     return `
     <tr class="hover:bg-slate-800/40 transition">
       <td class="px-5 py-3.5">
         <div class="flex items-center gap-3">
           <div class="w-8 h-8 rounded-lg bg-slate-800 border border-slate-700 flex items-center justify-center text-[12px] font-medium">${initials}</div>
-          <span class="font-medium">${u.username || u.id}</span>
+          <span class="font-medium">${displayName}</span>
         </div>
       </td>
       <td class="px-5 py-3.5">
@@ -687,7 +695,7 @@ function renderUsers(users) {
              </div>`}
       </td>
       <td class="px-5 py-3.5 text-right">
-        <button data-user="${u.id || u.username}" class="btn-gen inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-900 hover:bg-slate-800 border border-slate-700 text-xs font-medium transition hover:border-violet-500/50">
+        <button data-user="${userId}" class="btn-gen inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-900 hover:bg-slate-800 border border-slate-700 text-xs font-medium transition hover:border-violet-500/50">
           <i data-lucide="sparkles" class="w-3.5 h-3.5"></i>Generate
         </button>
       </td>
@@ -716,7 +724,7 @@ function renderRecs() {
 }
 
 async function generateFor(userId, btn) {
-  if (DEMO) { toast(`Demo mode — deploy locally to generate real recommendations for <b>${userId}</b>`, 'info'); return; }
+  if (DEMO) { toast(`Demo mode — deploy locally to generate real recommendations for <b>${escapeHtml(userId)}</b>`, 'info'); return; }
   const original = btn.innerHTML;
   btn.disabled = true;
   btn.innerHTML = `<svg class="w-3.5 h-3.5 animate-spin" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" fill="none" opacity=".2"/><path d="M22 12a10 10 0 0 1-10 10" stroke="currentColor" stroke-width="4" fill="none" stroke-linecap="round"/></svg> Generating`;
@@ -726,7 +734,7 @@ async function generateFor(userId, btn) {
     });
     if (res.ok) {
       setApiStatus(true);
-      toast(`Recommendations generated for <b>${userId}</b>`, 'success');
+      toast(`Recommendations generated for <b>${escapeHtml(userId)}</b>`, 'success');
     } else {
       throw new Error(`HTTP ${res.status}`);
     }
@@ -902,7 +910,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         const color = ev.status === 'ok' ? 'text-emerald-400' : ev.status === 'skipped' ? 'text-slate-400' : 'text-red-400';
         const detail = ev.recs !== undefined ? `${ev.recs} recs` : ev.reason || ev.error || '';
         jobUserList.insertAdjacentHTML('beforeend',
-          `<div class="flex items-center gap-2 ${color}"><span>${icon}</span><span class="text-slate-200">${ev.user}</span><span class="text-slate-500">${detail}</span></div>`);
+          `<div class="flex items-center gap-2 ${color}"><span>${icon}</span><span class="text-slate-200">${escapeHtml(ev.user)}</span><span class="text-slate-500">${escapeHtml(detail)}</span></div>`);
         jobUserList.scrollTop = jobUserList.scrollHeight;
       } else if (ev.type === 'gpu_wait') {
         jobStatusLbl.textContent = `GPU busy (${ev.pct}%) — waiting…`;
@@ -1077,12 +1085,14 @@ document.addEventListener('DOMContentLoaded', async () => {
       }
 
       function render(vals) {
-        const freq = vals?.freq || 'daily';
-        const time = vals?.time || '03:00';
-        const weekday = vals?.weekday || '1';
-        const monthday = vals?.monthday || '1';
+        const freq = ['daily', 'weekly', 'monthly'].includes(vals?.freq) ? vals.freq : 'daily';
+        const time = /^\d{2}:\d{2}$/.test(vals?.time || '') ? vals.time : '03:00';
+        const weekday = /^[0-6]$/.test(vals?.weekday || '') ? vals.weekday : '1';
+        const monthday = /^(?:[1-9]|1\d|2[0-8])$/.test(vals?.monthday || '') ? vals.monthday : '1';
         const active = !!vals?.active;
         const cron = buildCron(freq, time, weekday, monthday);
+        const safeCron = escapeHtml(cron);
+        const safeCmd = escapeHtml(cmd);
         el.innerHTML = `
           <div class="space-y-2 text-xs">
             <div class="flex gap-2">
@@ -1105,8 +1115,8 @@ document.addEventListener('DOMContentLoaded', async () => {
             <button data-save class="w-full rounded-lg ${active?'bg-violet-600 hover:bg-violet-500':'bg-slate-900 hover:bg-slate-800 border border-slate-700'} py-1.5 font-medium flex items-center justify-center gap-1.5 transition">
               <i data-lucide="${active?'check':'clock'}" class="w-3 h-3"></i>${active?'Scheduled':'Save Schedule'}
             </button>
-            ${active ? `<div class="text-slate-400">Next: <span class="text-slate-200">${nextRun(freq,time,weekday,monthday)}</span></div>
-            <div class="rounded-lg bg-slate-950 border border-slate-800 p-2 font-mono text-[10px] text-slate-400 break-all">${cron} ${cmd}</div>` : ''}
+            ${active ? `<div class="text-slate-400">Next: <span class="text-slate-200">${escapeHtml(nextRun(freq,time,weekday,monthday))}</span></div>
+            <div class="rounded-lg bg-slate-950 border border-slate-800 p-2 font-mono text-[10px] text-slate-400 break-all">${safeCron} ${safeCmd}</div>` : ''}
           </div>`;
         lucide.createIcons({ nodes: [el] });
 
