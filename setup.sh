@@ -259,6 +259,12 @@ CACHE_TTL_SECONDS=3600
 GPU_THRESHOLD_PCT=30
 GPU_BACKOFF_MINUTES=30
 
+# --- Script logs ---
+# Dated script logs under /app/data/logs are retained for 7 days
+LOG_RETENTION_DAYS=7
+# Optional per-run cap. Use 0 for no cap, or pass via docker exec/cron.
+MAX_RUNTIME_MINUTES=0
+
 # --- Scheduling ---
 # Transcription: runs daily at 5am, stops at noon
 TRANSCRIBE_START_HOUR=5

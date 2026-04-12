@@ -270,7 +270,7 @@
                 </div>
                 <div class="rounded-xl bg-slate-900 border border-slate-700 p-3 text-xs text-slate-400">
                   <i data-lucide="info" class="w-3.5 h-3.5 inline mr-1 text-violet-400"></i>
-                  Transcription runs via <code>docker exec plexmind-scripts /app/transcribe.sh</code>. Use the button below to trigger a run via the API.
+                  Transcription uses a container script. Scheduled runs use 05:00-12:00 local; run now with <code>docker exec -e RUN_NOW=1 -e MAX_RUNTIME_MINUTES=60 plexmind-scripts /app/transcribe.sh</code>.
                 </div>
                 <button id="btn-transcribe" class="w-full mt-2 rounded-xl bg-violet-600 hover:bg-violet-500 py-3 font-medium flex items-center justify-center gap-2 shadow-glow transition">
                   <i data-lucide="play" class="w-4 h-4"></i> Start Transcription
@@ -332,7 +332,7 @@
                 </div>
                 <div class="rounded-xl bg-slate-900 border border-slate-700 p-3 text-xs text-slate-400">
                   <i data-lucide="info" class="w-3.5 h-3.5 inline mr-1 text-violet-400"></i>
-                  Uses Ollama (<span id="tl-model-label">qwen3.5:9b</span>) for chunk-based translation. ~26 min per file.
+                  Uses Ollama (<span id="tl-model-label">qwen3.5:9b</span>) for chunk-based translation. Scheduled runs use 23:00-03:00 local; run now with <code>RUN_NOW=1</code> and optional <code>MAX_RUNTIME_MINUTES</code>.
                 </div>
                 <button id="btn-translate" class="w-full mt-2 rounded-xl bg-violet-600 hover:bg-violet-500 py-3 font-medium flex items-center justify-center gap-2 shadow-glow transition">
                   <i data-lucide="languages" class="w-4 h-4"></i> Start Translation
@@ -1002,15 +1002,18 @@ document.addEventListener('DOMContentLoaded', async () => {
     document.getElementById('btn-transcribe'),
     async () => {
       const lines = [
-        'Note: transcription runs as a container script.',
-        'Triggering via API is not yet supported.',
-        'Run: docker exec plexmind-scripts /app/transcribe.sh',
+        'Transcription is a container script, not a backend job yet.',
+        'Scheduled window: 05:00-12:00 local (7h).',
+        'Outside that window the normal command exits cleanly.',
+        'Run now: docker exec -e RUN_NOW=1 -e MAX_RUNTIME_MINUTES=60 plexmind-scripts /app/transcribe.sh',
+        '',
+        'Runtime estimate: pre-scan counts pending videos; lifetime average is ~3 min/video.',
+        'Logs: /app/data/logs/transcription-YYYY-MM-DD.log, retained 7 days.',
         '',
         'Lifetime stats loaded from /app/data/lifetime_stats.env:',
         '  Videos scanned:         1,876',
         '  English processed:        223',
         '  Hallucinations cleaned: 8,565',
-        '  Avg time per video:       ~3 min',
       ];
       simulateLog(txLog, lines);
     }
@@ -1023,17 +1026,18 @@ document.addEventListener('DOMContentLoaded', async () => {
     async () => {
       const langs = document.getElementById('target-langs').value;
       const lines = [
-        'Note: translation runs as a container script.',
-        'Triggering via API is not yet supported.',
-        `Run: docker exec plexmind-scripts /app/translate.sh`,
+        'Translation is a container script, not a backend job yet.',
+        'Scheduled window: 23:00-03:00 local (4h).',
+        'Outside that window the normal command exits cleanly.',
+        'Run now: docker exec -e RUN_NOW=1 -e MAX_RUNTIME_MINUTES=60 plexmind-scripts /app/translate.sh',
         '',
         `Configured target languages: ${langs}`,
-        'Translation engine: Ollama (chunk-based)',
+        'Runtime estimate: pre-scan counts pending translations; lifetime average is ~26 min/file.',
+        'Logs: /app/data/logs/translation-YYYY-MM-DD.log, retained 7 days.',
         '',
         'Lifetime stats loaded from /app/data/translation_stats.env:',
         '  Files translated:  37',
         '  Skipped existing: 151',
-        '  Avg time per file: ~26 min',
       ];
       simulateLog(tlLog, lines);
     }
@@ -1043,17 +1047,25 @@ document.addEventListener('DOMContentLoaded', async () => {
   // Schedule widgets
   // Defaults derived from existing Unraid crontab
   const SCHED_DEFAULTS = {
-    'transcribe':        { freq:'daily', time:'05:00', weekday:'1', monthday:'1', active:true },
-    'translate':         { freq:'daily', time:'23:00', weekday:'1', monthday:'1', active:true },
+    'transcribe':        { freq:'daily', time:'05:00', weekday:'1', monthday:'1', duration:'420', active:true },
+    'translate':         { freq:'daily', time:'23:00', weekday:'1', monthday:'1', duration:'240', active:true },
     'maintenance-audit': { freq:'weekly', time:'04:00', weekday:'1', monthday:'1', active:false },
     'maintenance-dupes': { freq:'weekly', time:'04:00', weekday:'1', monthday:'1', active:false },
     'maintenance-pgs':   { freq:'weekly', time:'04:00', weekday:'1', monthday:'1', active:false },
+  };
+  const SCHED_META = {
+    'transcribe': 'Window 05:00-12:00 local (7h). Estimate: about 3 min per pending video after the script pre-scan. Stop manually: docker exec plexmind-scripts /app/stop-job.sh transcribe.',
+    'translate': 'Window 23:00-03:00 local (4h). Estimate: about 26 min per pending subtitle file after the script pre-scan. Stop manually: docker exec plexmind-scripts /app/stop-job.sh translate.',
+    'maintenance-audit': 'Usually minutes; reads media folders and writes an audit report.',
+    'maintenance-dupes': 'Usually minutes; can delete duplicate SRT files.',
+    'maintenance-pgs': 'Usually minutes; can delete PGS/image subtitles when SRTs exist.',
   };
 
   function initScheduleWidgets() {
     document.querySelectorAll('[data-sched]').forEach(el => {
       const key = `pm_sched_${el.dataset.sched}`;
       const cmd = el.dataset.cmd;
+      const meta = SCHED_META[el.dataset.sched] || '';
       const saved = JSON.parse(localStorage.getItem(key) || 'null') || SCHED_DEFAULTS[el.dataset.sched] || null;
 
       function buildCron(freq, time, weekday, monthday) {
@@ -1062,6 +1074,12 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (freq === 'weekly')  return `${m} ${h} * * ${weekday}`;
         if (freq === 'monthly') return `${m} ${h} ${monthday} * *`;
         return `${m} ${h} * * *`;
+      }
+
+      function commandWithDuration(baseCmd, duration) {
+        if (!duration || duration === '0') return baseCmd;
+        if (baseCmd.startsWith('docker exec ')) return baseCmd.replace('docker exec ', `docker exec -e MAX_RUNTIME_MINUTES=${duration} `);
+        return `MAX_RUNTIME_MINUTES=${duration} ${baseCmd}`;
       }
 
       function nextRun(freq, time, weekday, monthday) {
@@ -1090,9 +1108,12 @@ document.addEventListener('DOMContentLoaded', async () => {
         const weekday = /^[0-6]$/.test(vals?.weekday || '') ? vals.weekday : '1';
         const monthday = /^(?:[1-9]|1\d|2[0-8])$/.test(vals?.monthday || '') ? vals.monthday : '1';
         const active = !!vals?.active;
+        const defaultDuration = SCHED_DEFAULTS[el.dataset.sched]?.duration || '0';
+        const duration = /^(?:0|[1-9]\d{0,3})$/.test(vals?.duration || '') ? vals.duration : defaultDuration;
         const cron = buildCron(freq, time, weekday, monthday);
+        const scheduledCmd = commandWithDuration(cmd, duration);
         const safeCron = escapeHtml(cron);
-        const safeCmd = escapeHtml(cmd);
+        const safeCmd = escapeHtml(scheduledCmd);
         el.innerHTML = `
           <div class="space-y-2 text-xs">
             <div class="flex gap-2">
@@ -1112,10 +1133,16 @@ document.addEventListener('DOMContentLoaded', async () => {
               </select>` : ''}
               ${freq==='monthly' ? `<input data-f="monthday" type="number" min="1" max="28" value="${monthday}" placeholder="Day of month (1–28)" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-2 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-violet-500/50">` : ''}
             </div>
+            <label class="block text-slate-500">Max runtime minutes
+              <input data-f="duration" type="number" min="0" max="9999" value="${duration}" class="mt-1 w-full bg-slate-900 border border-slate-700 rounded-lg px-2 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-violet-500/50">
+            </label>
             <button data-save class="w-full rounded-lg ${active?'bg-violet-600 hover:bg-violet-500':'bg-slate-900 hover:bg-slate-800 border border-slate-700'} py-1.5 font-medium flex items-center justify-center gap-1.5 transition">
               <i data-lucide="${active?'check':'clock'}" class="w-3 h-3"></i>${active?'Scheduled':'Save Schedule'}
             </button>
-            ${active ? `<div class="text-slate-400">Next: <span class="text-slate-200">${escapeHtml(nextRun(freq,time,weekday,monthday))}</span></div>
+            ${active ? `<div class="text-slate-400">Next helper run: <span class="text-slate-200">${escapeHtml(nextRun(freq,time,weekday,monthday))}</span></div>
+            ${meta ? `<div class="text-slate-500 leading-relaxed">${escapeHtml(meta)}</div>` : ''}
+            <div class="text-slate-500 leading-relaxed">Max runtime stops the script between files. Use 0 for no runtime cap.</div>
+            <div class="text-slate-500 leading-relaxed">This saves the cron line in this browser. Add the command to Unraid/cron to execute it.</div>
             <div class="rounded-lg bg-slate-950 border border-slate-800 p-2 font-mono text-[10px] text-slate-400 break-all">${safeCron} ${safeCmd}</div>` : ''}
           </div>`;
         lucide.createIcons({ nodes: [el] });
@@ -1132,11 +1159,12 @@ document.addEventListener('DOMContentLoaded', async () => {
             time: el.querySelector('[data-f="time"]').value,
             weekday: el.querySelector('[data-f="weekday"]')?.value || '1',
             monthday: el.querySelector('[data-f="monthday"]')?.value || '1',
+            duration: el.querySelector('[data-f="duration"]')?.value || '0',
             active: true,
           };
           localStorage.setItem(key, JSON.stringify(v));
           render(v);
-          toast(`Schedule saved — <code>${buildCron(v.freq,v.time,v.weekday,v.monthday)} ${cmd}</code>`, 'success');
+          toast(`Cron helper saved — add <code>${buildCron(v.freq,v.time,v.weekday,v.monthday)} ${commandWithDuration(cmd, v.duration)}</code> to Unraid/cron`, 'success');
         };
       }
       render(saved);

@@ -219,11 +219,23 @@ See [SECURITY.md](SECURITY.md) for the full security model and current audit not
 ## CLI Helpers
 
 ```bash
-# Transcribe missing subtitles
+# Transcribe missing subtitles during the configured window, default 05:00-12:00 local
 docker exec plexmind-scripts /app/transcribe.sh
 
-# Translate SRTs to TARGET_LANGUAGES
+# Run transcription immediately, bypassing the window, with a 60-minute cap
+docker exec -e RUN_NOW=1 -e MAX_RUNTIME_MINUTES=60 plexmind-scripts /app/transcribe.sh
+
+# Stop an active transcription run
+docker exec plexmind-scripts /app/stop-job.sh transcribe
+
+# Translate SRTs to TARGET_LANGUAGES during the configured window, default 23:00-03:00 local
 docker exec plexmind-scripts /app/translate.sh
+
+# Run translation immediately, bypassing the window, with a 60-minute cap
+docker exec -e RUN_NOW=1 -e MAX_RUNTIME_MINUTES=60 plexmind-scripts /app/translate.sh
+
+# Stop an active translation run
+docker exec plexmind-scripts /app/stop-job.sh translate
 
 # Maintenance
 docker exec plexmind-scripts /app/maintenance.sh audit
@@ -231,6 +243,10 @@ docker exec plexmind-scripts /app/maintenance.sh dedup
 docker exec plexmind-scripts /app/maintenance.sh pgs-cleanup
 docker exec plexmind-scripts /app/maintenance.sh all
 ```
+
+Script logs are written as dated files under `/app/data/logs` and retained for `LOG_RETENTION_DAYS`, default `7`. The plain `/app/data/transcription.log`, `/app/data/translation.log`, and maintenance log paths point at the current day for compatibility.
+
+The dashboard schedule cards are cron helpers. They show the suggested cron line, time window, max runtime, and runtime estimate; add the command to Unraid or your host crontab to execute it. `MAX_RUNTIME_MINUTES` stops the script cleanly between files; `RUN_NOW=1` bypasses the start/end window for manual runs.
 
 ## Performance Snapshot
 

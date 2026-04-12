@@ -23,6 +23,10 @@ MAX_FILE_SIZE_MB="${MAX_FILE_SIZE_MB:-54000}"
 INITIAL_PROMPT="${INITIAL_PROMPT:-Hello! Welcome to the show. Dr. Smith, Mr. Jones... fuck, shit, damn, okay, alright.}"
 CONFIDENCE_THRESHOLD="${CONFIDENCE_THRESHOLD:-30}"
 HEALTH_CHECK_INTERVAL="${HEALTH_CHECK_INTERVAL:-10}"
+START_HOUR="${START_HOUR:-${TRANSCRIBE_START_HOUR:-5}}"
+END_HOUR="${END_HOUR:-${TRANSCRIBE_END_HOUR:-12}}"
+LOG_RETENTION_DAYS="${LOG_RETENTION_DAYS:-7}"
+MAX_RUNTIME_MINUTES="${MAX_RUNTIME_MINUTES:-0}"
 
 # Bilingual / reality VIP lists (comma-separated env vars → arrays)
 IFS=',' read -ra KNOWN_BILINGUAL_TITLES <<< "${KNOWN_BILINGUAL_TITLES:-90 Day Fiancé,Shogun,Shōgun,Squid Game}"
@@ -33,6 +37,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/lib.sh" || { echo "FATAL: Cannot load lib.sh"; exit 1; }
 
 mkdir -p "$(dirname "$LOG_FILE")"
+prepare_log_file
 acquire_lock "/tmp/transcription_backfill.lock"
 
 TEMP_AUDIO_FILE="/tmp/transcribe_temp_audio.wav"
@@ -89,7 +94,7 @@ EOF
     cleanup_pgs "${MOVIE_DIR}" "${TV_DIR}" >/dev/null
     generate_report
 
-    rm -f "$TEMP_AUDIO_FILE" 2>/dev/null
+    rm -f "$TEMP_AUDIO_FILE" /tmp/transcription_backfill.pid 2>/dev/null
 }
 trap cleanup EXIT
 
@@ -432,6 +437,7 @@ PYEOF
 # ==============================================================================
 log "========================================================="
 log "Transcription Backfill v2.0 (containerized)"
+log "Window: $(time_window_label) ($(time_window_hours)h); max runtime: ${MAX_RUNTIME_MINUTES:-0}m; retention: ${LOG_RETENTION_DAYS}d; RUN_NOW=${RUN_NOW}"
 log "========================================================="
 check_dependencies curl ffmpeg ffprobe python3
 
@@ -441,7 +447,7 @@ if [ -f "$PLEXMIND_SENTINEL" ]; then
     log "PlexMind is running — waiting before starting Whisper..."
     while [ -f "$PLEXMIND_SENTINEL" ]; do
         sleep 30
-        check_time
+        check_run_limits
     done
     log "PlexMind finished — proceeding."
 fi
@@ -453,11 +459,11 @@ ALL_MEDIA_DIRS=("${MOVIE_DIR}" "${TV_DIR}")
 log "Checking for partial files from interrupted runs..."
 resume_partial "${MOVIE_DIR}" "${TV_DIR}" >/dev/null
 
-check_time
+check_run_limits
 calculate_pending_jobs
 
 while IFS= read -r -d '' VIDEO_FILE; do
-    check_time
+    check_run_limits
     TOTAL_SCANNED=$((TOTAL_SCANNED+1))
     process_video "$VIDEO_FILE"
 done < <(find "${ALL_MEDIA_DIRS[@]}" -type f \( -iname "*.mkv" -o -iname "*.mp4" -o -iname "*.avi" -o -iname "*.mov" -o -iname "*.wmv" -o -iname "*.m4v" \) -print0 2>/dev/null)

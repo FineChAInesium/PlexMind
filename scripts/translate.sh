@@ -28,12 +28,17 @@ WHISPER_API_URL="${WHISPER_API_URL:-http://whisper:9000/asr}"
 IFS=',' read -ra TARGET_LANGUAGES <<< "${TARGET_LANGUAGES:-zh,es-MX}"
 
 HEALTH_CHECK_INTERVAL="${HEALTH_CHECK_INTERVAL:-5}"
+START_HOUR="${START_HOUR:-${TRANSLATE_START_HOUR:-23}}"
+END_HOUR="${END_HOUR:-${TRANSLATE_END_HOUR:-3}}"
+LOG_RETENTION_DAYS="${LOG_RETENTION_DAYS:-7}"
+MAX_RUNTIME_MINUTES="${MAX_RUNTIME_MINUTES:-0}"
 
 # --- LOAD SHARED LIBRARY ---
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/lib.sh" || { echo "FATAL: Cannot load lib.sh"; exit 1; }
 
 mkdir -p "$(dirname "$LOG_FILE")"
+prepare_log_file
 acquire_lock "/tmp/translation_backfill.lock"
 
 TEMP_JSON_PAYLOAD="/tmp/ollama_payload.json"
@@ -100,7 +105,7 @@ EOF
     log "========================================================="
     # Unload model from VRAM
     curl -s "${OLLAMA_API_URL%/chat}/generate" -d "{\"model\": \"${OLLAMA_MODEL}\", \"keep_alive\": 0}" >/dev/null
-    rm -f "$TEMP_JSON_PAYLOAD" "$TEMP_RESPONSE_FILE" 2>/dev/null
+    rm -f "$TEMP_JSON_PAYLOAD" "$TEMP_RESPONSE_FILE" /tmp/translation_backfill.pid 2>/dev/null
 }
 trap cleanup EXIT
 
@@ -289,6 +294,7 @@ PYEOF
 # ==============================================================================
 log "========================================================="
 log "Translation Backfill v2.0 (containerized)"
+log "Window: $(time_window_label) ($(time_window_hours)h); max runtime: ${MAX_RUNTIME_MINUTES:-0}m; retention: ${LOG_RETENTION_DAYS}d; RUN_NOW=${RUN_NOW}"
 log "========================================================="
 check_dependencies curl jq python3
 
@@ -298,7 +304,7 @@ if [ -f "$PLEXMIND_SENTINEL" ]; then
     log "PlexMind is running — waiting before using Ollama..."
     while [ -f "$PLEXMIND_SENTINEL" ]; do
         sleep 30
-        check_time
+        check_run_limits
     done
     log "PlexMind finished — proceeding."
 fi
@@ -311,10 +317,10 @@ ALL_MEDIA_DIRS=("${MOVIE_DIR}" "${TV_DIR}")
 calculate_pending_jobs
 
 while IFS= read -r -d '' SUB_FILE; do
-    check_time
+    check_run_limits
     TOTAL_FILES_SCANNED=$((TOTAL_FILES_SCANNED+1))
     for LANG in "${TARGET_LANGUAGES[@]}"; do
-        check_time
+        check_run_limits
         process_subtitle "$SUB_FILE" "$LANG"
     done
 done < <(find "${ALL_MEDIA_DIRS[@]}" -type f \( -iname "*.${SOURCE_LANG}.srt" -o -iname "*.${SOURCE_LANG}.sdh.srt" -o -iname "*.${SOURCE_LANG}.hi.srt" -o -iname "*.hi.${SOURCE_LANG}.srt" -o -iname "*.sdh.${SOURCE_LANG}.srt" \) -print0 2>/dev/null)

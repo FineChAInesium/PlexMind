@@ -20,6 +20,8 @@ echo "Run scripts manually:"
 echo "  docker exec plexmind-scripts /app/transcribe.sh"
 echo "  docker exec plexmind-scripts /app/translate.sh"
 echo "  docker exec plexmind-scripts /app/maintenance.sh all"
+echo "  docker exec plexmind-scripts /app/stop-job.sh transcribe"
+echo "  docker exec plexmind-scripts /app/stop-job.sh translate"
 echo ""
 
 # Keep container alive

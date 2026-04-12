@@ -20,6 +20,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/lib.sh" || { echo "FATAL: Cannot load lib.sh"; exit 1; }
 
 mkdir -p "$(dirname "$LOG_FILE")"
+prepare_log_file
 
 # --- GLOBAL COUNTERS ---
 export FILES_SCANNED=0
