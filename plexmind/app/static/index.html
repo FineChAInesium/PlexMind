@@ -4,37 +4,11 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>PlexMind Suite — Plex AI Dashboard</title>
-<script src="https://cdn.tailwindcss.com"></script>
-<script>
-  tailwind.config = {
-    darkMode: 'class',
-    theme: {
-      extend: {
-        fontFamily: {
-          sans: ['Inter', 'system-ui', '-apple-system', 'Segoe UI', 'Roboto'],
-          mono: ['JetBrains Mono', 'ui-monospace', 'SFMono-Regular']
-        },
-        colors: {
-          violet: { 500: '#8b5cf6', 600: '#7c3aed' }
-        },
-        boxShadow: {
-          'glow': '0 0 0 1px rgba(139,92,246,.25), 0 8px 30px -8px rgba(139,92,246,.35)'
-        }
-      }
-    }
-  }
-</script>
+<link rel="stylesheet" href="/static/css/styles.css">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.js"></script>
-<style>
-  ::-webkit-scrollbar{width:8px;height:8px}
-  ::-webkit-scrollbar-thumb{background:#334155;border-radius:4px}
-  ::-webkit-scrollbar-thumb:hover{background:#475569}
-  body{background-image: radial-gradient(ellipse at top, rgba(139,92,246,0.08), transparent 55%), radial-gradient(ellipse at bottom right, rgba(14,165,233,0.06), transparent 45%);}
-  @keyframes slideIn{from{opacity:0;transform:translateX(12px)}to{opacity:1;transform:translateX(0)}}
-</style>
 </head>
 <body class="bg-slate-900 text-slate-100 font-sans antialiased selection:bg-violet-500/30">
 <div id="demo-banner" class="hidden fixed top-0 inset-x-0 z-[200] bg-violet-600/95 backdrop-blur-sm text-white text-center text-sm py-2 px-4 flex items-center justify-center gap-3">
@@ -215,6 +189,14 @@
         <!-- Quick Actions -->
         <div class="rounded-2xl bg-slate-800/40 border border-slate-700/60 p-6">
           <h3 class="font-semibold mb-4 flex items-center gap-2"><i data-lucide="play" class="w-4 h-4 text-violet-400"></i>Quick Actions</h3>
+          <div id="job-progress" class="hidden mb-4 rounded-xl border border-violet-500/20 bg-violet-500/5 p-4 space-y-3">
+            <div class="flex items-center justify-between text-sm">
+              <div class="flex items-center gap-2 font-medium"><i data-lucide="loader" class="w-4 h-4 text-violet-400 animate-spin"></i><span id="job-status-label">Starting…</span></div>
+              <span id="job-progress-count" class="text-xs text-slate-400"></span>
+            </div>
+            <div class="h-1.5 bg-slate-800 rounded-full overflow-hidden"><div id="job-progress-bar" class="h-full w-0 bg-gradient-to-r from-violet-600 to-indigo-500 rounded-full transition-all duration-500"></div></div>
+            <div id="job-user-list" class="space-y-1 text-xs max-h-40 overflow-y-auto"></div>
+          </div>
           <div class="grid sm:grid-cols-2 gap-3">
             <button id="btn-generate-all" class="group relative overflow-hidden rounded-xl bg-violet-600 hover:bg-violet-500 transition px-5 py-3.5 font-medium flex items-center justify-center gap-2 shadow-glow">
               <i data-lucide="sparkles" class="w-4 h-4"></i> Generate All Recommendations
@@ -298,7 +280,6 @@
             <div class="rounded-2xl bg-slate-800/40 border border-slate-700/60 p-5">
               <h3 class="font-semibold mb-4 flex items-center gap-2"><i data-lucide="clock" class="w-4 h-4 text-violet-400"></i>Schedule</h3>
               <div data-sched="transcribe" data-cmd="docker exec plexmind-scripts /app/transcribe.sh"></div>
-              </div>
             </div>
             <div class="grid grid-cols-2 gap-3">
               <div class="rounded-2xl bg-slate-800/40 border border-slate-700/60 p-4">
@@ -315,7 +296,11 @@
             <div class="rounded-2xl bg-slate-950 border border-slate-800 h-full flex flex-col overflow-hidden">
               <div class="px-4 py-3 border-b border-slate-800 flex items-center justify-between bg-slate-900/50">
                 <div class="text-sm font-medium flex items-center gap-2"><i data-lucide="terminal" class="w-4 h-4 text-emerald-400"></i>Progress Log</div>
-                <button id="clear-tx-log" class="text-xs text-slate-400 hover:text-white">Clear</button>
+                <div class="flex items-center gap-2">
+                  <button id="dl-tx-log" title="Download log" class="text-xs text-slate-400 hover:text-white flex items-center gap-1"><i data-lucide="download" class="w-3.5 h-3.5"></i></button>
+                  <button id="fs-tx-log" title="Fullscreen" class="text-xs text-slate-400 hover:text-white flex items-center gap-1"><i data-lucide="maximize-2" class="w-3.5 h-3.5"></i></button>
+                  <button id="clear-tx-log" class="text-xs text-slate-400 hover:text-white">Clear</button>
+                </div>
               </div>
               <pre id="transcribe-log" class="flex-1 p-4 text-[12px] leading-5 font-mono text-slate-300 overflow-auto min-h-[380px]">Waiting to start...</pre>
             </div>
@@ -357,6 +342,7 @@
             <div class="rounded-2xl bg-slate-800/40 border border-slate-700/60 p-5">
               <h3 class="font-semibold mb-4 flex items-center gap-2"><i data-lucide="clock" class="w-4 h-4 text-violet-400"></i>Schedule</h3>
               <div data-sched="translate" data-cmd="docker exec plexmind-scripts /app/translate.sh"></div>
+            </div>
             <div class="grid grid-cols-2 gap-3">
               <div class="rounded-2xl bg-slate-800/40 border border-slate-700/60 p-4">
                 <div class="text-xs text-slate-400">Lifetime Translated</div>
@@ -372,7 +358,11 @@
             <div class="rounded-2xl bg-slate-950 border border-slate-800 h-full flex flex-col overflow-hidden">
               <div class="px-4 py-3 border-b border-slate-800 flex items-center justify-between bg-slate-900/50">
                 <div class="text-sm font-medium flex items-center gap-2"><i data-lucide="terminal" class="w-4 h-4 text-violet-400"></i>Translation Log</div>
-                <button id="clear-tl-log" class="text-xs text-slate-400 hover:text-white">Clear</button>
+                <div class="flex items-center gap-2">
+                  <button id="dl-tl-log" title="Download log" class="text-xs text-slate-400 hover:text-white flex items-center gap-1"><i data-lucide="download" class="w-3.5 h-3.5"></i></button>
+                  <button id="fs-tl-log" title="Fullscreen" class="text-xs text-slate-400 hover:text-white flex items-center gap-1"><i data-lucide="maximize-2" class="w-3.5 h-3.5"></i></button>
+                  <button id="clear-tl-log" class="text-xs text-slate-400 hover:text-white">Clear</button>
+                </div>
               </div>
               <pre id="translate-log" class="flex-1 p-4 text-[12px] leading-5 font-mono text-slate-300 overflow-auto min-h-[380px]">Idle...</pre>
             </div>
@@ -417,8 +407,8 @@
       </section>
 
       <!-- SETTINGS -->
-      <section id="page-settings" class="page hidden w-full max-w-3xl">
-        <div class="rounded-2xl bg-slate-800/40 border border-slate-700/60 overflow-hidden">
+      <section id="page-settings" class="page hidden">
+        <div class="rounded-2xl bg-slate-800/40 border border-slate-700/60 overflow-hidden max-w-3xl">
           <div class="px-6 py-4 border-b border-slate-700/60">
             <h3 class="font-semibold">Connection Settings</h3>
             <p class="text-sm text-slate-400 mt-1">Configure your PlexMind API endpoint. Stored in browser localStorage.</p>
@@ -503,7 +493,7 @@ function toast(msg, type='success') {
   };
   const icon = type==='success' ? 'check-circle-2' : type==='error' ? 'alert-triangle' : 'info';
   const el = document.createElement('div');
-  el.className = `flex items-start gap-2.5 p-3.5 rounded-xl border backdrop-blur-xl shadow-2xl ${colors[type]} animate-[slideIn_.25s_ease]`;
+  el.className = `flex items-start gap-2.5 p-3.5 rounded-xl border backdrop-blur-xl shadow-2xl ${colors[type]} animate-slideIn`;
   el.innerHTML = `<i data-lucide="${icon}" class="w-4 h-4 mt-0.5 shrink-0"></i><div class="text-[13px] leading-snug">${msg}</div>`;
   document.getElementById('toast-container').appendChild(el);
   lucide.createIcons();
@@ -616,17 +606,20 @@ async function fetchSchedulerStatus() {
     // GPU from real data
     const util = data.gpu_utilization_pct;
     const busy = data.gpu_busy;
+    const vendor = data.gpu_vendor;
     const hasUtil = util !== null && util !== undefined;
+    const vendorLabels = { nvidia: 'NVIDIA GPU', intel: 'Intel Arc GPU', amd: 'AMD GPU' };
+    const vendorTools = { nvidia: 'Run: nvidia-smi', intel: 'Run: xpu-smi dump -d 0 -m 0 -n 1', amd: 'Run: rocm-smi --showuse' };
     document.getElementById('gpu-dot').className = `w-2.5 h-2.5 rounded-full ${busy ? 'bg-amber-500 animate-pulse' : hasUtil ? 'bg-emerald-500 shadow-[0_0_10px_rgba(16,185,129,.5)]' : 'bg-slate-500'}`;
     document.getElementById('gpu-status').textContent = busy ? 'Busy' : hasUtil ? 'Available' : 'Unknown';
-    document.getElementById('gpu-label').textContent = hasUtil ? `${util}% utilized` : 'NVIDIA GPU';
-    document.getElementById('gpu-sub').textContent = hasUtil ? `Threshold: ${data.gpu_threshold_pct}%` : 'Run nvidia-smi in container';
+    document.getElementById('gpu-label').textContent = hasUtil ? `${util}% utilized` : (vendorLabels[vendor] || 'GPU');
+    document.getElementById('gpu-sub').textContent = hasUtil ? `Threshold: ${data.gpu_threshold_pct}% · ${vendorLabels[vendor] || 'GPU'}` : (vendor ? vendorTools[vendor] : 'No GPU detected');
   } catch {
     document.getElementById('stat-schedule').textContent = '—';
     document.getElementById('gpu-dot').className = 'w-2.5 h-2.5 rounded-full bg-slate-500';
     document.getElementById('gpu-status').textContent = 'Unavailable';
-    document.getElementById('gpu-label').textContent = 'NVIDIA GPU';
-    document.getElementById('gpu-sub').textContent = 'Needs --gpus flag on container';
+    document.getElementById('gpu-label').textContent = 'GPU';
+    document.getElementById('gpu-sub').textContent = 'No utilization tool detected';
   }
 }
 
@@ -833,24 +826,114 @@ document.addEventListener('DOMContentLoaded', async () => {
   renderRecs();
   renderUsers(await fetchUsers());
 
-  // Quick actions
-  document.getElementById('btn-generate-all').addEventListener('click', withLoading(
-    document.getElementById('btn-generate-all'),
-    async () => {
-      if (DEMO) { toast('Demo mode — deploy locally to run batch recommendations', 'info'); return; }
-      try {
-        const res = await apiFetch(`${API_BASE}/api/run-all`, { method: 'POST', signal: AbortSignal.timeout(5000) });
-        if (res.ok) {
-          const data = await res.json();
-          setApiStatus(true);
-          toast(`Batch run started — job <code>${data.job_id}</code>. Check logs for progress.`, 'info');
-        } else throw new Error();
-      } catch {
-        setApiStatus(false);
-        toast('API unreachable — batch run not started', 'error');
-      }
+  // ─── Log helpers ─────────────────────────────────────────────────────────
+  function downloadLog(preEl, filename) {
+    const blob = new Blob([preEl.textContent], { type: 'text/plain' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a'); a.href = url; a.download = filename; a.click();
+    URL.revokeObjectURL(url);
+  }
+  function toggleFullscreen(el) {
+    if (!document.fullscreenElement) el.requestFullscreen?.();
+    else document.exitFullscreen?.();
+  }
+
+  const txLog = document.getElementById('transcribe-log');
+  const tlLog = document.getElementById('translate-log');
+  document.getElementById('dl-tx-log').onclick = () => downloadLog(txLog, `transcribe-${new Date().toISOString().slice(0,10)}.txt`);
+  document.getElementById('fs-tx-log').onclick = () => toggleFullscreen(txLog.closest('.rounded-2xl'));
+  document.getElementById('dl-tl-log').onclick = () => downloadLog(tlLog, `translate-${new Date().toISOString().slice(0,10)}.txt`);
+  document.getElementById('fs-tl-log').onclick = () => toggleFullscreen(tlLog.closest('.rounded-2xl'));
+
+  // ─── Quick actions ────────────────────────────────────────────────────────
+  const jobProgress   = document.getElementById('job-progress');
+  const jobStatusLbl  = document.getElementById('job-status-label');
+  const jobProgressBar= document.getElementById('job-progress-bar');
+  const jobProgressCnt= document.getElementById('job-progress-count');
+  const jobUserList   = document.getElementById('job-user-list');
+  let activeEventSource = null;
+
+  document.getElementById('btn-generate-all').addEventListener('click', async () => {
+    if (DEMO) { toast('Demo mode — deploy locally to run batch recommendations', 'info'); return; }
+    if (activeEventSource) { toast('A batch run is already in progress', 'info'); return; }
+
+    const btn = document.getElementById('btn-generate-all');
+    const orig = btn.innerHTML;
+    btn.disabled = true;
+    btn.innerHTML = `<svg class="w-4 h-4 animate-spin" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" fill="none" opacity=".2"/><path d="M22 12a10 10 0 0 1-10 10" stroke="currentColor" stroke-width="4" fill="none" stroke-linecap="round"/></svg> Starting…`;
+
+    let jobData;
+    try {
+      const res = await apiFetch(`${API_BASE}/api/run-all`, { method: 'POST', signal: AbortSignal.timeout(5000) });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      jobData = await res.json();
+      setApiStatus(true);
+    } catch (e) {
+      setApiStatus(false);
+      toast(`API unreachable — ${e.message}`, 'error');
+      btn.disabled = false; btn.innerHTML = orig; lucide.createIcons();
+      return;
     }
-  ));
+
+    // Show progress panel
+    jobProgress.classList.remove('hidden');
+    jobStatusLbl.textContent = 'Connecting…';
+    jobProgressBar.style.width = '0%';
+    jobProgressCnt.textContent = '';
+    jobUserList.innerHTML = '';
+    let total = 0, done = 0;
+
+    const evUrl = `${API_BASE}${jobData.events_url}${API_KEY ? '?api_key=' + encodeURIComponent(API_KEY) : ''}`;
+    activeEventSource = new EventSource(evUrl);
+
+    activeEventSource.onmessage = (e) => {
+      const ev = JSON.parse(e.data);
+      if (ev.type === 'start') {
+        total = ev.total;
+        jobStatusLbl.textContent = `Running — ${total} user${total !== 1 ? 's' : ''}`;
+      } else if (ev.type === 'user_start') {
+        jobStatusLbl.textContent = `Processing ${ev.user}…`;
+      } else if (ev.type === 'user') {
+        done++;
+        const pct = total > 0 ? Math.round((done / total) * 100) : 0;
+        jobProgressBar.style.width = pct + '%';
+        jobProgressCnt.textContent = `${done} / ${total}`;
+        const icon = ev.status === 'ok' ? '✓' : ev.status === 'skipped' ? '↷' : '✗';
+        const color = ev.status === 'ok' ? 'text-emerald-400' : ev.status === 'skipped' ? 'text-slate-400' : 'text-red-400';
+        const detail = ev.recs !== undefined ? `${ev.recs} recs` : ev.reason || ev.error || '';
+        jobUserList.insertAdjacentHTML('beforeend',
+          `<div class="flex items-center gap-2 ${color}"><span>${icon}</span><span class="text-slate-200">${ev.user}</span><span class="text-slate-500">${detail}</span></div>`);
+        jobUserList.scrollTop = jobUserList.scrollHeight;
+      } else if (ev.type === 'gpu_wait') {
+        jobStatusLbl.textContent = `GPU busy (${ev.pct}%) — waiting…`;
+      } else if (ev.type === 'done') {
+        const s = ev.summary;
+        jobStatusLbl.textContent = `Done — ${s.ok} ok, ${s.skipped} skipped, ${s.errors} errors`;
+        jobProgressBar.style.width = '100%';
+        const icon = document.querySelector('#job-progress .lucide-loader');
+        if (icon) icon.classList.remove('animate-spin');
+        activeEventSource.close(); activeEventSource = null;
+        btn.disabled = false; btn.innerHTML = orig; lucide.createIcons();
+        toast(`Batch complete — ${s.ok} updated, ${s.skipped} skipped`, s.errors > 0 ? 'error' : 'success');
+      } else if (ev.type === 'already_running') {
+        jobProgress.classList.add('hidden');
+        activeEventSource.close(); activeEventSource = null;
+        btn.disabled = false; btn.innerHTML = orig; lucide.createIcons();
+        toast('A batch run is already in progress — check back shortly', 'info');
+      } else if (ev.type === 'error') {
+        jobStatusLbl.textContent = `Error: ${ev.error}`;
+        activeEventSource.close(); activeEventSource = null;
+        btn.disabled = false; btn.innerHTML = orig; lucide.createIcons();
+        toast(`Batch run failed: ${ev.error}`, 'error');
+      }
+    };
+
+    activeEventSource.onerror = () => {
+      activeEventSource.close(); activeEventSource = null;
+      btn.disabled = false; btn.innerHTML = orig; lucide.createIcons();
+      if (done === 0) toast('Lost connection to job stream', 'error');
+    };
+  });
 
   document.getElementById('btn-transcribe-scan').addEventListener('click', withLoading(
     document.getElementById('btn-transcribe-scan'),
@@ -907,7 +990,6 @@ document.addEventListener('DOMContentLoaded', async () => {
   };
 
   // Transcribe page
-  const txLog = document.getElementById('transcribe-log');
   document.getElementById('btn-transcribe').onclick = withLoading(
     document.getElementById('btn-transcribe'),
     async () => {
@@ -928,7 +1010,6 @@ document.addEventListener('DOMContentLoaded', async () => {
   document.getElementById('clear-tx-log').onclick = () => txLog.textContent = '';
 
   // Translate page
-  const tlLog = document.getElementById('translate-log');
   document.getElementById('btn-translate').onclick = withLoading(
     document.getElementById('btn-translate'),
     async () => {

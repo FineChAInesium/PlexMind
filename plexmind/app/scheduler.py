@@ -2,13 +2,15 @@
 APScheduler-based monthly recommendation runner.
 
 Runs on the 1st of each month at 03:00.
-Before each run it checks GPU utilisation via nvidia-smi;
+Before each run it checks GPU utilisation via NVIDIA, Intel, or AMD CLI tools;
 if the GPU is busy (above GPU_THRESHOLD_PCT) it backs off in
 GPU_BACKOFF_MINUTES increments until the GPU is idle, then runs.
 """
 import asyncio
+import json as _json
 import logging
 import os
+import re
 import subprocess
 from datetime import datetime
 
@@ -34,34 +36,87 @@ _run_lock = asyncio.Lock()
 # GPU helpers
 # ---------------------------------------------------------------------------
 
-def gpu_utilization() -> int | None:
-    """Return current GPU utilisation % via nvidia-smi, or None if unavailable."""
+def _parse_pct(value) -> int | None:
+    match = re.search(r"[-+]?\d+(?:\.\d+)?", str(value))
+    return int(float(match.group(0))) if match else None
+
+
+def gpu_info() -> dict:
+    """
+    Probe NVIDIA → Intel Arc → AMD in order.
+    Returns {"vendor": str|None, "pct": int|None}.
+    vendor is one of: "nvidia", "intel", "amd", or None (not detected).
+    """
+    # NVIDIA
     try:
-        result = subprocess.run(
+        r = subprocess.run(
             ["nvidia-smi", "--query-gpu=utilization.gpu", "--format=csv,noheader,nounits"],
             capture_output=True, text=True, timeout=5,
         )
-        lines = [l.strip() for l in result.stdout.strip().split("\n") if l.strip()]
-        if lines:
-            return int(lines[0])
+        if r.returncode == 0:
+            lines = [l.strip() for l in r.stdout.strip().split("\n") if l.strip()]
+            if lines:
+                return {"vendor": "nvidia", "pct": _parse_pct(lines[0])}
     except Exception:
         pass
-    return None
+
+    # Intel Arc (xpu-smi — Level Zero / oneAPI driver)
+    # xpu-smi dump -d 0 -m 0 -n 1  →  CSV: Timestamp, DeviceId, GPU Utilization (%)
+    try:
+        r = subprocess.run(
+            ["xpu-smi", "dump", "-d", "0", "-m", "0", "-n", "1"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if r.returncode == 0:
+            for line in r.stdout.strip().split("\n"):
+                parts = [p.strip() for p in line.split(",")]
+                if len(parts) >= 3:
+                    try:
+                        return {"vendor": "intel", "pct": _parse_pct(parts[2])}
+                    except ValueError:
+                        continue  # header row
+    except Exception:
+        pass
+
+    # AMD (ROCm — rocm-smi)
+    try:
+        r = subprocess.run(
+            ["rocm-smi", "--showuse", "--json"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if r.returncode == 0:
+            data = _json.loads(r.stdout)
+            for card_data in data.values():
+                pct_str = card_data.get("GPU use (%)") or card_data.get("GPU Activity")
+                if pct_str is not None:
+                    return {"vendor": "amd", "pct": _parse_pct(pct_str)}
+    except Exception:
+        pass
+
+    return {"vendor": None, "pct": None}
+
+
+def gpu_utilization() -> int | None:
+    """Backwards-compatible shim — returns utilisation % or None."""
+    return gpu_info()["pct"]
 
 
 async def _wait_for_idle_gpu() -> None:
     """Block until GPU utilisation drops below threshold (or GPU is not present)."""
     while True:
-        util = gpu_utilization()
+        info = gpu_info()
+        util = info["pct"]
+        vendor = info["vendor"]
+        label = vendor.upper() if vendor else "GPU"
         if util is None:
-            log.info("nvidia-smi unavailable — assuming GPU is idle, proceeding.")
+            log.info("GPU utilization tools unavailable — assuming GPU is idle, proceeding.")
             return
         if util < GPU_THRESHOLD_PCT:
-            log.info("GPU at %d%% — below threshold (%d%%), starting run.", util, GPU_THRESHOLD_PCT)
+            log.info("%s at %d%% — below threshold (%d%%), starting run.", label, util, GPU_THRESHOLD_PCT)
             return
         log.info(
-            "GPU busy at %d%% (threshold %d%%) — backing off %d min.",
-            util, GPU_THRESHOLD_PCT, GPU_BACKOFF_MINUTES,
+            "%s busy at %d%% (threshold %d%%) — backing off %d min.",
+            label, util, GPU_THRESHOLD_PCT, GPU_BACKOFF_MINUTES,
         )
         await asyncio.sleep(GPU_BACKOFF_MINUTES * 60)
 
@@ -70,7 +125,7 @@ async def _wait_for_idle_gpu() -> None:
 # Batch runner
 # ---------------------------------------------------------------------------
 
-async def run_all_users(triggered_by: str = "scheduler") -> dict:
+async def run_all_users(triggered_by: str = "scheduler", on_progress=None) -> dict:
     """
     Generate and sync recommendations for every Plex user that has
     at least MIN_HISTORY_ITEMS watched items.  Runs users sequentially
@@ -78,27 +133,40 @@ async def run_all_users(triggered_by: str = "scheduler") -> dict:
 
     If a run is already in progress (e.g. API trigger + cron overlap),
     the second call returns immediately rather than stacking GPU load.
+
+    on_progress: optional async callable(event: dict) — called for each
+    progress event so callers can stream SSE to the browser.
     """
     if _run_lock.locked():
         log.warning("run_all_users called while a run is already in progress — skipping (triggered_by=%s).", triggered_by)
-        return {
+        result = {
             "triggered_by": triggered_by,
             "timestamp": datetime.utcnow().isoformat(),
             "summary": {"ok": 0, "skipped": 0, "errors": 0, "total": 0},
             "details": [],
             "skipped_reason": "already_running",
         }
+        if on_progress:
+            await on_progress({"type": "already_running"})
+        return result
 
     async with _run_lock:
-        return await _do_run_all_users(triggered_by)
+        return await _do_run_all_users(triggered_by, on_progress)
 
 
 SENTINEL_PATH = "/tmp/plexmind.running"
 
 
-async def _do_run_all_users(triggered_by: str) -> dict:
+async def _do_run_all_users(triggered_by: str, on_progress=None) -> dict:
     from app import plex_client, plex_sync
     from app.recommender import get_recommendations
+
+    async def _emit(event: dict):
+        if on_progress:
+            try:
+                await on_progress(event)
+            except Exception:
+                pass  # Never let progress reporting break the run
 
     await _wait_for_idle_gpu()
 
@@ -116,23 +184,30 @@ async def _do_run_all_users(triggered_by: str) -> dict:
         users = plex_client.get_users()
         results: list[dict] = []
 
-        for user in users:
+        await _emit({"type": "start", "total": len(users), "triggered_by": triggered_by})
+
+        for i, user in enumerate(users):
             uid = user["id"]
             username = user["username"]
             try:
                 history = plex_client.get_watch_history(uid)
                 if len(history) < MIN_HISTORY_ITEMS:
                     log.info("  Skipping %s — only %d history items (min=%d).", username, len(history), MIN_HISTORY_ITEMS)
-                    results.append({"user": username, "status": "skipped", "reason": "insufficient_history"})
+                    entry = {"user": username, "status": "skipped", "reason": "insufficient_history"}
+                    results.append(entry)
+                    await _emit({"type": "user", "index": i, **entry})
                     continue
 
                 # Skip users who haven't watched any of their current recs
                 user_token = plex_client.get_user_token(uid)
                 if not plex_sync.user_has_engaged_with_recs(uid, user_token=user_token):
                     log.info("  Skipping %s — hasn't watched any current recs, retaining playlist.", username)
-                    results.append({"user": username, "status": "skipped", "reason": "recs_unwatched"})
+                    entry = {"user": username, "status": "skipped", "reason": "recs_unwatched"}
+                    results.append(entry)
+                    await _emit({"type": "user", "index": i, **entry})
                     continue
 
+                await _emit({"type": "user_start", "index": i, "user": username})
                 log.info("  Generating recs for %s (%d history items)…", username, len(history))
                 recs = await get_recommendations(uid, force=True)
 
@@ -140,6 +215,7 @@ async def _do_run_all_users(triggered_by: str) -> dict:
                 util = gpu_utilization()
                 if util is not None and util >= GPU_THRESHOLD_PCT:
                     log.info("  GPU spiked to %d%% after %s — pausing…", util, username)
+                    await _emit({"type": "gpu_wait", "user": username, "pct": util})
                     await _wait_for_idle_gpu()
 
                 if recs:
@@ -152,27 +228,35 @@ async def _do_run_all_users(triggered_by: str) -> dict:
                     else:
                         detail = sync_result.get("error", sync_result.get("reason", "noop"))
                     log.info("  %s → %d recs [%s] %s", username, len(recs), mode, detail)
-                    results.append({"user": username, "status": "ok", "recs": len(recs), "sync": sync_result})
+                    entry = {"user": username, "status": "ok", "recs": len(recs), "sync": sync_result}
                 else:
-                    results.append({"user": username, "status": "ok", "recs": 0})
+                    entry = {"user": username, "status": "ok", "recs": 0}
+                results.append(entry)
+                await _emit({"type": "user", "index": i, **entry})
 
             except RuntimeError as exc:
                 # Token errors and Plex access errors — expected for shared-friend accounts
                 msg = str(exc)
                 if "Cannot obtain token" in msg or "401" in msg or "Failed to fetch" in msg:
                     log.info("  Skipping %s — no token access: %s", username, msg.split(":")[0])
-                    results.append({"user": username, "status": "skipped", "reason": "no_token"})
+                    entry = {"user": username, "status": "skipped", "reason": "no_token"}
                 else:
                     log.error("  Failed for %s: %s", username, exc)
-                    results.append({"user": username, "status": "error", "error": msg})
+                    entry = {"user": username, "status": "error", "error": msg}
+                results.append(entry)
+                await _emit({"type": "user", "index": i, **entry})
             except Exception as exc:
                 log.error("  Failed for %s: %s", username, exc, exc_info=True)
-                results.append({"user": username, "status": "error", "error": str(exc)})
+                entry = {"user": username, "status": "error", "error": str(exc)}
+                results.append(entry)
+                await _emit({"type": "user", "index": i, **entry})
 
         ok = sum(1 for r in results if r["status"] == "ok")
         skipped = sum(1 for r in results if r["status"] == "skipped")
         errors = sum(1 for r in results if r["status"] == "error")
         log.info("Batch run complete: %d ok / %d skipped / %d errors", ok, skipped, errors)
+        summary = {"ok": ok, "skipped": skipped, "errors": errors, "total": len(users)}
+        await _emit({"type": "done", "summary": summary})
 
     finally:
         # Always remove sentinel — even on crash — so GPU scripts are never permanently blocked

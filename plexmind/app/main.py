@@ -30,13 +30,19 @@ from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Query, Req
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import APIKeyHeader
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 
 from app import cache, llm_client, plex_client, plex_sync, recommender, scheduler, tmdb_client
+
+# ---------------------------------------------------------------------------
+# In-memory job store for /api/run-all SSE progress
+# ---------------------------------------------------------------------------
+_jobs: dict[str, dict] = {}
+_job_conditions: dict[str, asyncio.Condition] = {}
 
 
 # ---------------------------------------------------------------------------
@@ -295,44 +301,127 @@ async def run_all(
     _: None = Depends(_require_key),
 ):
     """
-    Trigger recommendation generation + Plex sync for all users with sufficient
-    watch history.  Runs in the background; returns immediately with a job ID.
-    GPU utilisation is checked between users — if the GPU is busy the job pauses
-    automatically until it's free.
+    Trigger recommendation generation + Plex sync for all users.
+    Returns immediately with a job_id. Poll /api/jobs/{job_id}/status or
+    stream /api/jobs/{job_id}/events (SSE) to track progress.
     """
     import uuid
     job_id = str(uuid.uuid4())[:8]
 
+    _jobs[job_id] = {"status": "pending", "details": [], "summary": None}
+    _job_conditions[job_id] = asyncio.Condition()
+
     async def _run():
-        result = await scheduler.run_all_users(triggered_by=f"api/{job_id}")
-        print(f"[run-all/{job_id}] done: {result['summary']}")
+        _jobs[job_id]["status"] = "running"
+        async def on_progress(event: dict):
+            _jobs[job_id]["details"].append(event)
+            if event.get("type") == "done":
+                _jobs[job_id]["status"] = "completed"
+                _jobs[job_id]["summary"] = event.get("summary")
+            async with _job_conditions[job_id]:
+                _job_conditions[job_id].notify_all()
+
+        try:
+            result = await scheduler.run_all_users(triggered_by=f"api/{job_id}", on_progress=on_progress)
+            if result.get("skipped_reason") == "already_running":
+                _jobs[job_id]["status"] = "skipped"
+            else:
+                _jobs[job_id]["status"] = "completed"
+            _jobs[job_id]["summary"] = result.get("summary")
+            print("[run-all/%s] done: %s" % (job_id, result.get("summary")))
+        except Exception as exc:
+            event = {"type": "error", "error": str(exc)}
+            _jobs[job_id]["status"] = "failed"
+            _jobs[job_id]["error"] = str(exc)
+            _jobs[job_id]["details"].append(event)
+            async with _job_conditions[job_id]:
+                _job_conditions[job_id].notify_all()
 
     background_tasks.add_task(_run)
     return {
         "status": "started",
         "job_id": job_id,
-        "message": "Recommendations are being generated for all users in the background. "
-                   "Check server logs for progress.",
+        "events_url": f"/api/jobs/{job_id}/events",
     }
+
+
+@app.get("/api/jobs/{job_id}/status")
+def job_status(job_id: str, _: None = Depends(_require_key)):
+    """Return the current status of a run-all job."""
+    job = _jobs.get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return {"job_id": job_id, **job}
+
+
+@app.get("/api/jobs/{job_id}/events")
+async def job_events(job_id: str, _: None = Depends(_require_key)):
+    """
+    Server-Sent Events stream for a run-all job.
+    Connect immediately after POST /api/run-all and receive progress events.
+    Stream ends with a 'done' or 'error' event.
+    """
+    if job_id not in _job_conditions:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    async def generate():
+        index = 0
+        while True:
+            job = _jobs.get(job_id)
+            if not job:
+                break
+
+            events = job.get("details", [])
+            while index < len(events):
+                event = events[index]
+                index += 1
+                yield f"data: {json.dumps(event)}\n\n"
+                if event.get("type") in ("done", "error", "already_running"):
+                    return
+
+            if job.get("status") in ("completed", "failed", "skipped"):
+                return
+
+            try:
+                async with _job_conditions[job_id]:
+                    job = _jobs.get(job_id)
+                    if job and (index < len(job.get("details", [])) or job.get("status") in ("completed", "failed", "skipped")):
+                        continue
+                    await asyncio.wait_for(_job_conditions[job_id].wait(), timeout=30)
+            except asyncio.TimeoutError:
+                yield ": keepalive\n\n"  # SSE comment — keeps proxy/browser alive
+
+    return StreamingResponse(generate(), media_type="text/event-stream",
+                              headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
 @app.get("/api/scheduler/status")
 def scheduler_status():
     """Return next scheduled run time and GPU state."""
-    from app.scheduler import gpu_utilization
+    from app.scheduler import gpu_info
     job = scheduler.scheduler.get_job("monthly_recs")
     next_run = job.next_run_time.isoformat() if job and job.next_run_time else None
-    util = gpu_utilization()
-    # Surface current trigger params so the dashboard can show them
+    info = gpu_info()
+    util = info["pct"]
+    vendor = info["vendor"]
     trigger = job.trigger if job else None
-    cron_day = str(getattr(getattr(trigger, 'fields', [None, None, None, None, None, None, None, None])[2], 'expressions', ['1'])[0]) if trigger else "1"
-    cron_hour = str(getattr(getattr(trigger, 'fields', [None, None, None, None, None, None, None, None])[5], 'expressions', ['3'])[0]) if trigger else "3"
-    cron_minute = str(getattr(getattr(trigger, 'fields', [None, None, None, None, None, None, None, None])[4], 'expressions', ['0'])[0]) if trigger else "0"
+
+    def _cron_expr(index: int, default: str) -> str:
+        if not trigger:
+            return default
+        field = trigger.fields[index]
+        return str(field.expressions[0])
+
+    cron_day = _cron_expr(2, "1")
+    cron_hour = _cron_expr(5, "3")
+    cron_minute = _cron_expr(6, "0")
+    threshold = int(os.getenv("GPU_THRESHOLD_PCT", "30"))
     return {
         "next_run_utc": next_run,
         "gpu_utilization_pct": util,
-        "gpu_threshold_pct": int(os.getenv("GPU_THRESHOLD_PCT", "30")),
-        "gpu_busy": (util or 0) >= int(os.getenv("GPU_THRESHOLD_PCT", "30")),
+        "gpu_vendor": vendor,
+        "gpu_threshold_pct": threshold,
+        "gpu_busy": (util or 0) >= threshold,
         "cron_day": cron_day,
         "cron_hour": cron_hour,
         "cron_minute": cron_minute,
