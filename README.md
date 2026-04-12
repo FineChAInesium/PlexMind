@@ -246,7 +246,7 @@ docker exec plexmind-scripts /app/maintenance.sh all
 
 Script logs are written as dated files under `/app/data/logs` and retained for `LOG_RETENTION_DAYS`, default `7`. The plain `/app/data/transcription.log`, `/app/data/translation.log`, and maintenance log paths point at the current day for compatibility.
 
-The dashboard schedule cards are cron helpers. They show the suggested cron line, time window, max runtime, and runtime estimate; add the command to Unraid or your host crontab to execute it. `MAX_RUNTIME_MINUTES` stops the script cleanly between files; `RUN_NOW=1` bypasses the start/end window for manual runs.
+The dashboard Start buttons call the scripts container through the PlexMind API when the Compose scripts service is running. The API proxies to `SCRIPTS_API_URL`, default `http://scripts:9010`, so the API container does not need Docker socket access. `MAX_RUNTIME_MINUTES` stops scripts cleanly between files; `RUN_NOW=1` bypasses the start/end window for manual runs. The schedule cards also show cron helper lines for Unraid or host crontab use.
 
 ## Performance Snapshot
 

@@ -106,6 +106,7 @@ services:
       - WHISPER_API_URL=http://whisper:9000/asr
       - OLLAMA_API_URL=http://ollama:11434/api/chat
       - OLLAMA_MODEL=${OLLAMA_MODEL:-gemma3:12b}
+      - SCRIPTS_API_URL=${SCRIPTS_API_URL:-http://scripts:9010}
       - WHISPER_MODEL=${WHISPER_MODEL:-turbo}
       - MOVIES_DIR=/media/movies
       - TV_DIR=/media/tv
@@ -117,6 +118,7 @@ services:
       - TRANSLATE_END_HOUR=${TRANSLATE_END_HOUR:-3}
       - LOG_RETENTION_DAYS=${LOG_RETENTION_DAYS:-7}
       - MAX_RUNTIME_MINUTES=${MAX_RUNTIME_MINUTES:-0}
+      - SCRIPTS_API_PORT=${SCRIPTS_API_PORT:-9010}
       - GPU_THRESHOLD_PCT=${GPU_THRESHOLD_PCT:-30}
       - TZ=${TZ:-America/New_York}
     depends_on:

@@ -7,7 +7,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /app
 
 COPY lib.sh transcribe.sh translate.sh maintenance.sh watermark.sh stop-job.sh \
-     fix_srt_ordering.py entrypoint.sh ./
+     control_server.py fix_srt_ordering.py entrypoint.sh ./
 
 RUN chmod +x *.sh
 

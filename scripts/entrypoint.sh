@@ -22,7 +22,8 @@ echo "  docker exec plexmind-scripts /app/translate.sh"
 echo "  docker exec plexmind-scripts /app/maintenance.sh all"
 echo "  docker exec plexmind-scripts /app/stop-job.sh transcribe"
 echo "  docker exec plexmind-scripts /app/stop-job.sh translate"
+echo "  API: http://plexmind-scripts:9010/health"
 echo ""
 
-# Keep container alive
-exec tail -f /dev/null
+# Serve script controls and keep the container alive
+exec python3 /app/control_server.py

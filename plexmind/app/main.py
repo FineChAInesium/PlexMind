@@ -17,6 +17,7 @@ import logging
 import os
 import re
 import secrets
+import httpx
 
 logging.basicConfig(
     level=logging.INFO,
@@ -165,6 +166,40 @@ class RecommendationItem(BaseModel):
     type: str            # "movie" | "tv"
     reason: str
     poster_url: str | None = None
+
+
+class ScriptJobRequest(BaseModel):
+    run_now: bool = True
+    max_runtime_minutes: int = 0
+    target_languages: str | None = None
+
+
+_SCRIPT_JOB_NAMES = {"transcribe", "translate"}
+_SCRIPTS_API_URL = os.getenv("SCRIPTS_API_URL", "http://scripts:9010").rstrip("/")
+
+
+def _validate_script_job(job: str) -> str:
+    if job not in _SCRIPT_JOB_NAMES:
+        raise HTTPException(status_code=404, detail="Unknown script job")
+    return job
+
+
+async def _scripts_request(method: str, path: str, **kwargs):
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            res = await client.request(method, f"{_SCRIPTS_API_URL}{path}", **kwargs)
+    except httpx.RequestError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=f"Scripts service unavailable at {_SCRIPTS_API_URL}: {exc}",
+        )
+    try:
+        payload = res.json()
+    except ValueError:
+        payload = {"detail": res.text}
+    if res.status_code >= 400:
+        raise HTTPException(status_code=res.status_code, detail=payload)
+    return payload
 
 
 # ---------------------------------------------------------------------------
@@ -393,6 +428,44 @@ async def job_events(job_id: str, _: None = Depends(_require_key)):
 
     return StreamingResponse(generate(), media_type="text/event-stream",
                               headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
+@app.get("/api/scripts/health", dependencies=[Depends(_require_key)])
+async def scripts_health():
+    """Return scripts control-service health."""
+    return await _scripts_request("GET", "/health")
+
+
+@app.get("/api/scripts/{job}/status", dependencies=[Depends(_require_key)])
+async def script_job_status(job: str):
+    """Return status for a transcription or translation script job."""
+    job = _validate_script_job(job)
+    return await _scripts_request("GET", f"/jobs/{job}")
+
+
+@app.get("/api/scripts/{job}/log", dependencies=[Depends(_require_key)])
+async def script_job_log(job: str, lines: int = Query(200, ge=1, le=1000)):
+    """Return the tail of a transcription or translation log."""
+    job = _validate_script_job(job)
+    return await _scripts_request("GET", f"/jobs/{job}/log", params={"lines": lines})
+
+
+@app.post("/api/scripts/{job}/start", dependencies=[Depends(_require_key)])
+@limiter.limit("5/hour")
+async def script_job_start(request: Request, job: str, body: ScriptJobRequest):
+    """Start a transcription or translation job in the scripts container."""
+    job = _validate_script_job(job)
+    payload = body.model_dump()
+    if payload.get("max_runtime_minutes", 0) < 0 or payload.get("max_runtime_minutes", 0) > 10080:
+        raise HTTPException(status_code=422, detail="max_runtime_minutes must be 0-10080")
+    return await _scripts_request("POST", f"/jobs/{job}/start", json=payload)
+
+
+@app.post("/api/scripts/{job}/stop", dependencies=[Depends(_require_key)])
+async def script_job_stop(job: str):
+    """Stop a transcription or translation job in the scripts container."""
+    job = _validate_script_job(job)
+    return await _scripts_request("POST", f"/jobs/{job}/stop")
 
 
 @app.get("/api/scheduler/status")

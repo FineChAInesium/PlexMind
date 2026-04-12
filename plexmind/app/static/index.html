@@ -272,9 +272,14 @@
                   <i data-lucide="info" class="w-3.5 h-3.5 inline mr-1 text-violet-400"></i>
                   Transcription uses a container script. Scheduled runs use 05:00-12:00 local; run now with <code>docker exec -e RUN_NOW=1 -e MAX_RUNTIME_MINUTES=60 plexmind-scripts /app/transcribe.sh</code>.
                 </div>
-                <button id="btn-transcribe" class="w-full mt-2 rounded-xl bg-violet-600 hover:bg-violet-500 py-3 font-medium flex items-center justify-center gap-2 shadow-glow transition">
-                  <i data-lucide="play" class="w-4 h-4"></i> Start Transcription
-                </button>
+                <div class="grid grid-cols-2 gap-2 mt-2">
+                  <button id="btn-transcribe" class="rounded-xl bg-violet-600 hover:bg-violet-500 py-3 font-medium flex items-center justify-center gap-2 shadow-glow transition">
+                    <i data-lucide="play" class="w-4 h-4"></i> Start
+                  </button>
+                  <button id="btn-transcribe-stop" class="rounded-xl bg-slate-900 hover:bg-slate-800 border border-slate-700 py-3 font-medium flex items-center justify-center gap-2 transition">
+                    <i data-lucide="square" class="w-4 h-4"></i> Stop
+                  </button>
+                </div>
               </div>
             </div>
             <div class="rounded-2xl bg-slate-800/40 border border-slate-700/60 p-5">
@@ -334,9 +339,14 @@
                   <i data-lucide="info" class="w-3.5 h-3.5 inline mr-1 text-violet-400"></i>
                   Uses Ollama (<span id="tl-model-label">qwen3.5:9b</span>) for chunk-based translation. Scheduled runs use 23:00-03:00 local; run now with <code>RUN_NOW=1</code> and optional <code>MAX_RUNTIME_MINUTES</code>.
                 </div>
-                <button id="btn-translate" class="w-full mt-2 rounded-xl bg-violet-600 hover:bg-violet-500 py-3 font-medium flex items-center justify-center gap-2 shadow-glow transition">
-                  <i data-lucide="languages" class="w-4 h-4"></i> Start Translation
-                </button>
+                <div class="grid grid-cols-2 gap-2 mt-2">
+                  <button id="btn-translate" class="rounded-xl bg-violet-600 hover:bg-violet-500 py-3 font-medium flex items-center justify-center gap-2 shadow-glow transition">
+                    <i data-lucide="languages" class="w-4 h-4"></i> Start
+                  </button>
+                  <button id="btn-translate-stop" class="rounded-xl bg-slate-900 hover:bg-slate-800 border border-slate-700 py-3 font-medium flex items-center justify-center gap-2 transition">
+                    <i data-lucide="square" class="w-4 h-4"></i> Stop
+                  </button>
+                </div>
               </div>
             </div>
             <div class="rounded-2xl bg-slate-800/40 border border-slate-700/60 p-5">
@@ -753,10 +763,15 @@ function withLoading(btn, fn) {
     const orig = btn.innerHTML;
     btn.disabled = true;
     btn.innerHTML = `<svg class="w-4 h-4 animate-spin" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" fill="none" opacity=".2"/><path d="M22 12a10 10 0 0 1-10 10" stroke="currentColor" stroke-width="4" fill="none" stroke-linecap="round"/></svg> Working...`;
-    await fn();
-    btn.disabled = false;
-    btn.innerHTML = orig;
-    lucide.createIcons();
+    try {
+      await fn();
+    } catch (e) {
+      toast(escapeHtml(e.message || 'Action failed'), 'error');
+    } finally {
+      btn.disabled = false;
+      btn.innerHTML = orig;
+      lucide.createIcons();
+    }
   };
 }
 
@@ -947,7 +962,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     document.getElementById('btn-transcribe-scan'),
     async () => {
       await new Promise(r => setTimeout(r, 600));
-      toast('Run <code>docker exec plexmind-scripts /app/transcribe.sh</code> to start a scan', 'info');
+      await startScriptJob('transcribe', txLog);
     }
   ));
 
@@ -955,7 +970,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     document.getElementById('btn-translate-quick'),
     async () => {
       await new Promise(r => setTimeout(r, 600));
-      toast('Run <code>docker exec plexmind-scripts /app/translate.sh</code> to start translation', 'info');
+      await startScriptJob('translate', tlLog);
     }
   ));
 
@@ -997,50 +1012,87 @@ document.addEventListener('DOMContentLoaded', async () => {
     toast('Users refreshed', 'info');
   };
 
+  const scriptPollers = {};
+  function getScriptDuration(job, fallback) {
+    const vals = JSON.parse(localStorage.getItem(`pm_sched_${job}`) || 'null') || {};
+    const n = parseInt(vals.duration || fallback, 10);
+    return Number.isFinite(n) && n >= 0 ? n : fallback;
+  }
+  function appendLogLine(el, line) {
+    el.textContent = `${el.textContent || ''}${el.textContent ? '\n' : ''}[${new Date().toLocaleTimeString()}] ${line}`;
+    el.scrollTop = el.scrollHeight;
+  }
+  async function refreshScriptLog(job, logEl) {
+    const logRes = await apiFetch(`${API_BASE}/api/scripts/${job}/log?lines=240`, { signal: AbortSignal.timeout(5000) });
+    if (logRes.ok) {
+      const data = await logRes.json();
+      logEl.textContent = data.log || 'No log output yet.';
+      logEl.scrollTop = logEl.scrollHeight;
+    }
+    const statusRes = await apiFetch(`${API_BASE}/api/scripts/${job}/status`, { signal: AbortSignal.timeout(5000) });
+    if (!statusRes.ok) throw new Error(`status HTTP ${statusRes.status}`);
+    const status = await statusRes.json();
+    if (!status.running && scriptPollers[job]) {
+      clearInterval(scriptPollers[job]);
+      scriptPollers[job] = null;
+      appendLogLine(logEl, `${job} job is not running.`);
+    }
+    return status;
+  }
+  async function startScriptJob(job, logEl) {
+    if (DEMO) { toast('Demo mode — deploy locally to start script jobs', 'info'); return; }
+    const payload = { run_now: true, max_runtime_minutes: getScriptDuration(job, job === 'translate' ? 60 : 60) };
+    if (job === 'translate') payload.target_languages = document.getElementById('target-langs').value.trim();
+    logEl.textContent = '';
+    appendLogLine(logEl, `Starting ${job} job via scripts service...`);
+    const res = await apiFetch(`${API_BASE}/api/scripts/${job}/start`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(10000),
+    });
+    if (!res.ok) {
+      let detail = `HTTP ${res.status}`;
+      try { detail = JSON.stringify(await res.json()); } catch {}
+      throw new Error(detail);
+    }
+    const data = await res.json();
+    appendLogLine(logEl, `Started ${job} pid ${data.pid || 'pending'}; max runtime ${payload.max_runtime_minutes || 'none'} minutes.`);
+    toast(`${job} job started`, 'success');
+    await refreshScriptLog(job, logEl);
+    if (scriptPollers[job]) clearInterval(scriptPollers[job]);
+    scriptPollers[job] = setInterval(() => refreshScriptLog(job, logEl).catch(e => appendLogLine(logEl, `Log refresh failed: ${e.message}`)), 3000);
+  }
+  async function stopScriptJob(job, logEl) {
+    if (DEMO) { toast('Demo mode — deploy locally to stop script jobs', 'info'); return; }
+    appendLogLine(logEl, `Requesting ${job} stop...`);
+    const res = await apiFetch(`${API_BASE}/api/scripts/${job}/stop`, { method: 'POST', signal: AbortSignal.timeout(10000) });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    appendLogLine(logEl, data.status || 'stop requested');
+    toast(`${job} stop requested`, 'info');
+    await refreshScriptLog(job, logEl).catch(() => {});
+  }
+
   // Transcribe page
   document.getElementById('btn-transcribe').onclick = withLoading(
     document.getElementById('btn-transcribe'),
-    async () => {
-      const lines = [
-        'Transcription is a container script, not a backend job yet.',
-        'Scheduled window: 05:00-12:00 local (7h).',
-        'Outside that window the normal command exits cleanly.',
-        'Run now: docker exec -e RUN_NOW=1 -e MAX_RUNTIME_MINUTES=60 plexmind-scripts /app/transcribe.sh',
-        '',
-        'Runtime estimate: pre-scan counts pending videos; lifetime average is ~3 min/video.',
-        'Logs: /app/data/logs/transcription-YYYY-MM-DD.log, retained 7 days.',
-        '',
-        'Lifetime stats loaded from /app/data/lifetime_stats.env:',
-        '  Videos scanned:         1,876',
-        '  English processed:        223',
-        '  Hallucinations cleaned: 8,565',
-      ];
-      simulateLog(txLog, lines);
-    }
+    async () => startScriptJob('transcribe', txLog)
+  );
+  document.getElementById('btn-transcribe-stop').onclick = withLoading(
+    document.getElementById('btn-transcribe-stop'),
+    async () => stopScriptJob('transcribe', txLog)
   );
   document.getElementById('clear-tx-log').onclick = () => txLog.textContent = '';
 
   // Translate page
   document.getElementById('btn-translate').onclick = withLoading(
     document.getElementById('btn-translate'),
-    async () => {
-      const langs = document.getElementById('target-langs').value;
-      const lines = [
-        'Translation is a container script, not a backend job yet.',
-        'Scheduled window: 23:00-03:00 local (4h).',
-        'Outside that window the normal command exits cleanly.',
-        'Run now: docker exec -e RUN_NOW=1 -e MAX_RUNTIME_MINUTES=60 plexmind-scripts /app/translate.sh',
-        '',
-        `Configured target languages: ${langs}`,
-        'Runtime estimate: pre-scan counts pending translations; lifetime average is ~26 min/file.',
-        'Logs: /app/data/logs/translation-YYYY-MM-DD.log, retained 7 days.',
-        '',
-        'Lifetime stats loaded from /app/data/translation_stats.env:',
-        '  Files translated:  37',
-        '  Skipped existing: 151',
-      ];
-      simulateLog(tlLog, lines);
-    }
+    async () => startScriptJob('translate', tlLog)
+  );
+  document.getElementById('btn-translate-stop').onclick = withLoading(
+    document.getElementById('btn-translate-stop'),
+    async () => stopScriptJob('translate', tlLog)
   );
   document.getElementById('clear-tl-log').onclick = () => tlLog.textContent = 'Idle...';
 
