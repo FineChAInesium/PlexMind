@@ -14,6 +14,7 @@ load_dotenv()
 CACHE_TTL = int(os.getenv("CACHE_TTL_SECONDS", "3600"))
 FEEDBACK_FILE = os.getenv("FEEDBACK_FILE", "data/feedback.json")
 SHOWN_RECS_FILE = os.getenv("SHOWN_RECS_FILE", "data/shown_recs.json")
+REC_HISTORY_FILE = os.getenv("REC_HISTORY_FILE", "data/recommendation_history.json")
 SUPPRESSION_DAYS = int(os.getenv("SUPPRESSION_DAYS", "60"))
 
 _cache: dict[str, dict[str, Any]] = {}
@@ -38,6 +39,7 @@ def cache_get(user_id: str) -> list | None:
 def cache_set(user_id: str, data: list) -> None:
     with _lock:
         _cache[str(user_id)] = {"ts": time.time(), "data": data}
+    record_recommendations(user_id, data)
 
 
 def cache_invalidate(user_id: str) -> None:
@@ -130,3 +132,49 @@ def mark_shown_recs(user_id: str, titles: list[str]) -> None:
 
     data[uid] = existing
     _save_shown(data)
+
+
+# ---------------------------------------------------------------------------
+# Persistent recommendation history
+# ---------------------------------------------------------------------------
+
+def _load_rec_history() -> list[dict]:
+    if not os.path.exists(REC_HISTORY_FILE):
+        return []
+    try:
+        with open(REC_HISTORY_FILE) as f:
+            data = json.load(f)
+        return data if isinstance(data, list) else []
+    except (json.JSONDecodeError, OSError):
+        return []
+
+
+def _save_rec_history(data: list[dict]) -> None:
+    os.makedirs(os.path.dirname(REC_HISTORY_FILE) or ".", exist_ok=True)
+    with open(REC_HISTORY_FILE, "w") as f:
+        json.dump(data[-200:], f, indent=2)
+
+
+def record_recommendations(user_id: str, recs: list[dict]) -> None:
+    if not recs:
+        return
+    history = _load_rec_history()
+    history.append({"user_id": str(user_id), "ts": time.time(), "recommendations": recs})
+    _save_rec_history(history)
+
+
+def get_recent_recommendations(limit: int = 24) -> list[dict]:
+    items: list[dict] = []
+    for entry in reversed(_load_rec_history()):
+        user_id = entry.get("user_id")
+        ts = entry.get("ts")
+        for rec in entry.get("recommendations", []):
+            if not isinstance(rec, dict):
+                continue
+            item = {k: v for k, v in rec.items() if not str(k).startswith("_")}
+            item["user_id"] = user_id
+            item["generated_at"] = ts
+            items.append(item)
+            if len(items) >= limit:
+                return items
+    return items

@@ -125,18 +125,21 @@ docker compose build plexmind
 docker compose up -d plexmind
 ```
 
-For local iteration, bind-mount the source and run uvicorn with reload:
+For local iteration, bind-mount the source and scripts, then run uvicorn with reload:
 
 ```yaml
 services:
   plexmind:
     volumes:
       - ./plexmind/app:/app/app
+      - ./scripts:/app/scripts
       - ./data:/app/data
+      - "${MOVIES_DIR}:/media/movies"
+      - "${TV_DIR}:/media/tv"
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 ```
 
-That makes Python, HTML, and compiled CSS changes visible without rebuilding. You still need `npm run build:css` after Tailwind class changes unless you run `npm run watch:css`.
+That makes Python, HTML, script, and compiled CSS changes visible without rebuilding. You still need `npm run build:css` after Tailwind class changes unless you run `npm run watch:css`.
 
 ## API Reference
 
@@ -246,7 +249,7 @@ docker exec plexmind-scripts /app/maintenance.sh all
 
 Script logs are written as dated files under `/app/data/logs` and retained for `LOG_RETENTION_DAYS`, default `7`. The plain `/app/data/transcription.log`, `/app/data/translation.log`, and maintenance log paths point at the current day for compatibility.
 
-The dashboard Start buttons call the scripts container through the PlexMind API when the Compose scripts service is running. The API proxies to `SCRIPTS_API_URL`, default `http://scripts:9010`, so the API container does not need Docker socket access. `MAX_RUNTIME_MINUTES` stops scripts cleanly between files; `RUN_NOW=1` bypasses the start/end window for manual runs. The schedule cards also show cron helper lines for Unraid or host crontab use.
+The dashboard Start and Stop buttons execute scripts through the PlexMind API. By default, the API container runs `/app/scripts` directly, so the GUI owns transcription, translation, and maintenance without needing a separate manual `docker exec` step. Set `PLEXMIND_SCRIPT_MODE=sidecar` to proxy to the optional `scripts` service through `SCRIPTS_API_URL`, default `http://scripts:9010`. `MAX_RUNTIME_MINUTES` stops scripts cleanly between files; `RUN_NOW=1` bypasses the start/end window for manual runs. The schedule cards still show cron helper lines for Unraid or host crontab use.
 
 ## Performance Snapshot
 

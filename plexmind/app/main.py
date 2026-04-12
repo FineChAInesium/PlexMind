@@ -37,7 +37,7 @@ from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 
-from app import cache, llm_client, plex_client, plex_sync, recommender, scheduler, tmdb_client
+from app import cache, llm_client, plex_client, plex_sync, recommender, scheduler, tmdb_client, script_runner
 
 # ---------------------------------------------------------------------------
 # In-memory job store for /api/run-all SSE progress
@@ -80,7 +80,7 @@ limiter = Limiter(key_func=get_remote_address)
 app = FastAPI(
     title="PlexMind",
     description="Gemma 3 powered movie/TV recommendation engine for Plex",
-    version="1.0.0",
+    version="2.1.0",
     lifespan=lifespan,
 )
 app.state.limiter = limiter
@@ -89,7 +89,7 @@ app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 # ---------------------------------------------------------------------------
 # CORS
 # ---------------------------------------------------------------------------
-_cors_origins = [o.strip() for o in os.getenv("CORS_ORIGINS", "").split(",") if o.strip()] or ["*"]
+_cors_origins = [o.strip() for o in os.getenv("CORS_ORIGINS", "").split(",") if o.strip()]
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_cors_origins,
@@ -174,8 +174,9 @@ class ScriptJobRequest(BaseModel):
     target_languages: str | None = None
 
 
-_SCRIPT_JOB_NAMES = {"transcribe", "translate"}
+_SCRIPT_JOB_NAMES = {"transcribe", "translate", "maintenance-audit", "maintenance-dupes", "maintenance-pgs", "maintenance-all"}
 _SCRIPTS_API_URL = os.getenv("SCRIPTS_API_URL", "http://scripts:9010").rstrip("/")
+_SCRIPT_MODE = os.getenv("PLEXMIND_SCRIPT_MODE", "local").lower()
 
 
 def _validate_script_job(job: str) -> str:
@@ -184,15 +185,38 @@ def _validate_script_job(job: str) -> str:
     return job
 
 
+async def _local_scripts_request(method: str, path: str, **kwargs):
+    parts = [p for p in path.strip("/").split("/") if p]
+    if method == "GET" and parts == ["health"]:
+        return script_runner.health()
+    if len(parts) >= 2 and parts[0] == "jobs":
+        job = _validate_script_job(parts[1])
+        if method == "GET" and len(parts) == 2:
+            return script_runner.status(job)
+        if method == "GET" and len(parts) == 3 and parts[2] == "log":
+            params = kwargs.get("params") or {}
+            return script_runner.log(job, int(params.get("lines", 200)))
+        if method == "POST" and len(parts) == 3 and parts[2] == "start":
+            result = script_runner.start(job, kwargs.get("json") or {})
+            if result.get("status") == "unavailable":
+                raise HTTPException(status_code=503, detail=result)
+            if result.get("status") == "already_running":
+                raise HTTPException(status_code=409, detail=result)
+            return result
+        if method == "POST" and len(parts) == 3 and parts[2] == "stop":
+            return script_runner.stop(job)
+    raise HTTPException(status_code=404, detail="Scripts endpoint not found")
+
+
 async def _scripts_request(method: str, path: str, **kwargs):
+    if _SCRIPT_MODE == "local":
+        return await _local_scripts_request(method, path, **kwargs)
+
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
             res = await client.request(method, f"{_SCRIPTS_API_URL}{path}", **kwargs)
-    except httpx.RequestError as exc:
-        raise HTTPException(
-            status_code=503,
-            detail=f"Scripts service unavailable at {_SCRIPTS_API_URL}: {exc}",
-        )
+    except httpx.RequestError:
+        return await _local_scripts_request(method, path, **kwargs)
     try:
         payload = res.json()
     except ValueError:
@@ -247,6 +271,12 @@ def user_history(user_id: str, _: None = Depends(_require_key)):
             for item in history
         ],
     }
+
+
+@app.get("/api/recommendations/recent", response_model=list[RecommendationItem])
+def recent_recommendations(limit: int = Query(24, ge=1, le=60), _: None = Depends(_require_key)):
+    """Return recently generated recommendations from persistent history."""
+    return cache.get_recent_recommendations(limit)
 
 
 @app.get("/api/users/{user_id}/recommendations", response_model=list[RecommendationItem])

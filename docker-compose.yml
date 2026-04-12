@@ -57,6 +57,8 @@ services:
       - "8000:8000"
     volumes:
       - ./data:/app/data
+      - "${MOVIES_DIR:-/mnt/data/media/Movies}:/media/movies"
+      - "${TV_DIR:-/mnt/data/media/TV Shows}:/media/tv"
     deploy:
       resources:
         reservations:
@@ -84,6 +86,16 @@ services:
       - FEEDBACK_FILE=${FEEDBACK_FILE:-data/feedback.json}
       - SHOWN_RECS_FILE=${SHOWN_RECS_FILE:-data/shown_recs.json}
       - WATCHLIST_TRACK_FILE=${WATCHLIST_TRACK_FILE:-data/watchlist_track.json}
+      - REC_HISTORY_FILE=${REC_HISTORY_FILE:-data/recommendation_history.json}
+      - PLEXMIND_SCRIPT_MODE=${PLEXMIND_SCRIPT_MODE:-local}
+      - PLEXMIND_SCRIPTS_DIR=/app/scripts
+      - WHISPER_API_URL=http://whisper:9000/asr
+      - OLLAMA_API_URL=http://ollama:11434/api/chat
+      - MOVIE_DIR=/media/movies
+      - MOVIES_DIR=/media/movies
+      - TV_DIR=/media/tv
+      - TARGET_LANGUAGES=${TARGET_LANGUAGES:-zh,es-MX}
+      - LOG_RETENTION_DAYS=${LOG_RETENTION_DAYS:-7}
       - TZ=${TZ:-America/New_York}
     depends_on:
       - ollama

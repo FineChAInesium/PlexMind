@@ -1,0 +1,14 @@
+# Changelog
+
+## v2.1.0 - 2026-04-12
+
+- Run transcription, translation, and maintenance jobs directly from the PlexMind API container by default, with the optional scripts sidecar still supported via `PLEXMIND_SCRIPT_MODE=sidecar`.
+- Package `/app/scripts` plus `curl`, `jq`, and `ffmpeg` into the API image, and mount Movies/TV paths into the API service for GUI-launched script jobs.
+- Fix recommendation generation in the dashboard so long runs do not trip a 60-second timeout and incorrectly flip the UI into demo mode.
+- Persist generated recommendation history and load the Recent Recommendations section from real generated results instead of mock/demo data.
+- Add maintenance job execution through the GUI with confirmation prompts for destructive dedupe, PGS cleanup, and all-maintenance runs.
+- Update the live container to `mode=local` script execution with `/app/scripts`, `/media/movies`, `/media/tv`, `curl`, `jq`, and `ffmpeg` available.
+- Harden the default browser surface by disabling wildcard CORS unless `CORS_ORIGINS` is explicitly configured.
+- Fall back from run-all SSE to job-status polling when the browser/proxy drops the job stream.
+- Treat already-running transcribe/translate jobs as attach-to-log states in the dashboard instead of showing raw 409 JSON.
+- Stop duplicating script log lines on future local/sidecar script starts by letting scripts write `LOG_FILE` once and sending stderr to the log.

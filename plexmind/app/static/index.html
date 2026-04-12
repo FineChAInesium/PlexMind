@@ -27,7 +27,7 @@
       </div>
       <div>
         <div class="font-semibold leading-none tracking-tight">PlexMind Suite</div>
-        <div class="text-[11px] text-slate-400 mt-1">v2.0 • Self-hosted</div>
+        <div class="text-[11px] text-slate-400 mt-1">v2.1.0 • Self-hosted</div>
       </div>
     </div>
 
@@ -239,7 +239,7 @@
         <div>
           <div class="flex items-center justify-between mb-3">
             <h3 class="font-semibold flex items-center gap-2"><i data-lucide="film" class="w-4 h-4 text-violet-400"></i>Recent Recommendations</h3>
-            <span class="text-xs text-slate-500">Demo data — generate to populate</span>
+            <span id="recs-subtitle" class="text-xs text-slate-500">Generated recommendations</span>
           </div>
           <div id="recs-grid" class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-4"></div>
         </div>
@@ -716,18 +716,37 @@ function renderUsers(users) {
 }
 
 // ─── Recommendations ────────────────────────────────────────────────────────
-function renderRecs() {
+async function fetchRecentRecs() {
+  if (DEMO) return MOCK.recs;
+  try {
+    const res = await apiFetch(`${API_BASE}/api/recommendations/recent?limit=24`, { signal: AbortSignal.timeout(5000) });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    setApiStatus(true);
+    return await res.json();
+  } catch (e) {
+    return [];
+  }
+}
+
+function renderRecs(recs = []) {
   const grid = document.getElementById('recs-grid');
-  grid.innerHTML = MOCK.recs.map(r => `
+  const subtitle = document.getElementById('recs-subtitle');
+  if (!recs || recs.length === 0) {
+    subtitle.textContent = 'Generate recommendations to populate this section';
+    grid.innerHTML = `<div class="col-span-full rounded-2xl bg-slate-800/40 border border-slate-700/60 p-6 text-sm text-slate-400">No generated recommendations yet.</div>`;
+    lucide.createIcons();
+    return;
+  }
+  subtitle.textContent = DEMO ? 'Demo data' : `${recs.length} generated recommendation${recs.length === 1 ? '' : 's'}`;
+  grid.innerHTML = recs.map(r => `
     <div class="group relative overflow-hidden rounded-2xl bg-slate-800/40 border border-slate-700/60 hover:border-violet-500/30 transition">
       <div class="aspect-[2/3] bg-gradient-to-br from-slate-900 to-slate-800 flex items-center justify-center relative">
-        <div class="absolute inset-0 opacity-[0.15] bg-[radial-gradient(circle_at_30%_20%,rgba(139,92,246,.8),transparent_50%)]"></div>
-        <i data-lucide="${r.type === 'movie' ? 'film' : 'tv'}" class="w-10 h-10 text-slate-600 group-hover:text-violet-400 transition"></i>
-        <div class="absolute bottom-2 right-2 text-[10px] px-1.5 py-0.5 rounded bg-black/60 border border-white/10">${r.year}</div>
+        ${r.poster_url ? `<img src="${escapeHtml(r.poster_url)}" alt="" class="absolute inset-0 w-full h-full object-cover">` : `<div class="absolute inset-0 opacity-[0.15] bg-[radial-gradient(circle_at_30%_20%,rgba(139,92,246,.8),transparent_50%)]"></div><i data-lucide="${r.type === 'movie' ? 'film' : 'tv'}" class="w-10 h-10 text-slate-600 group-hover:text-violet-400 transition"></i>`}
+        <div class="absolute bottom-2 right-2 text-[10px] px-1.5 py-0.5 rounded bg-black/60 border border-white/10">${escapeHtml(r.year || '')}</div>
       </div>
       <div class="p-3">
-        <div class="font-medium text-[13px] leading-snug line-clamp-1">${r.title}</div>
-        <div class="text-[11px] text-slate-400 mt-1 line-clamp-2">${r.reason}</div>
+        <div class="font-medium text-[13px] leading-snug line-clamp-1">${escapeHtml(r.title)}</div>
+        <div class="text-[11px] text-slate-400 mt-1 line-clamp-2">${escapeHtml(r.reason || '')}</div>
       </div>
     </div>`).join('');
   lucide.createIcons();
@@ -740,17 +759,19 @@ async function generateFor(userId, btn) {
   btn.innerHTML = `<svg class="w-3.5 h-3.5 animate-spin" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" fill="none" opacity=".2"/><path d="M22 12a10 10 0 0 1-10 10" stroke="currentColor" stroke-width="4" fill="none" stroke-linecap="round"/></svg> Generating`;
   try {
     const res = await apiFetch(`${API_BASE}/api/users/${encodeURIComponent(userId)}/recommendations?force=true`, {
-      signal: AbortSignal.timeout(60000)
+      signal: AbortSignal.timeout(900000)
     });
-    if (res.ok) {
-      setApiStatus(true);
-      toast(`Recommendations generated for <b>${escapeHtml(userId)}</b>`, 'success');
-    } else {
-      throw new Error(`HTTP ${res.status}`);
+    if (!res.ok) {
+      let detail = `HTTP ${res.status}`;
+      try { detail = (await res.json()).detail || detail; } catch {}
+      throw new Error(detail);
     }
+    const recs = await res.json();
+    setApiStatus(true);
+    renderRecs(recs);
+    toast(`Recommendations generated for <b>${escapeHtml(userId)}</b>`, 'success');
   } catch (e) {
-    setApiStatus(false);
-    toast(`Could not reach API — ${e.message}`, 'error');
+    toast(`Recommendation generation failed — ${escapeHtml(e.message || 'unknown error')}`, 'error');
   }
   btn.disabled = false;
   btn.innerHTML = original;
@@ -846,7 +867,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   setInterval(async () => updateHealthUI(await fetchHealth()), 30000);
   setInterval(fetchSchedulerStatus, 30000);
   setInterval(fetchStorage, 60000);
-  renderRecs();
+  renderRecs(await fetchRecentRecs());
   renderUsers(await fetchUsers());
 
   // ─── Log helpers ─────────────────────────────────────────────────────────
@@ -892,8 +913,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       jobData = await res.json();
       setApiStatus(true);
     } catch (e) {
-      setApiStatus(false);
-      toast(`API unreachable — ${e.message}`, 'error');
+      toast(`Could not start batch run — ${e.message}`, 'error');
       btn.disabled = false; btn.innerHTML = orig; lucide.createIcons();
       return;
     }
@@ -907,10 +927,17 @@ document.addEventListener('DOMContentLoaded', async () => {
     let total = 0, done = 0;
 
     const evUrl = `${API_BASE}${jobData.events_url}${API_KEY ? '?api_key=' + encodeURIComponent(API_KEY) : ''}`;
-    activeEventSource = new EventSource(evUrl);
+    let eventIndex = 0;
+    let pollingJob = false;
 
-    activeEventSource.onmessage = (e) => {
-      const ev = JSON.parse(e.data);
+    function finishRun() {
+      activeEventSource?.close();
+      activeEventSource = null;
+      pollingJob = false;
+      btn.disabled = false; btn.innerHTML = orig; lucide.createIcons();
+    }
+
+    function handleJobEvent(ev) {
       if (ev.type === 'start') {
         total = ev.total;
         jobStatusLbl.textContent = `Running — ${total} user${total !== 1 ? 's' : ''}`;
@@ -920,7 +947,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         done++;
         const pct = total > 0 ? Math.round((done / total) * 100) : 0;
         jobProgressBar.style.width = pct + '%';
-        jobProgressCnt.textContent = `${done} / ${total}`;
+        jobProgressCnt.textContent = `${done} / ${total || '?'}`;
         const icon = ev.status === 'ok' ? '✓' : ev.status === 'skipped' ? '↷' : '✗';
         const color = ev.status === 'ok' ? 'text-emerald-400' : ev.status === 'skipped' ? 'text-slate-400' : 'text-red-400';
         const detail = ev.recs !== undefined ? `${ev.recs} recs` : ev.reason || ev.error || '';
@@ -935,26 +962,53 @@ document.addEventListener('DOMContentLoaded', async () => {
         jobProgressBar.style.width = '100%';
         const icon = document.querySelector('#job-progress .lucide-loader');
         if (icon) icon.classList.remove('animate-spin');
-        activeEventSource.close(); activeEventSource = null;
-        btn.disabled = false; btn.innerHTML = orig; lucide.createIcons();
+        finishRun();
         toast(`Batch complete — ${s.ok} updated, ${s.skipped} skipped`, s.errors > 0 ? 'error' : 'success');
       } else if (ev.type === 'already_running') {
         jobProgress.classList.add('hidden');
-        activeEventSource.close(); activeEventSource = null;
-        btn.disabled = false; btn.innerHTML = orig; lucide.createIcons();
+        finishRun();
         toast('A batch run is already in progress — check back shortly', 'info');
       } else if (ev.type === 'error') {
         jobStatusLbl.textContent = `Error: ${ev.error}`;
-        activeEventSource.close(); activeEventSource = null;
-        btn.disabled = false; btn.innerHTML = orig; lucide.createIcons();
+        finishRun();
         toast(`Batch run failed: ${ev.error}`, 'error');
       }
+    }
+
+    async function pollJobStatus() {
+      if (pollingJob) return;
+      pollingJob = true;
+      jobStatusLbl.textContent = done > 0 ? 'Stream paused — polling job status…' : 'Waiting for job status…';
+      while (pollingJob) {
+        try {
+          const res = await apiFetch(`${API_BASE}/api/jobs/${encodeURIComponent(jobData.job_id)}/status`, { signal: AbortSignal.timeout(10000) });
+          if (!res.ok) throw new Error(`HTTP ${res.status}`);
+          const job = await res.json();
+          const events = job.details || [];
+          while (eventIndex < events.length) handleJobEvent(events[eventIndex++]);
+          if (['completed', 'failed', 'skipped'].includes(job.status)) {
+            if (job.status === 'completed' && job.summary) handleJobEvent({ type: 'done', summary: job.summary });
+            else if (job.status === 'failed') handleJobEvent({ type: 'error', error: job.error || 'Batch run failed' });
+            else if (job.status === 'skipped') handleJobEvent({ type: 'already_running' });
+            return;
+          }
+        } catch (e) {
+          jobStatusLbl.textContent = `Polling job status failed: ${e.message}`;
+        }
+        await new Promise(r => setTimeout(r, 3000));
+      }
+    }
+
+    activeEventSource = new EventSource(evUrl);
+    activeEventSource.onmessage = (e) => {
+      handleJobEvent(JSON.parse(e.data));
+      eventIndex++;
     };
 
     activeEventSource.onerror = () => {
-      activeEventSource.close(); activeEventSource = null;
-      btn.disabled = false; btn.innerHTML = orig; lucide.createIcons();
-      if (done === 0) toast('Lost connection to job stream', 'error');
+      activeEventSource?.close();
+      activeEventSource = null;
+      pollJobStatus();
     };
   });
 
@@ -976,10 +1030,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   document.getElementById('btn-maintenance-quick').addEventListener('click', withLoading(
     document.getElementById('btn-maintenance-quick'),
-    async () => {
-      await new Promise(r => setTimeout(r, 600));
-      toast('Run <code>docker exec plexmind-scripts /app/maintenance.sh all</code> to start maintenance', 'info');
-    }
+    async () => startMaintenanceJob('maintenance-all')
   ));
 
   // Recommendations scheduler editor
@@ -1052,9 +1103,18 @@ document.addEventListener('DOMContentLoaded', async () => {
       signal: AbortSignal.timeout(10000),
     });
     if (!res.ok) {
-      let detail = `HTTP ${res.status}`;
-      try { detail = JSON.stringify(await res.json()); } catch {}
-      throw new Error(detail);
+      let payload = null;
+      try { payload = await res.json(); } catch {}
+      const detail = payload?.detail || payload || {};
+      if (res.status === 409 && detail.status === 'already_running') {
+        appendLogLine(logEl, `${job} job is already running as pid ${detail.pid || 'unknown'}; attaching to log.`);
+        toast(`${job} job is already running`, 'info');
+        await refreshScriptLog(job, logEl).catch(e => appendLogLine(logEl, `Log refresh failed: ${e.message}`));
+        if (scriptPollers[job]) clearInterval(scriptPollers[job]);
+        scriptPollers[job] = setInterval(() => refreshScriptLog(job, logEl).catch(e => appendLogLine(logEl, `Log refresh failed: ${e.message}`)), 3000);
+        return;
+      }
+      throw new Error(typeof detail === 'string' ? detail : (detail.detail || `HTTP ${res.status}`));
     }
     const data = await res.json();
     appendLogLine(logEl, `Started ${job} pid ${data.pid || 'pending'}; max runtime ${payload.max_runtime_minutes || 'none'} minutes.`);
@@ -1224,16 +1284,29 @@ document.addEventListener('DOMContentLoaded', async () => {
   }
   initScheduleWidgets();
 
+  async function startMaintenanceJob(job) {
+    if (DEMO) { toast('Demo mode — deploy locally to start maintenance', 'info'); return; }
+    if (['maintenance-dupes', 'maintenance-pgs', 'maintenance-all'].includes(job) && !confirm('This maintenance job can delete subtitle files. Start it now?')) return;
+    const res = await apiFetch(`${API_BASE}/api/scripts/${job}/start`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ run_now: true, max_runtime_minutes: 0 }),
+      signal: AbortSignal.timeout(10000),
+    });
+    if (!res.ok) {
+      let detail = `HTTP ${res.status}`;
+      try { detail = JSON.stringify(await res.json()); } catch {}
+      throw new Error(detail);
+    }
+    const data = await res.json();
+    toast(`${job.replace('maintenance-', 'Maintenance ')} started${data.pid ? ` — pid ${data.pid}` : ''}`, 'success');
+  }
+
   // Maintenance
   document.querySelectorAll('[data-action]').forEach(b => {
     b.onclick = withLoading(b, async () => {
-      await new Promise(r => setTimeout(r, 1000));
-      const map = {
-        audit: 'Run: docker exec plexmind-scripts /app/maintenance.sh audit',
-        dupes: 'Run: docker exec plexmind-scripts /app/maintenance.sh dedup',
-        pgs:   'Run: docker exec plexmind-scripts /app/maintenance.sh pgs-cleanup'
-      };
-      toast(map[b.dataset.action], 'info');
+      const map = { audit: 'maintenance-audit', dupes: 'maintenance-dupes', pgs: 'maintenance-pgs' };
+      await startMaintenanceJob(map[b.dataset.action]);
     });
   });
 
