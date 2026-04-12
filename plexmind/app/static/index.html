@@ -27,7 +27,7 @@
       </div>
       <div>
         <div class="font-semibold leading-none tracking-tight">PlexMind Suite</div>
-        <div class="text-[11px] text-slate-400 mt-1">v2.1.1 • Self-hosted</div>
+        <div class="text-[11px] text-slate-400 mt-1">v0.8.0 • Self-hosted</div>
       </div>
     </div>
 
@@ -562,11 +562,15 @@ function updateHealthUI(h) {
   document.getElementById('ollama-model-display').value = h ? (h.llm || '') : '';
   document.getElementById('tl-model-label').textContent = h ? (h.llm || 'qwen3.5:9b') : 'qwen3.5:9b';
 
-  // Whisper — not in health response, show static indicator
-  document.getElementById('whisper-dot').className = 'w-2.5 h-2.5 rounded-full bg-slate-500';
-  document.getElementById('whisper-status').textContent = 'On-demand';
+  // Whisper ASR
+  const whisper = h?.whisper;
+  const whisperOk = !!whisper?.ready;
+  document.getElementById('whisper-dot').className = `w-2.5 h-2.5 rounded-full ${whisperOk ? 'bg-emerald-500 shadow-[0_0_10px_rgba(16,185,129,.5)]' : whisper ? 'bg-red-500' : 'bg-amber-500'}`;
+  document.getElementById('whisper-status').textContent = whisperOk ? 'Ready' : whisper ? 'Offline' : 'Not checked';
   document.getElementById('whisper-label').textContent = 'Whisper ASR';
-  document.getElementById('whisper-sub').textContent = 'Run: docker compose --profile whisper up -d';
+  document.getElementById('whisper-sub').textContent = whisper
+    ? (whisperOk ? `Reachable at ${escapeHtml(whisper.url || 'configured URL')}` : `Unreachable: ${escapeHtml(whisper.error || ('HTTP ' + whisper.status_code))}`)
+    : 'Health probe pending API restart';
 
   document.getElementById('stat-api').textContent = plexOk ? 'Online' : 'Offline';
 }

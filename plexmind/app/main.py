@@ -80,7 +80,7 @@ limiter = Limiter(key_func=get_remote_address)
 app = FastAPI(
     title="PlexMind",
     description="Gemma 3 powered movie/TV recommendation engine for Plex",
-    version="2.1.1",
+    version="0.8.0",
     lifespan=lifespan,
 )
 app.state.limiter = limiter
@@ -230,13 +230,35 @@ async def _scripts_request(method: str, path: str, **kwargs):
 # Routes
 # ---------------------------------------------------------------------------
 
+async def _whisper_health() -> dict:
+    url = os.getenv("WHISPER_API_URL", "http://whisper-asr-webservice:9000/asr")
+    base_url = url[:-4] if url.endswith("/asr") else url.rstrip("/")
+    probes = [base_url or url, url]
+    for probe in probes:
+        try:
+            async with httpx.AsyncClient(timeout=1.5) as client:
+                res = await client.get(probe)
+            return {
+                "ready": res.status_code < 500,
+                "url": url,
+                "status_code": res.status_code,
+            }
+        except Exception as exc:
+            last_error = str(exc)
+    return {"ready": False, "url": url, "error": last_error or "unreachable"}
+
+
 @app.get("/health")
 async def health():
-    llm_ok = await llm_client.health_check()
+    llm_ok, whisper = await asyncio.gather(
+        llm_client.health_check(),
+        _whisper_health(),
+    )
     return {
         "status": "ok",
         "llm": llm_client.OLLAMA_MODEL,
         "llm_ready": llm_ok,
+        "whisper": whisper,
     }
 
 
