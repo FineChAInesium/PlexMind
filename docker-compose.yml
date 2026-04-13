@@ -1,4 +1,4 @@
-# PlexMind release line: v0.8.6
+# PlexMind release line: v0.8.7
 services:
   # ---------------------------------------------------------------------------
   # Ollama — Local LLM server (recommendations + translation)
@@ -56,6 +56,10 @@ services:
     restart: unless-stopped
     ports:
       - "8000:8000"
+    labels:
+      net.unraid.docker.managed: "dockerman"
+      net.unraid.docker.webui: "http://[IP]:[PORT:8000]/"
+      net.unraid.docker.icon: "https://raw.githubusercontent.com/FineChAInesium/PlexMind/main/templates/icon.png"
     volumes:
       - ./data:/app/data
       - "${MOVIES_DIR:-/mnt/data/media/Movies}:/media/movies"

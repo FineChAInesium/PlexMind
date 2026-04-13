@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.8.7 - 2026-04-13
+
+- Add the PlexMind Unraid icon asset used by the template.
+- Add Unraid Docker labels for WebUI and icon discovery so existing containers can show the WebUI dropdown entry after recreation.
+
 ## v0.8.6 - 2026-04-13
 
 - Replace the redundant Jobs sidebar page with a Logs page that tails PlexMind-managed script logs from transcription, translation, and maintenance jobs.
