@@ -17,6 +17,8 @@ import logging
 import os
 import re
 import secrets
+import socket
+from urllib.parse import urlparse, urlunparse
 import httpx
 
 logging.basicConfig(
@@ -80,7 +82,7 @@ limiter = Limiter(key_func=get_remote_address)
 app = FastAPI(
     title="PlexMind",
     description="Gemma 3 powered movie/TV recommendation engine for Plex",
-    version="0.8.1",
+    version="0.8.2",
     lifespan=lifespan,
 )
 app.state.limiter = limiter
@@ -230,8 +232,20 @@ async def _scripts_request(method: str, path: str, **kwargs):
 # Routes
 # ---------------------------------------------------------------------------
 
+def _bridge_fallback_url(url: str) -> str:
+    parsed = urlparse(url)
+    if parsed.hostname not in {"whisper", "whisper-asr-webservice"}:
+        return url
+    try:
+        socket.gethostbyname(parsed.hostname)
+        return url
+    except OSError:
+        port = f":{parsed.port}" if parsed.port else ""
+        return urlunparse(parsed._replace(netloc=f"172.17.0.1{port}"))
+
+
 async def _whisper_health() -> dict:
-    url = os.getenv("WHISPER_API_URL", "http://whisper-asr-webservice:9000/asr")
+    url = _bridge_fallback_url(os.getenv("WHISPER_API_URL", "http://whisper-asr-webservice:9000/asr"))
     base_url = url[:-4] if url.endswith("/asr") else url.rstrip("/")
     probes = [base_url or url, url]
     for probe in probes:
@@ -503,7 +517,7 @@ async def script_job_log(job: str, lines: int = Query(200, ge=1, le=1000)):
 
 
 @app.post("/api/scripts/{job}/start", dependencies=[Depends(_require_key)])
-@limiter.limit("5/hour")
+@limiter.limit(os.getenv("SCRIPT_START_RATE_LIMIT", "60/hour"))
 async def script_job_start(request: Request, job: str, body: ScriptJobRequest):
     """Start a transcription or translation job in the scripts container."""
     job = _validate_script_job(job)
@@ -626,7 +640,7 @@ async def plex_webhook(request: Request, _: None = Depends(_require_key)):
     return {"status": "ok", "event": event, "action": "none"}
 
 
-@app.post("/api/migrate-playlists")
+@app.post("/api/migrate-playlists", dependencies=[Depends(_require_key)])
 async def migrate_playlists():
     """One-time: split existing 'PlexMind Picks' into PlexMind Movies + PlexMind TV Pilot."""
     try:

@@ -1,4 +1,4 @@
-# PlexMind release line: v0.8.1
+# PlexMind release line: v0.8.2
 services:
   # ---------------------------------------------------------------------------
   # Ollama — Local LLM server (recommendations + translation)
@@ -89,6 +89,7 @@ services:
       - WATCHLIST_TRACK_FILE=${WATCHLIST_TRACK_FILE:-data/watchlist_track.json}
       - REC_HISTORY_FILE=${REC_HISTORY_FILE:-data/recommendation_history.json}
       - PLEXMIND_SCRIPT_MODE=${PLEXMIND_SCRIPT_MODE:-local}
+      - SCRIPT_START_RATE_LIMIT=${SCRIPT_START_RATE_LIMIT:-60/hour}
       - PLEXMIND_SCRIPTS_DIR=/app/scripts
       - WHISPER_API_URL=http://whisper:9000/asr
       - OLLAMA_API_URL=http://ollama:11434/api/chat

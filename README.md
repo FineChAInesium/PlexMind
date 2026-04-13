@@ -205,6 +205,7 @@ curl -X POST -H "X-API-Key: $PLEXMIND_API_KEY" \
 | `GPU_THRESHOLD_PCT` | Pause batch work at or above this utilization. | `30` |
 | `GPU_BACKOFF_MINUTES` | Wait time before checking a busy GPU again. | `30` |
 | `PLEXMIND_NO_GUI` | Disable dashboard and serve API only. | `false` |
+| `SCRIPT_START_RATE_LIMIT` | Rate limit for script Start buttons. | `60/hour` |
 | `WHISPER_MODEL` | Whisper ASR model for scripts. | `turbo` |
 | `TARGET_LANGUAGES` | Comma-separated subtitle translation targets. | `zh,es-MX` |
 

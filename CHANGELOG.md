@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.8.2 - 2026-04-13
+
+- Protect the one-time playlist migration endpoint with the configured PlexMind API key.
+- Render dashboard toast messages as text content to avoid HTML injection from dynamic error strings.
+- Serialize JSON persistence updates with a shared lock and atomic temp-file replacement.
+- Raise the GUI script-start rate-limit default from `5/hour` to configurable `SCRIPT_START_RATE_LIMIT`, default `60/hour`, to avoid normal Unraid retries hitting HTTP 429.
+- Fall back to the Docker bridge gateway for Whisper when legacy bridge DNS cannot resolve `whisper` or `whisper-asr-webservice`.
+
 ## v0.8.1 - 2026-04-13
 
 - Align the dashboard, FastAPI metadata, package metadata, and script runtime banners on the `v0.8.1` release line.

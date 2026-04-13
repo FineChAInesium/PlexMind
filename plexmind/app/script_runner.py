@@ -7,13 +7,27 @@ from __future__ import annotations
 
 import os
 import signal
+import socket
 import subprocess
 import time
 from pathlib import Path
+from urllib.parse import urlparse, urlunparse
 from typing import Any
 
 _SCRIPT_DIR = Path(os.getenv("PLEXMIND_SCRIPTS_DIR", "/app/scripts"))
 _DATA_DIR = Path(os.getenv("DATA_DIR", "/app/data"))
+
+
+def _bridge_fallback_url(url: str) -> str:
+    parsed = urlparse(url)
+    if parsed.hostname not in {"whisper", "whisper-asr-webservice"}:
+        return url
+    try:
+        socket.gethostbyname(parsed.hostname)
+        return url
+    except OSError:
+        port = f":{parsed.port}" if parsed.port else ""
+        return urlunparse(parsed._replace(netloc=f"172.17.0.1{port}"))
 
 JOBS = {
     "transcribe": {
@@ -150,7 +164,7 @@ def start(job: str, body: dict[str, Any] | None = None) -> dict[str, Any]:
         env["TARGET_LANGUAGES"] = str(body["target_languages"])
 
     env.setdefault("LOG_RETENTION_DAYS", os.getenv("LOG_RETENTION_DAYS", "7"))
-    env.setdefault("WHISPER_API_URL", os.getenv("WHISPER_API_URL", "http://whisper:9000/asr"))
+    env["WHISPER_API_URL"] = _bridge_fallback_url(os.getenv("WHISPER_API_URL", "http://whisper:9000/asr"))
     env.setdefault("OLLAMA_API_URL", os.getenv("OLLAMA_API_URL", "http://ollama:11434/api/chat"))
     env.setdefault("MOVIE_DIR", os.getenv("MOVIE_DIR", os.getenv("MOVIES_DIR", "/media/movies")))
     env.setdefault("TV_DIR", os.getenv("TV_DIR", "/media/tv"))

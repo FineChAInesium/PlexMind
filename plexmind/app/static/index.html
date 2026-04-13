@@ -27,7 +27,7 @@
       </div>
       <div>
         <div class="font-semibold leading-none tracking-tight">PlexMind Suite</div>
-        <div class="text-[11px] text-slate-400 mt-1">v0.8.1 • Self-hosted</div>
+        <div class="text-[11px] text-slate-400 mt-1">v0.8.2 • Self-hosted</div>
       </div>
     </div>
 
@@ -501,21 +501,25 @@ const MOCK = {
 };
 
 // ─── Toast ──────────────────────────────────────────────────────────────────
-function toast(msg, type='success') {
+function toast(msg, type="success") {
   const colors = {
-    success: 'border-emerald-500/30 bg-emerald-500/10 text-emerald-200',
-    error:   'border-red-500/30 bg-red-500/10 text-red-200',
-    info:    'border-violet-500/30 bg-violet-500/10 text-violet-200'
+    success: "border-emerald-500/30 bg-emerald-500/10 text-emerald-200",
+    error:   "border-red-500/30 bg-red-500/10 text-red-200",
+    info:    "border-violet-500/30 bg-violet-500/10 text-violet-200"
   };
-  const icon = type==='success' ? 'check-circle-2' : type==='error' ? 'alert-triangle' : 'info';
-  const el = document.createElement('div');
+  const icon = type==="success" ? "check-circle-2" : type==="error" ? "alert-triangle" : "info";
+  const el = document.createElement("div");
   el.className = `flex items-start gap-2.5 p-3.5 rounded-xl border backdrop-blur-xl shadow-2xl ${colors[type]} animate-slideIn`;
-  el.innerHTML = `<i data-lucide="${icon}" class="w-4 h-4 mt-0.5 shrink-0"></i><div class="text-[13px] leading-snug">${msg}</div>`;
-  document.getElementById('toast-container').appendChild(el);
+  el.innerHTML = `<i data-lucide="${icon}" class="w-4 h-4 mt-0.5 shrink-0"></i>`;
+  const body = document.createElement("div");
+  body.className = "text-[13px] leading-snug";
+  body.textContent = msg;
+  el.appendChild(body);
+  document.getElementById("toast-container").appendChild(el);
   lucide.createIcons();
   setTimeout(() => {
-    el.style.opacity = '0'; el.style.transform = 'translateX(8px)';
-    el.style.transition = 'all .2s ease';
+    el.style.opacity = "0"; el.style.transform = "translateX(8px)";
+    el.style.transition = "all .2s ease";
     setTimeout(() => el.remove(), 200);
   }, 3400);
 }
@@ -757,7 +761,7 @@ function renderRecs(recs = []) {
 }
 
 async function generateFor(userId, btn) {
-  if (DEMO) { toast(`Demo mode — deploy locally to generate real recommendations for <b>${escapeHtml(userId)}</b>`, 'info'); return; }
+  if (DEMO) { toast(`Demo mode — deploy locally to generate real recommendations for ${escapeHtml(userId)}`, 'info'); return; }
   const original = btn.innerHTML;
   btn.disabled = true;
   btn.innerHTML = `<svg class="w-3.5 h-3.5 animate-spin" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" fill="none" opacity=".2"/><path d="M22 12a10 10 0 0 1-10 10" stroke="currentColor" stroke-width="4" fill="none" stroke-linecap="round"/></svg> Generating`;
@@ -773,7 +777,7 @@ async function generateFor(userId, btn) {
     const recs = await res.json();
     setApiStatus(true);
     renderRecs(recs);
-    toast(`Recommendations generated for <b>${escapeHtml(userId)}</b>`, 'success');
+    toast(`Recommendations generated for ${escapeHtml(userId)}`, 'success');
   } catch (e) {
     toast(`Recommendation generation failed — ${escapeHtml(e.message || 'unknown error')}`, 'error');
   }
@@ -1299,7 +1303,7 @@ document.addEventListener('DOMContentLoaded', async () => {
           };
           localStorage.setItem(key, JSON.stringify(v));
           render(v);
-          toast(`Cron helper saved — add <code>${buildCron(v.freq,v.time,v.weekday,v.monthday)} ${commandWithDuration(cmd, v.duration)}</code> to Unraid/cron`, 'success');
+          toast(`Cron helper saved — add ${buildCron(v.freq,v.time,v.weekday,v.monthday)} ${commandWithDuration(cmd, v.duration)} to Unraid/cron`, 'success');
         };
       }
       render(saved);
