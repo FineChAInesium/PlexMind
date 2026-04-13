@@ -34,31 +34,58 @@ JOBS = {
         "cmd": [_SCRIPT_DIR / "transcribe.sh"],
         "log": _DATA_DIR / "transcription.log",
         "pid_file": Path("/tmp/transcription_backfill.pid"),
+        "title": "Transcription",
+        "group": "subtitles",
+        "page": "transcribe",
+        "description": "Create missing SRT subtitles with Whisper ASR.",
     },
     "translate": {
         "cmd": [_SCRIPT_DIR / "translate.sh"],
         "log": _DATA_DIR / "translation.log",
         "pid_file": Path("/tmp/translation_backfill.pid"),
+        "title": "Translation",
+        "group": "subtitles",
+        "page": "translate",
+        "description": "Translate existing SRT subtitles with Ollama.",
     },
     "maintenance-audit": {
         "cmd": [_SCRIPT_DIR / "maintenance.sh", "audit"],
         "log": _DATA_DIR / "maintenance.log",
         "pid_file": Path("/tmp/maintenance_audit.pid"),
+        "title": "Library Audit",
+        "group": "maintenance",
+        "page": "maintenance",
+        "description": "Scan media folders and write an audit report.",
     },
     "maintenance-dupes": {
         "cmd": [_SCRIPT_DIR / "maintenance.sh", "dedup"],
         "log": _DATA_DIR / "maintenance.log",
         "pid_file": Path("/tmp/maintenance_dupes.pid"),
+        "title": "Duplicate Cleanup",
+        "group": "maintenance",
+        "page": "maintenance",
+        "description": "Remove duplicate subtitle files.",
+        "destructive": True,
     },
     "maintenance-pgs": {
         "cmd": [_SCRIPT_DIR / "maintenance.sh", "pgs-cleanup"],
         "log": _DATA_DIR / "maintenance.log",
         "pid_file": Path("/tmp/maintenance_pgs.pid"),
+        "title": "PGS Cleanup",
+        "group": "maintenance",
+        "page": "maintenance",
+        "description": "Delete image subtitles when matching SRT files exist.",
+        "destructive": True,
     },
     "maintenance-all": {
         "cmd": [_SCRIPT_DIR / "maintenance.sh", "all"],
         "log": _DATA_DIR / "maintenance.log",
         "pid_file": Path("/tmp/maintenance_all.pid"),
+        "title": "Full Maintenance",
+        "group": "maintenance",
+        "page": "maintenance",
+        "description": "Run audit, duplicate cleanup, and PGS cleanup.",
+        "destructive": True,
     },
 }
 PROCS: dict[str, subprocess.Popen] = {}
@@ -127,15 +154,26 @@ def status(job: str) -> dict[str, Any]:
     info = _job(job)
     pid = _running_pid(job)
     proc = PROCS.get(job)
+    log_file = info["log"]
     return {
         "job": job,
+        "title": info.get("title", job),
+        "group": info.get("group", "scripts"),
+        "page": info.get("page", "jobs"),
+        "description": info.get("description", ""),
+        "destructive": bool(info.get("destructive", False)),
         "running": bool(pid),
         "pid": pid,
         "returncode": None if not proc else proc.poll(),
-        "log_file": str(info["log"]),
+        "log_file": str(log_file),
+        "log_exists": log_file.exists(),
         "script_available": _script_available(job),
         "mode": "local",
     }
+
+
+def jobs() -> dict[str, Any]:
+    return {"mode": "local", "jobs": [status(job) for job in JOBS]}
 
 
 def log(job: str, lines: int = 200) -> dict[str, Any]:

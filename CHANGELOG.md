@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.8.4 - 2026-04-13
+
+- Add hash-routed dashboard pages so sidebar pages reload back to their current page instead of resetting to Dashboard.
+- Add a Jobs sidebar page backed by `/api/scripts/jobs` for PlexMind-controlled script job status.
+- Add job catalog metadata in the local PlexMind runner for titles, groups, descriptions, page targets, destructive flags, log presence, and running state.
+
 ## v0.8.3 - 2026-04-13
 
 - Route generated Unraid schedule helper commands through the PlexMind `/api/scripts/{job}/start` API so scheduled script runs share PlexMind status, logs, limits, and stop controls.

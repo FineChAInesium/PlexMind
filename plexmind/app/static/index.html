@@ -27,7 +27,7 @@
       </div>
       <div>
         <div class="font-semibold leading-none tracking-tight">PlexMind Suite</div>
-        <div class="text-[11px] text-slate-400 mt-1">v0.8.3 • Self-hosted</div>
+        <div class="text-[11px] text-slate-400 mt-1">v0.8.4 • Self-hosted</div>
       </div>
     </div>
 
@@ -46,6 +46,9 @@
       </button>
       <button data-page="maintenance" class="nav-item w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-[14px] font-medium transition text-slate-300 hover:bg-slate-800/70 hover:text-white">
         <i data-lucide="wrench" class="w-[18px] h-[18px]"></i> Maintenance
+      </button>
+      <button data-page="jobs" class="nav-item w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-[14px] font-medium transition text-slate-300 hover:bg-slate-800/70 hover:text-white">
+        <i data-lucide="list-checks" class="w-[18px] h-[18px]"></i> Jobs
       </button>
       <button data-page="settings" class="nav-item w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-[14px] font-medium transition text-slate-300 hover:bg-slate-800/70 hover:text-white">
         <i data-lucide="settings" class="w-[18px] h-[18px]"></i> Settings
@@ -416,6 +419,20 @@
         </div>
       </section>
 
+      <!-- JOBS -->
+      <section id="page-jobs" class="page hidden space-y-6">
+        <div class="rounded-2xl bg-slate-800/40 border border-slate-700/60 overflow-hidden">
+          <div class="px-5 py-4 border-b border-slate-700/60 flex items-center justify-between gap-3">
+            <div>
+              <h3 class="font-semibold flex items-center gap-2"><i data-lucide="list-checks" class="w-4 h-4 text-violet-400"></i>PlexMind Jobs</h3>
+              <p class="text-sm text-slate-400 mt-1">Script jobs controlled through the PlexMind API.</p>
+            </div>
+            <button id="refresh-jobs" class="text-xs px-2.5 py-1.5 rounded-lg bg-slate-900 hover:bg-slate-800 border border-slate-700 flex items-center gap-1.5"><i data-lucide="refresh-cw" class="w-3.5 h-3.5"></i>Refresh</button>
+          </div>
+          <div id="jobs-grid" class="grid md:grid-cols-2 xl:grid-cols-3 gap-4 p-5"></div>
+        </div>
+      </section>
+
       <!-- SETTINGS -->
       <section id="page-settings" class="page hidden">
         <div class="rounded-2xl bg-slate-800/40 border border-slate-700/60 overflow-hidden max-w-3xl">
@@ -608,9 +625,9 @@ async function fetchSchedulerStatus() {
     document.getElementById('gpu-status').textContent = 'Available';
     document.getElementById('gpu-label').textContent = `${data.gpu_utilization_pct}% utilized`;
     document.getElementById('gpu-sub').textContent = `Threshold: ${data.gpu_threshold_pct}%`;
-    return;
-  }
-  try {
+      return;
+    }
+    try {
     const res = await apiFetch(`${API_BASE}/api/scheduler/status`, { signal: AbortSignal.timeout(2000) });
     if (!res.ok) throw new Error();
     const data = await res.json();
@@ -816,23 +833,49 @@ function simulateLog(el, lines, onDone) {
 }
 
 // ─── Nav ────────────────────────────────────────────────────────────────────
-function initNav() {
+const PAGE_TITLES = {
+  dashboard: 'Dashboard',
+  recommendations: 'Recommendations',
+  transcribe: 'Transcribe',
+  translate: 'Translate',
+  maintenance: 'Maintenance',
+  jobs: 'Jobs',
+  settings: 'Settings',
+};
+
+function currentRoutePage() {
+  const raw = (window.location.hash || '#/dashboard').replace(/^#\/?/, '');
+  return PAGE_TITLES[raw] ? raw : 'dashboard';
+}
+
+let refreshJobs = () => {};
+
+function showPage(page, opts = {}) {
+  const target = PAGE_TITLES[page] ? page : 'dashboard';
   const items = document.querySelectorAll('.nav-item');
-  const title = document.getElementById('page-title');
-  items.forEach(b => {
-    b.addEventListener('click', () => {
-      items.forEach(x => {
-        x.classList.remove('bg-violet-500/15', 'text-violet-200', 'border', 'border-violet-500/20');
-        x.classList.add('text-slate-300');
-      });
-      b.classList.add('bg-violet-500/15', 'text-violet-200', 'border', 'border-violet-500/20');
-      b.classList.remove('text-slate-300');
-      document.querySelectorAll('.page').forEach(p => p.classList.add('hidden'));
-      document.getElementById('page-' + b.dataset.page).classList.remove('hidden');
-      title.textContent = b.textContent.trim();
-      if (window.innerWidth < 1024) toggleSidebar(false);
-    });
+  items.forEach(x => {
+    x.classList.remove('bg-violet-500/15', 'text-violet-200', 'border', 'border-violet-500/20');
+    x.classList.add('text-slate-300');
   });
+  const active = document.querySelector(`.nav-item[data-page="${target}"]`);
+  if (active) {
+    active.classList.add('bg-violet-500/15', 'text-violet-200', 'border', 'border-violet-500/20');
+    active.classList.remove('text-slate-300');
+  }
+  document.querySelectorAll('.page').forEach(p => p.classList.add('hidden'));
+  document.getElementById('page-' + target)?.classList.remove('hidden');
+  document.getElementById('page-title').textContent = PAGE_TITLES[target];
+  if (opts.push !== false && window.location.hash !== `#/${target}`) window.location.hash = `/${target}`;
+  if (target === 'jobs') refreshJobs();
+  if (window.innerWidth < 1024) toggleSidebar(false);
+}
+
+function initNav() {
+  document.querySelectorAll('.nav-item').forEach(b => {
+    b.addEventListener('click', () => showPage(b.dataset.page));
+  });
+  window.addEventListener('hashchange', () => showPage(currentRoutePage(), { push: false }));
+  showPage(currentRoutePage(), { push: false });
 }
 
 function toggleSidebar(open) {
@@ -1070,6 +1113,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     renderUsers(await fetchUsers());
     toast('Users refreshed', 'info');
   };
+  document.getElementById('refresh-jobs').onclick = refreshJobs;
 
   const scriptPollers = {};
   const scriptLogFailures = {};
@@ -1082,7 +1126,60 @@ document.addEventListener('DOMContentLoaded', async () => {
     el.textContent = `${el.textContent || ''}${el.textContent ? '\n' : ''}[${new Date().toLocaleTimeString()}] ${line}`;
     el.scrollTop = el.scrollHeight;
   }
-  async function refreshScriptLog(job, logEl) {
+  refreshJobs = async function() {
+    const grid = document.getElementById('jobs-grid');
+    if (!grid) return;
+    grid.innerHTML = `<div class="col-span-full text-sm text-slate-500">Loading jobs...</div>`;
+    if (DEMO) {
+      renderJobs({ jobs: MOCK.script_jobs || [] });
+    return;
+  }
+  try {
+    const res = await apiFetch(`${API_BASE}/api/scripts/jobs`, { signal: AbortSignal.timeout(5000) });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    renderJobs(await res.json());
+    } catch (e) {
+      grid.innerHTML = `<div class="col-span-full text-sm text-red-200">Could not load jobs: ${escapeHtml(e.message || 'unknown error')}</div>`;
+    }
+  }
+
+  function renderJobs(payload) {
+  const grid = document.getElementById('jobs-grid');
+  if (!grid) return;
+  const jobs = payload?.jobs || [];
+  if (!jobs.length) {
+    grid.innerHTML = `<div class="col-span-full text-sm text-slate-500">No PlexMind jobs found.</div>`;
+    return;
+  }
+  grid.innerHTML = jobs.map(job => {
+    const running = !!job.running;
+    const dot = running ? 'bg-emerald-400 shadow-[0_0_8px_rgba(16,185,129,.6)]' : 'bg-slate-600';
+    const status = running ? `Running pid ${escapeHtml(String(job.pid || 'unknown'))}` : 'Idle';
+    const availability = job.script_available ? 'Ready' : 'Script missing';
+    return `<article class="rounded-2xl bg-slate-900/50 border border-slate-700/60 p-4 flex flex-col gap-3">
+      <div class="flex items-start justify-between gap-3">
+        <div>
+          <h4 class="font-semibold">${escapeHtml(job.title || job.job)}</h4>
+          <p class="text-xs text-slate-500 mt-1">${escapeHtml(job.description || '')}</p>
+        </div>
+        <span class="w-2.5 h-2.5 rounded-full mt-1.5 ${dot}"></span>
+      </div>
+      <div class="text-xs text-slate-400 space-y-1">
+        <div>${status}</div>
+        <div>${escapeHtml(availability)} · ${escapeHtml(job.mode || 'local')}</div>
+        <div class="break-all text-slate-500">${escapeHtml(job.log_file || '')}</div>
+      </div>
+      <button data-open-job="${escapeHtml(job.page || 'jobs')}" class="mt-auto rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 px-3 py-2 text-xs font-medium">Open</button>
+    </article>`;
+  }).join('');
+  grid.querySelectorAll('[data-open-job]').forEach(btn => {
+    btn.addEventListener('click', () => showPage(btn.dataset.openJob || 'jobs'));
+  });
+  lucide.createIcons({ nodes: [grid] });
+}
+if (currentRoutePage() === 'jobs') refreshJobs();
+
+async function refreshScriptLog(job, logEl) {
     const logRes = await apiFetch(`${API_BASE}/api/scripts/${job}/log?lines=240`, { signal: AbortSignal.timeout(5000) });
     if (logRes.ok) {
       const data = await logRes.json();

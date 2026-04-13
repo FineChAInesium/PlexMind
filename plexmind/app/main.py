@@ -82,7 +82,7 @@ limiter = Limiter(key_func=get_remote_address)
 app = FastAPI(
     title="PlexMind",
     description="Gemma 3 powered movie/TV recommendation engine for Plex",
-    version="0.8.3",
+    version="0.8.4",
     lifespan=lifespan,
 )
 app.state.limiter = limiter
@@ -191,6 +191,8 @@ async def _local_scripts_request(method: str, path: str, **kwargs):
     parts = [p for p in path.strip("/").split("/") if p]
     if method == "GET" and parts == ["health"]:
         return script_runner.health()
+    if method == "GET" and parts == ["jobs"]:
+        return script_runner.jobs()
     if len(parts) >= 2 and parts[0] == "jobs":
         job = _validate_script_job(parts[1])
         if method == "GET" and len(parts) == 2:
@@ -500,6 +502,12 @@ async def job_events(job_id: str, _: None = Depends(_require_key)):
 async def scripts_health():
     """Return scripts control-service health."""
     return await _scripts_request("GET", "/health")
+
+
+@app.get("/api/scripts/jobs", dependencies=[Depends(_require_key)])
+async def script_jobs():
+    """Return all PlexMind-controlled script jobs."""
+    return await _scripts_request("GET", "/jobs")
 
 
 @app.get("/api/scripts/{job}/status", dependencies=[Depends(_require_key)])
