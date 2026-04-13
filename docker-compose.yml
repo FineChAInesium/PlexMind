@@ -1,3 +1,4 @@
+# PlexMind release line: v0.8.1
 services:
   # ---------------------------------------------------------------------------
   # Ollama — Local LLM server (recommendations + translation)
