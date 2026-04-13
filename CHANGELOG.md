@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.8.8 - 2026-04-13
+
+- Use the PlexMind logo asset in the dashboard sidebar brand mark.
+
 ## v0.8.7 - 2026-04-13
 
 - Add the PlexMind Unraid icon asset used by the template.
