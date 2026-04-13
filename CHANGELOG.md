@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.8.6 - 2026-04-13
+
+- Replace the redundant Jobs sidebar page with a Logs page that tails PlexMind-managed script logs from transcription, translation, and maintenance jobs.
+- Keep old `#/jobs` links routed to the new Logs page.
+
 ## v0.8.5 - 2026-04-13
 
 - Fix the Unraid Docker template WebUI target so the Docker tab opens the PlexMind dashboard at `/` instead of the API docs path.

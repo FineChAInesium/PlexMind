@@ -27,7 +27,7 @@
       </div>
       <div>
         <div class="font-semibold leading-none tracking-tight">PlexMind Suite</div>
-        <div class="text-[11px] text-slate-400 mt-1">v0.8.5 • Self-hosted</div>
+        <div class="text-[11px] text-slate-400 mt-1">v0.8.6 • Self-hosted</div>
       </div>
     </div>
 
@@ -47,8 +47,8 @@
       <button data-page="maintenance" class="nav-item w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-[14px] font-medium transition text-slate-300 hover:bg-slate-800/70 hover:text-white">
         <i data-lucide="wrench" class="w-[18px] h-[18px]"></i> Maintenance
       </button>
-      <button data-page="jobs" class="nav-item w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-[14px] font-medium transition text-slate-300 hover:bg-slate-800/70 hover:text-white">
-        <i data-lucide="list-checks" class="w-[18px] h-[18px]"></i> Jobs
+      <button data-page="logs" class="nav-item w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-[14px] font-medium transition text-slate-300 hover:bg-slate-800/70 hover:text-white">
+        <i data-lucide="scroll-text" class="w-[18px] h-[18px]"></i> Logs
       </button>
       <button data-page="settings" class="nav-item w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-[14px] font-medium transition text-slate-300 hover:bg-slate-800/70 hover:text-white">
         <i data-lucide="settings" class="w-[18px] h-[18px]"></i> Settings
@@ -419,17 +419,30 @@
         </div>
       </section>
 
-      <!-- JOBS -->
-      <section id="page-jobs" class="page hidden space-y-6">
+      <!-- LOGS -->
+      <section id="page-logs" class="page hidden space-y-6">
         <div class="rounded-2xl bg-slate-800/40 border border-slate-700/60 overflow-hidden">
-          <div class="px-5 py-4 border-b border-slate-700/60 flex items-center justify-between gap-3">
+          <div class="px-5 py-4 border-b border-slate-700/60 flex flex-col lg:flex-row lg:items-center lg:justify-between gap-3">
             <div>
-              <h3 class="font-semibold flex items-center gap-2"><i data-lucide="list-checks" class="w-4 h-4 text-violet-400"></i>PlexMind Jobs</h3>
-              <p class="text-sm text-slate-400 mt-1">Script jobs controlled through the PlexMind API.</p>
+              <h3 class="font-semibold flex items-center gap-2"><i data-lucide="scroll-text" class="w-4 h-4 text-violet-400"></i>Script Logs</h3>
+              <p class="text-sm text-slate-400 mt-1">Read logs from PlexMind-managed transcription, translation, and maintenance scripts.</p>
             </div>
-            <button id="refresh-jobs" class="text-xs px-2.5 py-1.5 rounded-lg bg-slate-900 hover:bg-slate-800 border border-slate-700 flex items-center gap-1.5"><i data-lucide="refresh-cw" class="w-3.5 h-3.5"></i>Refresh</button>
+            <div class="flex flex-wrap items-center gap-2">
+              <label class="text-xs text-slate-400 flex items-center gap-2">Lines
+                <select id="logs-lines" class="bg-slate-900 border border-slate-700 rounded-lg px-2 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-violet-500/50">
+                  <option value="120">120</option>
+                  <option value="240" selected>240</option>
+                  <option value="500">500</option>
+                  <option value="1000">1000</option>
+                </select>
+              </label>
+              <label class="text-xs text-slate-400 flex items-center gap-2 px-2.5 py-1.5 rounded-lg bg-slate-900 border border-slate-700">
+                <input id="logs-autorefresh" type="checkbox" class="accent-violet-500"> Auto refresh
+              </label>
+              <button id="refresh-logs" class="text-xs px-2.5 py-1.5 rounded-lg bg-slate-900 hover:bg-slate-800 border border-slate-700 flex items-center gap-1.5"><i data-lucide="refresh-cw" class="w-3.5 h-3.5"></i>Refresh</button>
+            </div>
           </div>
-          <div id="jobs-grid" class="grid md:grid-cols-2 xl:grid-cols-3 gap-4 p-5"></div>
+          <div id="logs-grid" class="grid xl:grid-cols-2 gap-4 p-5"></div>
         </div>
       </section>
 
@@ -839,16 +852,18 @@ const PAGE_TITLES = {
   transcribe: 'Transcribe',
   translate: 'Translate',
   maintenance: 'Maintenance',
-  jobs: 'Jobs',
+  logs: 'Logs',
   settings: 'Settings',
 };
 
 function currentRoutePage() {
   const raw = (window.location.hash || '#/dashboard').replace(/^#\/?/, '');
+  if (raw === 'jobs') return 'logs';
   return PAGE_TITLES[raw] ? raw : 'dashboard';
 }
 
-let refreshJobs = () => {};
+let refreshLogs = () => {};
+let logsPoller = null;
 
 function showPage(page, opts = {}) {
   const target = PAGE_TITLES[page] ? page : 'dashboard';
@@ -866,7 +881,14 @@ function showPage(page, opts = {}) {
   document.getElementById('page-' + target)?.classList.remove('hidden');
   document.getElementById('page-title').textContent = PAGE_TITLES[target];
   if (opts.push !== false && window.location.hash !== `#/${target}`) window.location.hash = `/${target}`;
-  if (target === 'jobs') refreshJobs();
+  if (target === 'logs') {
+    refreshLogs();
+  } else if (logsPoller) {
+    clearInterval(logsPoller);
+    logsPoller = null;
+    const auto = document.getElementById('logs-autorefresh');
+    if (auto) auto.checked = false;
+  }
   if (window.innerWidth < 1024) toggleSidebar(false);
 }
 
@@ -1113,7 +1135,12 @@ document.addEventListener('DOMContentLoaded', async () => {
     renderUsers(await fetchUsers());
     toast('Users refreshed', 'info');
   };
-  document.getElementById('refresh-jobs').onclick = refreshJobs;
+  document.getElementById('refresh-logs').onclick = refreshLogs;
+  document.getElementById('logs-lines').onchange = refreshLogs;
+  document.getElementById('logs-autorefresh').onchange = () => {
+    if (logsPoller) { clearInterval(logsPoller); logsPoller = null; }
+    if (document.getElementById('logs-autorefresh').checked) logsPoller = setInterval(refreshLogs, 5000);
+  };
 
   const scriptPollers = {};
   const scriptLogFailures = {};
@@ -1126,58 +1153,76 @@ document.addEventListener('DOMContentLoaded', async () => {
     el.textContent = `${el.textContent || ''}${el.textContent ? '\n' : ''}[${new Date().toLocaleTimeString()}] ${line}`;
     el.scrollTop = el.scrollHeight;
   }
-  refreshJobs = async function() {
-    const grid = document.getElementById('jobs-grid');
+  refreshLogs = async function() {
+    const grid = document.getElementById('logs-grid');
     if (!grid) return;
-    grid.innerHTML = `<div class="col-span-full text-sm text-slate-500">Loading jobs...</div>`;
-    if (DEMO) {
-      renderJobs({ jobs: MOCK.script_jobs || [] });
-    return;
-  }
-  try {
-    const res = await apiFetch(`${API_BASE}/api/scripts/jobs`, { signal: AbortSignal.timeout(5000) });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    renderJobs(await res.json());
+    const lineCount = parseInt(document.getElementById('logs-lines')?.value || '240', 10) || 240;
+    grid.innerHTML = `<div class="col-span-full text-sm text-slate-500">Loading script logs...</div>`;
+    try {
+      const jobsPayload = DEMO
+        ? { jobs: MOCK.script_jobs || [] }
+        : await (async () => {
+            const res = await apiFetch(`${API_BASE}/api/scripts/jobs`, { signal: AbortSignal.timeout(5000) });
+            if (!res.ok) throw new Error(`jobs HTTP ${res.status}`);
+            return await res.json();
+          })();
+      const jobs = jobsPayload?.jobs || [];
+      if (!jobs.length) {
+        grid.innerHTML = `<div class="col-span-full text-sm text-slate-500">No PlexMind script logs found.</div>`;
+        return;
+      }
+      grid.innerHTML = jobs.map(job => renderLogShell(job)).join('');
+      lucide.createIcons({ nodes: [grid] });
+      await Promise.all(jobs.map(job => refreshLogCard(job, lineCount).catch(e => showLogCardError(job, e))));
     } catch (e) {
-      grid.innerHTML = `<div class="col-span-full text-sm text-red-200">Could not load jobs: ${escapeHtml(e.message || 'unknown error')}</div>`;
+      grid.innerHTML = `<div class="col-span-full text-sm text-red-200">Could not load script logs: ${escapeHtml(e.message || 'unknown error')}</div>`;
     }
   }
 
-  function renderJobs(payload) {
-  const grid = document.getElementById('jobs-grid');
-  if (!grid) return;
-  const jobs = payload?.jobs || [];
-  if (!jobs.length) {
-    grid.innerHTML = `<div class="col-span-full text-sm text-slate-500">No PlexMind jobs found.</div>`;
-    return;
-  }
-  grid.innerHTML = jobs.map(job => {
+  function renderLogShell(job) {
     const running = !!job.running;
     const dot = running ? 'bg-emerald-400 shadow-[0_0_8px_rgba(16,185,129,.6)]' : 'bg-slate-600';
     const status = running ? `Running pid ${escapeHtml(String(job.pid || 'unknown'))}` : 'Idle';
-    const availability = job.script_available ? 'Ready' : 'Script missing';
-    return `<article class="rounded-2xl bg-slate-900/50 border border-slate-700/60 p-4 flex flex-col gap-3">
-      <div class="flex items-start justify-between gap-3">
-        <div>
-          <h4 class="font-semibold">${escapeHtml(job.title || job.job)}</h4>
-          <p class="text-xs text-slate-500 mt-1">${escapeHtml(job.description || '')}</p>
+    return `<article class="rounded-2xl bg-slate-900/50 border border-slate-700/60 overflow-hidden flex flex-col min-h-[420px]">
+      <div class="px-4 py-3 border-b border-slate-800 flex items-start justify-between gap-3">
+        <div class="min-w-0">
+          <h4 class="font-semibold flex items-center gap-2"><span class="w-2.5 h-2.5 rounded-full ${dot}"></span>${escapeHtml(job.title || job.job)}</h4>
+          <p class="text-xs text-slate-500 mt-1 truncate">${status} · ${escapeHtml(job.log_file || '')}</p>
         </div>
-        <span class="w-2.5 h-2.5 rounded-full mt-1.5 ${dot}"></span>
+        <div class="flex items-center gap-2 shrink-0">
+          <button data-log-download="${escapeHtml(job.job)}" title="Download log" class="text-xs text-slate-400 hover:text-white flex items-center gap-1"><i data-lucide="download" class="w-3.5 h-3.5"></i></button>
+          <button data-log-open-job="${escapeHtml(job.job)}" class="text-xs px-2 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700">Open</button>
+        </div>
       </div>
-      <div class="text-xs text-slate-400 space-y-1">
-        <div>${status}</div>
-        <div>${escapeHtml(availability)} · ${escapeHtml(job.mode || 'local')}</div>
-        <div class="break-all text-slate-500">${escapeHtml(job.log_file || '')}</div>
-      </div>
-      <button data-open-job="${escapeHtml(job.page || 'jobs')}" class="mt-auto rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 px-3 py-2 text-xs font-medium">Open</button>
+      <pre data-log-job="${escapeHtml(job.job)}" class="flex-1 p-4 text-[12px] leading-5 font-mono text-slate-300 overflow-auto min-h-[340px] whitespace-pre-wrap">Loading log...</pre>
     </article>`;
-  }).join('');
-  grid.querySelectorAll('[data-open-job]').forEach(btn => {
-    btn.addEventListener('click', () => showPage(btn.dataset.openJob || 'jobs'));
-  });
-  lucide.createIcons({ nodes: [grid] });
-}
-if (currentRoutePage() === 'jobs') refreshJobs();
+  }
+
+  async function refreshLogCard(job, lineCount) {
+    const logEl = document.querySelector(`[data-log-job="${CSS.escape(job.job)}"]`);
+    if (!logEl) return;
+    if (DEMO) {
+      logEl.textContent = `${job.title || job.job} demo log\nNo live script output in demo mode.`;
+    } else {
+      const res = await apiFetch(`${API_BASE}/api/scripts/${encodeURIComponent(job.job)}/log?lines=${lineCount}`, { signal: AbortSignal.timeout(5000) });
+      if (!res.ok) throw new Error(`${job.job} log HTTP ${res.status}`);
+      const data = await res.json();
+      logEl.textContent = data.log || 'No log output yet.';
+    }
+    logEl.scrollTop = logEl.scrollHeight;
+    const dl = document.querySelector(`[data-log-download="${CSS.escape(job.job)}"]`);
+    if (dl) dl.onclick = () => downloadLog(logEl, `${job.job}-${new Date().toISOString().slice(0,10)}.txt`);
+    const open = document.querySelector(`[data-log-open-job="${CSS.escape(job.job)}"]`);
+    if (open) open.onclick = () => showPage(job.page || 'logs');
+  }
+
+  function showLogCardError(job, error) {
+    const logEl = document.querySelector(`[data-log-job="${CSS.escape(job.job)}"]`);
+    if (!logEl) return;
+    logEl.textContent = `Could not load ${job.job} log: ${error.message || 'unknown error'}`;
+  }
+
+  if (currentRoutePage() === 'logs') refreshLogs();
 
 async function refreshScriptLog(job, logEl) {
     const logRes = await apiFetch(`${API_BASE}/api/scripts/${job}/log?lines=240`, { signal: AbortSignal.timeout(5000) });
