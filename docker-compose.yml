@@ -1,4 +1,4 @@
-# PlexMind release line: v0.8.8
+# PlexMind release line: v0.8.9
 services:
   # ---------------------------------------------------------------------------
   # Ollama — Local LLM server (recommendations + translation)
@@ -64,6 +64,9 @@ services:
       - ./data:/app/data
       - "${MOVIES_DIR:-/mnt/data/media/Movies}:/media/movies"
       - "${TV_DIR:-/mnt/data/media/TV Shows}:/media/tv"
+      - /var/run/docker.sock:/var/run/docker.sock
+    group_add:
+      - "${DOCKER_SOCKET_GID:-281}"
     deploy:
       resources:
         reservations:
@@ -96,7 +99,9 @@ services:
       - SCRIPT_START_RATE_LIMIT=${SCRIPT_START_RATE_LIMIT:-60/hour}
       - PLEXMIND_SCRIPTS_DIR=/app/scripts
       - WHISPER_API_URL=http://whisper:9000/asr
+      - WHISPER_CONTAINER_NAME=${WHISPER_CONTAINER_NAME:-plexmind-whisper}
       - OLLAMA_API_URL=http://ollama:11434/api/chat
+      - OLLAMA_CONTAINER_NAME=${OLLAMA_CONTAINER_NAME:-plexmind-ollama}
       - MOVIE_DIR=/media/movies
       - MOVIES_DIR=/media/movies
       - TV_DIR=/media/tv
@@ -120,9 +125,14 @@ services:
       - "${MOVIES_DIR:-/mnt/data/media/Movies}:/media/movies"
       - "${TV_DIR:-/mnt/data/media/TV Shows}:/media/tv"
       - ./data:/app/data
+      - /var/run/docker.sock:/var/run/docker.sock
+    group_add:
+      - "${DOCKER_SOCKET_GID:-281}"
     environment:
       - WHISPER_API_URL=http://whisper:9000/asr
+      - WHISPER_CONTAINER_NAME=${WHISPER_CONTAINER_NAME:-plexmind-whisper}
       - OLLAMA_API_URL=http://ollama:11434/api/chat
+      - OLLAMA_CONTAINER_NAME=${OLLAMA_CONTAINER_NAME:-plexmind-ollama}
       - OLLAMA_MODEL=${OLLAMA_MODEL:-gemma3:12b}
       - SCRIPTS_API_URL=${SCRIPTS_API_URL:-http://scripts:9010}
       - WHISPER_MODEL=${WHISPER_MODEL:-turbo}

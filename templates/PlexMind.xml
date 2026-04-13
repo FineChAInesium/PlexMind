@@ -15,9 +15,9 @@
   <WebUI>http://[IP]:[PORT:8000]/</WebUI>
   <TemplateURL>https://raw.githubusercontent.com/FineChAInesium/PlexMind/main/templates/PlexMind.xml</TemplateURL>
   <Icon>https://raw.githubusercontent.com/FineChAInesium/PlexMind/main/templates/icon.png</Icon>
-  <ExtraParams>--gpus all</ExtraParams>
+  <ExtraParams>--gpus all --group-add 281</ExtraParams>
   <Description>
-    PlexMind generates personalized Plex recommendations using a local LLM. No cloud. No subscriptions.&#xD;&#xA;&#xD;&#xA;Version line: v0.8.8. See the full README at https://github.com/FineChAInesium/PlexMind for setup instructions and configuration options.
+    PlexMind generates personalized Plex recommendations using a local LLM. No cloud. No subscriptions.&#xD;&#xA;&#xD;&#xA;Version line: v0.8.9. See the full README at https://github.com/FineChAInesium/PlexMind for setup instructions and configuration options.
   </Description>
 
   <Networking>
@@ -35,6 +35,11 @@
     <Volume>
       <HostDir>/mnt/user/appdata/plexmind/data</HostDir>
       <ContainerDir>/app/data</ContainerDir>
+      <Mode>rw</Mode>
+    </Volume>
+    <Volume>
+      <HostDir>/var/run/docker.sock</HostDir>
+      <ContainerDir>/var/run/docker.sock</ContainerDir>
       <Mode>rw</Mode>
     </Volume>
   </Data>
@@ -93,6 +98,30 @@
       <Name>TZ</Name>
       <Mode/>
       <Description>Timezone for the scheduled monthly batch run</Description>
+    </Variable>
+    <Variable>
+      <Value>plexmind-whisper</Value>
+      <Name>WHISPER_CONTAINER_NAME</Name>
+      <Mode/>
+      <Description>Docker container to start before transcription and stop when transcription exits</Description>
+    </Variable>
+    <Variable>
+      <Value>plexmind-ollama</Value>
+      <Name>OLLAMA_CONTAINER_NAME</Name>
+      <Mode/>
+      <Description>Docker container to start before translation and stop when translation exits</Description>
+    </Variable>
+    <Variable>
+      <Value>1</Value>
+      <Name>START_SIDECAR_CONTAINERS</Name>
+      <Mode/>
+      <Description>Set to 1 to start Whisper/Ollama sidecars before script jobs</Description>
+    </Variable>
+    <Variable>
+      <Value>1</Value>
+      <Name>STOP_SIDECAR_CONTAINERS</Name>
+      <Mode/>
+      <Description>Set to 1 to stop Whisper/Ollama sidecars when script jobs exit</Description>
     </Variable>
   </Environment>
 

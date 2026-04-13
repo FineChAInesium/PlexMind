@@ -1,7 +1,7 @@
 #!/bin/bash
 # ==============================================================================
 # transcribe.sh — Library Transcription Backfill
-# Version: 0.8.3 — PlexMind release line
+# Version: 0.8.9 — PlexMind release line
 #
 # Scans Movies and TV directories, transcribes via Whisper ASR API.
 # Features: language profiling, bilingual VIP handling, hallucination
@@ -95,6 +95,7 @@ EOF
     generate_report
 
     rm -f "$TEMP_AUDIO_FILE" /tmp/transcription_backfill.pid 2>/dev/null
+    stop_docker_container "Whisper" "${WHISPER_CONTAINER_NAME:-}" whisper-asr-webservice plexmind-whisper whisper
 }
 trap cleanup EXIT
 
@@ -436,7 +437,7 @@ PYEOF
 # MAIN
 # ==============================================================================
 log "========================================================="
-log "Transcription Backfill v0.8.3 (containerized)"
+log "Transcription Backfill v0.8.9 (containerized)"
 log "Window: $(time_window_label) ($(time_window_hours)h); max runtime: ${MAX_RUNTIME_MINUTES:-0}m; retention: ${LOG_RETENTION_DAYS}d; RUN_NOW=${RUN_NOW}"
 log "========================================================="
 check_dependencies curl ffmpeg ffprobe python3
@@ -452,6 +453,7 @@ if [ -f "$PLEXMIND_SENTINEL" ]; then
     log "PlexMind finished — proceeding."
 fi
 
+start_docker_container "Whisper" "${WHISPER_CONTAINER_NAME:-}" whisper-asr-webservice plexmind-whisper whisper
 wait_for_whisper_api
 
 ALL_MEDIA_DIRS=("${MOVIE_DIR}" "${TV_DIR}")

@@ -18,7 +18,7 @@ The demo uses mock data in the browser. A real install connects to your Plex ser
 
 ## Versioning Note
 
-PlexMind is currently on the `v0.8.x` release line, with `v0.8.1` as the current metadata and versioning cleanup release. The project briefly published `v2.1.0` and `v2.1.1` tags while the dashboard and container workflow were still being hardened. Those numbers overstated the maturity of the project, so the release line was reset to a more honest pre-1.0 sequence:
+PlexMind is currently on the `v0.8.x` release line. The line was reset at `v0.8.1` as a metadata and versioning cleanup release. The project briefly published `v2.1.0` and `v2.1.1` tags while the dashboard and container workflow were still being hardened. Those numbers overstated the maturity of the project, so the release line was reset to a more honest pre-1.0 sequence:
 
 | Former tag | Replacement tag | What it represents |
 |---|---|---|
@@ -206,6 +206,11 @@ curl -X POST -H "X-API-Key: $PLEXMIND_API_KEY" \
 | `GPU_BACKOFF_MINUTES` | Wait time before checking a busy GPU again. | `30` |
 | `PLEXMIND_NO_GUI` | Disable dashboard and serve API only. | `false` |
 | `SCRIPT_START_RATE_LIMIT` | Rate limit for script Start buttons. | `60/hour` |
+| `WHISPER_CONTAINER_NAME` | Docker container to start before transcription and stop when transcription exits. | `plexmind-whisper` |
+| `OLLAMA_CONTAINER_NAME` | Docker container to start before translation and stop when translation exits. | `plexmind-ollama` |
+| `START_SIDECAR_CONTAINERS` | Start the corresponding AI sidecar before a script job. | `1` |
+| `STOP_SIDECAR_CONTAINERS` | Stop the corresponding AI sidecar when a script job exits. | `1` |
+| `DOCKER_SOCKET_GID` | Group id used for Docker socket access. On Unraid this is usually `281`. | `281` |
 | `WHISPER_MODEL` | Whisper ASR model for scripts. | `turbo` |
 | `TARGET_LANGUAGES` | Comma-separated subtitle translation targets. | `zh,es-MX` |
 
@@ -227,7 +232,7 @@ Important details:
 - API key comparison uses `secrets.compare_digest`.
 - `/api/run-all`, recommendation generation, and webhooks are rate-limited.
 - `/webhook` rejects non-LAN clients, but reverse proxies can make internet traffic appear local. Use `PLEXMIND_API_KEY` if proxied.
-- The scripts container no longer mounts `/var/run/docker.sock`; it does not need Docker host control for transcription or maintenance.
+- Script jobs mount `/var/run/docker.sock` so PlexMind can start and stop the configured Whisper and Ollama sidecar containers. Keep PlexMind on a trusted host and disable `START_SIDECAR_CONTAINERS` or `STOP_SIDECAR_CONTAINERS` if you do not want script jobs controlling those containers.
 - Subtitle maintenance modes can delete `.sup`, `.sub/.idx`, and duplicate `.srt` files from mounted media folders. Run audits first and keep backups if your media library is not disposable.
 - The dashboard stores its API key in browser localStorage. Use HTTPS when accessing it through a reverse proxy.
 
@@ -263,7 +268,7 @@ docker exec plexmind-scripts /app/maintenance.sh all
 
 Script logs are written as dated files under `/app/data/logs` and retained for `LOG_RETENTION_DAYS`, default `7`. The plain `/app/data/transcription.log`, `/app/data/translation.log`, and maintenance log paths point at the current day for compatibility.
 
-The dashboard Start and Stop buttons execute scripts through the PlexMind API. By default, the API container runs `/app/scripts` directly, so the GUI owns transcription, translation, and maintenance without needing a separate manual `docker exec` step. Set `PLEXMIND_SCRIPT_MODE=sidecar` to proxy to the optional `scripts` service through `SCRIPTS_API_URL`, default `http://scripts:9010`. `MAX_RUNTIME_MINUTES` stops scripts cleanly between files; `RUN_NOW=1` bypasses the start/end window for manual runs. The schedule cards still show cron helper lines for Unraid or host crontab use.
+The dashboard Start and Stop buttons execute scripts through the PlexMind API. By default, the API container runs `/app/scripts` directly, so the GUI owns transcription, translation, and maintenance without needing a separate manual `docker exec` step. Transcription starts the configured Whisper container before waiting for ASR and stops it on exit; translation does the same for Ollama. Set `PLEXMIND_SCRIPT_MODE=sidecar` to proxy to the optional `scripts` service through `SCRIPTS_API_URL`, default `http://scripts:9010`. `MAX_RUNTIME_MINUTES` stops scripts cleanly between files; `RUN_NOW=1` bypasses the start/end window for manual runs. The schedule cards still show cron helper lines for Unraid or host crontab use.
 
 ## Performance Snapshot
 

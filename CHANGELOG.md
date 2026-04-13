@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.8.9 - 2026-04-13
+
+- Start the Whisper sidecar container before transcription and stop it when transcription exits or is terminated.
+- Start the Ollama sidecar container before translation and stop it when translation exits or is terminated.
+- Add Docker socket access for PlexMind-managed scripts so sidecar lifecycle control works from containerized runs.
+
 ## v0.8.8 - 2026-04-13
 
 - Use the PlexMind logo asset in the dashboard sidebar brand mark.

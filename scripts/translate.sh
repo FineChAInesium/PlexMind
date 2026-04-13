@@ -1,7 +1,7 @@
 #!/bin/bash
 # ==============================================================================
 # translate.sh — SRT Translation Backfill via Ollama LLM
-# Version: 0.8.3 — PlexMind release line
+# Version: 0.8.9 — PlexMind release line
 #
 # Finds .en.srt files, translates to target languages using Ollama chat API.
 # Chunks SRT into groups of N cues, sends each with previous context for
@@ -106,6 +106,7 @@ EOF
     # Unload model from VRAM
     curl -s "${OLLAMA_API_URL%/chat}/generate" -d "{\"model\": \"${OLLAMA_MODEL}\", \"keep_alive\": 0}" >/dev/null
     rm -f "$TEMP_JSON_PAYLOAD" "$TEMP_RESPONSE_FILE" /tmp/translation_backfill.pid 2>/dev/null
+    stop_docker_container "Ollama" "${OLLAMA_CONTAINER_NAME:-}" ollama plexmind-ollama
 }
 trap cleanup EXIT
 
@@ -293,7 +294,7 @@ PYEOF
 # MAIN
 # ==============================================================================
 log "========================================================="
-log "Translation Backfill v0.8.3 (containerized)"
+log "Translation Backfill v0.8.9 (containerized)"
 log "Window: $(time_window_label) ($(time_window_hours)h); max runtime: ${MAX_RUNTIME_MINUTES:-0}m; retention: ${LOG_RETENTION_DAYS}d; RUN_NOW=${RUN_NOW}"
 log "========================================================="
 check_dependencies curl jq python3
@@ -308,6 +309,8 @@ if [ -f "$PLEXMIND_SENTINEL" ]; then
     done
     log "PlexMind finished — proceeding."
 fi
+
+start_docker_container "Ollama" "${OLLAMA_CONTAINER_NAME:-}" ollama plexmind-ollama
 
 if ! curl -s --connect-timeout 5 "${OLLAMA_API_URL%/chat}/tags" >/dev/null; then
     log "ERROR: Ollama not responding."; exit 1
