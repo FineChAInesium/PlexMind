@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.8.3 - 2026-04-13
+
+- Route generated Unraid schedule helper commands through the PlexMind `/api/scripts/{job}/start` API so scheduled script runs share PlexMind status, logs, limits, and stop controls.
+- Fix transcription confidence parsing so timestamped log output from `score_confidence` cannot be captured as the numeric score.
+- Align script headers and runtime log banners on the `v0.8.3` PlexMind release line.
+
 ## v0.8.2 - 2026-04-13
 
 - Protect the one-time playlist migration endpoint with the configured PlexMind API key.

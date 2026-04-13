@@ -27,7 +27,7 @@
       </div>
       <div>
         <div class="font-semibold leading-none tracking-tight">PlexMind Suite</div>
-        <div class="text-[11px] text-slate-400 mt-1">v0.8.2 • Self-hosted</div>
+        <div class="text-[11px] text-slate-400 mt-1">v0.8.3 • Self-hosted</div>
       </div>
     </div>
 
@@ -270,7 +270,7 @@
                 </div>
                 <div class="rounded-xl bg-slate-900 border border-slate-700 p-3 text-xs text-slate-400">
                   <i data-lucide="info" class="w-3.5 h-3.5 inline mr-1 text-violet-400"></i>
-                  Transcription uses a container script. Scheduled runs use 05:00-12:00 local; run now with <code>docker exec -e RUN_NOW=1 -e MAX_RUNTIME_MINUTES=60 plexmind-scripts /app/transcribe.sh</code>.
+                  Transcription runs through the PlexMind API, so scheduled and manual runs share the same logs, stop button, and status checks.
                 </div>
                 <div class="grid grid-cols-2 gap-2 mt-2">
                   <button id="btn-transcribe" class="rounded-xl bg-violet-600 hover:bg-violet-500 py-3 font-medium flex items-center justify-center gap-2 shadow-glow transition">
@@ -284,7 +284,7 @@
             </div>
             <div class="rounded-2xl bg-slate-800/40 border border-slate-700/60 p-5">
               <h3 class="font-semibold mb-4 flex items-center gap-2"><i data-lucide="clock" class="w-4 h-4 text-violet-400"></i>Schedule</h3>
-              <div data-sched="transcribe" data-cmd="docker exec plexmind-scripts /app/transcribe.sh"></div>
+              <div data-sched="transcribe"></div>
             </div>
             <div class="grid grid-cols-2 gap-3">
               <div class="rounded-2xl bg-slate-800/40 border border-slate-700/60 p-4">
@@ -351,7 +351,7 @@
             </div>
             <div class="rounded-2xl bg-slate-800/40 border border-slate-700/60 p-5">
               <h3 class="font-semibold mb-4 flex items-center gap-2"><i data-lucide="clock" class="w-4 h-4 text-violet-400"></i>Schedule</h3>
-              <div data-sched="translate" data-cmd="docker exec plexmind-scripts /app/translate.sh"></div>
+              <div data-sched="translate"></div>
             </div>
             <div class="grid grid-cols-2 gap-3">
               <div class="rounded-2xl bg-slate-800/40 border border-slate-700/60 p-4">
@@ -390,7 +390,7 @@
             <button data-action="audit" class="mt-5 w-full rounded-xl bg-slate-900 hover:bg-slate-800 border border-slate-700 py-2.5 text-sm font-medium flex items-center justify-center gap-2"><i data-lucide="search" class="w-4 h-4"></i>Audit Library</button>
             <div class="mt-4 pt-4 border-t border-slate-700/60">
               <div class="text-xs text-slate-400 mb-2 flex items-center gap-1.5"><i data-lucide="clock" class="w-3.5 h-3.5 text-violet-400"></i>Schedule</div>
-              <div data-sched="maintenance-audit" data-cmd="docker exec plexmind-scripts /app/maintenance.sh audit"></div>
+              <div data-sched="maintenance-audit"></div>
             </div>
           </div>
           <div class="rounded-2xl bg-slate-800/40 border border-slate-700/60 p-6 hover:border-violet-500/30 transition group flex flex-col">
@@ -400,7 +400,7 @@
             <button data-action="dupes" class="mt-5 w-full rounded-xl bg-slate-900 hover:bg-slate-800 border border-slate-700 py-2.5 text-sm font-medium flex items-center justify-center gap-2"><i data-lucide="layers" class="w-4 h-4"></i>Find Duplicates</button>
             <div class="mt-4 pt-4 border-t border-slate-700/60">
               <div class="text-xs text-slate-400 mb-2 flex items-center gap-1.5"><i data-lucide="clock" class="w-3.5 h-3.5 text-violet-400"></i>Schedule</div>
-              <div data-sched="maintenance-dupes" data-cmd="docker exec plexmind-scripts /app/maintenance.sh dedup"></div>
+              <div data-sched="maintenance-dupes"></div>
             </div>
           </div>
           <div class="rounded-2xl bg-slate-800/40 border border-slate-700/60 p-6 hover:border-violet-500/30 transition group flex flex-col">
@@ -410,7 +410,7 @@
             <button data-action="pgs" class="mt-5 w-full rounded-xl bg-slate-900 hover:bg-slate-800 border border-slate-700 py-2.5 text-sm font-medium flex items-center justify-center gap-2"><i data-lucide="file-x" class="w-4 h-4"></i>Clean PGS</button>
             <div class="mt-4 pt-4 border-t border-slate-700/60">
               <div class="text-xs text-slate-400 mb-2 flex items-center gap-1.5"><i data-lucide="clock" class="w-3.5 h-3.5 text-violet-400"></i>Schedule</div>
-              <div data-sched="maintenance-pgs" data-cmd="docker exec plexmind-scripts /app/maintenance.sh pgs-cleanup"></div>
+              <div data-sched="maintenance-pgs"></div>
             </div>
           </div>
         </div>
@@ -1184,7 +1184,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   document.getElementById('clear-tl-log').onclick = () => tlLog.textContent = 'Idle...';
 
   // Schedule widgets
-  // Defaults derived from existing Unraid crontab
+  // Defaults for PlexMind-owned Unraid schedule helpers.
   const SCHED_DEFAULTS = {
     'transcribe':        { freq:'daily', time:'05:00', weekday:'1', monthday:'1', duration:'420', active:true },
     'translate':         { freq:'daily', time:'23:00', weekday:'1', monthday:'1', duration:'240', active:true },
@@ -1193,8 +1193,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     'maintenance-pgs':   { freq:'weekly', time:'04:00', weekday:'1', monthday:'1', active:false },
   };
   const SCHED_META = {
-    'transcribe': 'Window 05:00-12:00 local (7h). Estimate: about 3 min per pending video after the script pre-scan. Stop manually: docker exec plexmind-scripts /app/stop-job.sh transcribe.',
-    'translate': 'Window 23:00-03:00 local (4h). Estimate: about 26 min per pending subtitle file after the script pre-scan. Stop manually: docker exec plexmind-scripts /app/stop-job.sh translate.',
+    'transcribe': 'Window 05:00-12:00 local (7h). Estimate: about 3 min per pending video after the script pre-scan. Stop or watch logs here.',
+    'translate': 'Window 23:00-03:00 local (4h). Estimate: about 26 min per pending subtitle file after the script pre-scan. Stop or watch logs here.',
     'maintenance-audit': 'Usually minutes; reads media folders and writes an audit report.',
     'maintenance-dupes': 'Usually minutes; can delete duplicate SRT files.',
     'maintenance-pgs': 'Usually minutes; can delete PGS/image subtitles when SRTs exist.',
@@ -1203,7 +1203,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   function initScheduleWidgets() {
     document.querySelectorAll('[data-sched]').forEach(el => {
       const key = `pm_sched_${el.dataset.sched}`;
-      const cmd = el.dataset.cmd;
+      const job = el.dataset.sched;
       const meta = SCHED_META[el.dataset.sched] || '';
       const saved = JSON.parse(localStorage.getItem(key) || 'null') || SCHED_DEFAULTS[el.dataset.sched] || null;
 
@@ -1215,10 +1215,10 @@ document.addEventListener('DOMContentLoaded', async () => {
         return `${m} ${h} * * *`;
       }
 
-      function commandWithDuration(baseCmd, duration) {
-        if (!duration || duration === '0') return baseCmd;
-        if (baseCmd.startsWith('docker exec ')) return baseCmd.replace('docker exec ', `docker exec -e MAX_RUNTIME_MINUTES=${duration} `);
-        return `MAX_RUNTIME_MINUTES=${duration} ${baseCmd}`;
+      function commandWithDuration(job, duration) {
+        const maxRuntime = /^(?:0|[1-9]\d{0,3})$/.test(duration || '') ? duration : '0';
+        const body = JSON.stringify({ run_now: true, max_runtime_minutes: Number(maxRuntime) });
+        return `curl -fsS -X POST "\${PLEXMIND_URL:-http://127.0.0.1:8000}/api/scripts/${job}/start" -H "Content-Type: application/json" -H "X-API-Key: \${PLEXMIND_API_KEY:-}" --data '${body}'`;
       }
 
       function nextRun(freq, time, weekday, monthday) {
@@ -1250,7 +1250,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         const defaultDuration = SCHED_DEFAULTS[el.dataset.sched]?.duration || '0';
         const duration = /^(?:0|[1-9]\d{0,3})$/.test(vals?.duration || '') ? vals.duration : defaultDuration;
         const cron = buildCron(freq, time, weekday, monthday);
-        const scheduledCmd = commandWithDuration(cmd, duration);
+        const scheduledCmd = commandWithDuration(job, duration);
         const safeCron = escapeHtml(cron);
         const safeCmd = escapeHtml(scheduledCmd);
         el.innerHTML = `
@@ -1281,7 +1281,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             ${active ? `<div class="text-slate-400">Next helper run: <span class="text-slate-200">${escapeHtml(nextRun(freq,time,weekday,monthday))}</span></div>
             ${meta ? `<div class="text-slate-500 leading-relaxed">${escapeHtml(meta)}</div>` : ''}
             <div class="text-slate-500 leading-relaxed">Max runtime stops the script between files. Use 0 for no runtime cap.</div>
-            <div class="text-slate-500 leading-relaxed">This saves the cron line in this browser. Add the command to Unraid/cron to execute it.</div>
+            <div class="text-slate-500 leading-relaxed">This saves the cron line in this browser. Add the command to Unraid/cron; it starts through PlexMind instead of bypassing it.</div>
             <div class="rounded-lg bg-slate-950 border border-slate-800 p-2 font-mono text-[10px] text-slate-400 break-all">${safeCron} ${safeCmd}</div>` : ''}
           </div>`;
         lucide.createIcons({ nodes: [el] });
@@ -1303,7 +1303,7 @@ document.addEventListener('DOMContentLoaded', async () => {
           };
           localStorage.setItem(key, JSON.stringify(v));
           render(v);
-          toast(`Cron helper saved — add ${buildCron(v.freq,v.time,v.weekday,v.monthday)} ${commandWithDuration(cmd, v.duration)} to Unraid/cron`, 'success');
+          toast(`Cron helper saved — add ${buildCron(v.freq,v.time,v.weekday,v.monthday)} ${commandWithDuration(job, v.duration)} to Unraid/cron`, 'success');
         };
       }
       render(saved);

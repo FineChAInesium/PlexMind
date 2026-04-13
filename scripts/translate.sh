@@ -1,7 +1,7 @@
 #!/bin/bash
 # ==============================================================================
 # translate.sh — SRT Translation Backfill via Ollama LLM
-# Version: 0.8.1 — PlexMind release line
+# Version: 0.8.3 — PlexMind release line
 #
 # Finds .en.srt files, translates to target languages using Ollama chat API.
 # Chunks SRT into groups of N cues, sends each with previous context for
@@ -293,7 +293,7 @@ PYEOF
 # MAIN
 # ==============================================================================
 log "========================================================="
-log "Translation Backfill v0.8.1 (containerized)"
+log "Translation Backfill v0.8.3 (containerized)"
 log "Window: $(time_window_label) ($(time_window_hours)h); max runtime: ${MAX_RUNTIME_MINUTES:-0}m; retention: ${LOG_RETENTION_DAYS}d; RUN_NOW=${RUN_NOW}"
 log "========================================================="
 check_dependencies curl jq python3

@@ -1,7 +1,7 @@
 #!/bin/bash
 # ==============================================================================
 # common_lib.sh — Shared Infrastructure for Transcription/Translation Pipeline
-# Version: 0.8.1 — PlexMind release line
+# Version: 0.8.3 — PlexMind release line
 #
 # Source this file from any pipeline script:
 #   source /app/lib.sh || { echo "FATAL: Cannot load lib.sh"; exit 1; }

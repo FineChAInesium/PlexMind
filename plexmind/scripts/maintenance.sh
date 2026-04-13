@@ -1,7 +1,7 @@
 #!/bin/bash
 # ==============================================================================
 # maintenance.sh — Library Maintenance Utility
-# Version: 0.8.1 — PlexMind release line
+# Version: 0.8.3 — PlexMind release line
 #
 # Usage:
 #   ./maintenance.sh audit       — Full library audit report

@@ -1,7 +1,7 @@
 #!/bin/bash
 # ==============================================================================
 # transcribe.sh — Library Transcription Backfill
-# Version: 0.8.1 — PlexMind release line
+# Version: 0.8.3 — PlexMind release line
 #
 # Scans Movies and TV directories, transcribes via Whisper ASR API.
 # Features: language profiling, bilingual VIP handling, hallucination
@@ -420,7 +420,7 @@ PYEOF
 
     # Confidence check (non-blocking)
     local CONF
-    CONF=$(score_confidence "$VIDEO_FILE" "$FINAL_OUTPUT_FILE"); CONF="${CONF:-50}"
+    CONF=$(score_confidence "$VIDEO_FILE" "$FINAL_OUTPUT_FILE" | awk '/^[0-9]+$/ { v=$0 } END { print v }'); CONF="${CONF:-50}"
     [ "$CONF" -lt "$CONFIDENCE_THRESHOLD" ] && { log "WARNING: Low confidence ${CONF}/100"; quarantine_video "$VIDEO_FILE" "LOW_CONFIDENCE_${CONF}"; }
 
     case "$PROCESSING_MODE" in
@@ -436,7 +436,7 @@ PYEOF
 # MAIN
 # ==============================================================================
 log "========================================================="
-log "Transcription Backfill v0.8.1 (containerized)"
+log "Transcription Backfill v0.8.3 (containerized)"
 log "Window: $(time_window_label) ($(time_window_hours)h); max runtime: ${MAX_RUNTIME_MINUTES:-0}m; retention: ${LOG_RETENTION_DAYS}d; RUN_NOW=${RUN_NOW}"
 log "========================================================="
 check_dependencies curl ffmpeg ffprobe python3
