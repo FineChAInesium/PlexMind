@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.8.5 - 2026-04-13
+
+- Fix the Unraid Docker template WebUI target so the Docker tab opens the PlexMind dashboard at `/` instead of the API docs path.
+- Update the PlexMind template release metadata to the `v0.8.5` release line.
+
 ## v0.8.4 - 2026-04-13
 
 - Add hash-routed dashboard pages so sidebar pages reload back to their current page instead of resetting to Dashboard.
