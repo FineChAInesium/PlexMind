@@ -141,6 +141,14 @@ def _script_available(job: str) -> bool:
     return _job(job)["cmd"][0].exists()
 
 
+def _log_meta(path: Path) -> dict[str, Any]:
+    try:
+        stat = path.stat()
+    except OSError:
+        return {"log_exists": False, "log_size": 0, "log_mtime": 0}
+    return {"log_exists": True, "log_size": stat.st_size, "log_mtime": stat.st_mtime}
+
+
 def health() -> dict[str, Any]:
     return {
         "status": "ok" if any(_script_available(j) for j in JOBS) else "unavailable",
@@ -166,7 +174,7 @@ def status(job: str) -> dict[str, Any]:
         "pid": pid,
         "returncode": None if not proc else proc.poll(),
         "log_file": str(log_file),
-        "log_exists": log_file.exists(),
+        **_log_meta(log_file),
         "script_available": _script_available(job),
         "mode": "local",
     }
@@ -178,7 +186,7 @@ def jobs() -> dict[str, Any]:
 
 def log(job: str, lines: int = 200) -> dict[str, Any]:
     info = _job(job)
-    lines = max(1, min(int(lines), 1000))
+    lines = max(1, min(int(lines), 500))
     return {"job": job, "log": _tail(info["log"], lines), "mode": "local"}
 
 

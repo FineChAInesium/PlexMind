@@ -68,6 +68,15 @@ def _tail(path, lines):
     return "\n".join(data)
 
 
+def _log_meta(path):
+    p = Path(path)
+    try:
+        stat = p.stat()
+    except OSError:
+        return {"log_exists": False, "log_size": 0, "log_mtime": 0}
+    return {"log_exists": True, "log_size": stat.st_size, "log_mtime": stat.st_mtime}
+
+
 def _status(job):
     pid = _running_pid(job)
     proc = PROCS.get(job)
@@ -77,6 +86,7 @@ def _status(job):
         "pid": pid,
         "returncode": None if not proc else proc.poll(),
         "log_file": JOBS[job]["log"],
+        **_log_meta(JOBS[job]["log"]),
     }
 
 
@@ -113,7 +123,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(200, _status(parts[1]))
         if len(parts) == 3 and parts[0] == "jobs" and parts[1] in JOBS and parts[2] == "log":
             lines = int(parse_qs(parsed.query).get("lines", ["200"])[0])
-            lines = max(1, min(lines, 1000))
+            lines = max(1, min(lines, 500))
             return self._json(200, {"job": parts[1], "log": _tail(JOBS[parts[1]]["log"], lines)})
         return self._json(404, {"detail": "not found"})
 

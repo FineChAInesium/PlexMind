@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.8.10 - 2026-04-13
+
+- Replace the Logs grid with a job dropdown so only the selected script log is loaded.
+- Default the Logs page to a running job or the most recently updated log session.
+- Cap dashboard and API log reads at 500 lines to avoid large log payloads.
+
 ## v0.8.9 - 2026-04-13
 
 - Start the Whisper sidecar container before transcription and stop it when transcription exits or is terminated.

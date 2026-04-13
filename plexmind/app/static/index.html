@@ -27,7 +27,7 @@
       </div>
       <div>
         <div class="font-semibold leading-none tracking-tight">PlexMind Suite</div>
-        <div class="text-[11px] text-slate-400 mt-1">v0.8.9 • Self-hosted</div>
+        <div class="text-[11px] text-slate-400 mt-1">v0.8.10 • Self-hosted</div>
       </div>
     </div>
 
@@ -428,12 +428,16 @@
               <p class="text-sm text-slate-400 mt-1">Read logs from PlexMind-managed transcription, translation, and maintenance scripts.</p>
             </div>
             <div class="flex flex-wrap items-center gap-2">
+              <label class="text-xs text-slate-400 flex items-center gap-2">Job
+                <select id="logs-job" class="min-w-[220px] bg-slate-900 border border-slate-700 rounded-lg px-2 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-violet-500/50">
+                  <option value="">Loading jobs...</option>
+                </select>
+              </label>
               <label class="text-xs text-slate-400 flex items-center gap-2">Lines
                 <select id="logs-lines" class="bg-slate-900 border border-slate-700 rounded-lg px-2 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-violet-500/50">
                   <option value="120">120</option>
-                  <option value="240" selected>240</option>
-                  <option value="500">500</option>
-                  <option value="1000">1000</option>
+                  <option value="240">240</option>
+                  <option value="500" selected>500</option>
                 </select>
               </label>
               <label class="text-xs text-slate-400 flex items-center gap-2 px-2.5 py-1.5 rounded-lg bg-slate-900 border border-slate-700">
@@ -442,7 +446,7 @@
               <button id="refresh-logs" class="text-xs px-2.5 py-1.5 rounded-lg bg-slate-900 hover:bg-slate-800 border border-slate-700 flex items-center gap-1.5"><i data-lucide="refresh-cw" class="w-3.5 h-3.5"></i>Refresh</button>
             </div>
           </div>
-          <div id="logs-grid" class="grid xl:grid-cols-2 gap-4 p-5"></div>
+          <div id="logs-grid" class="p-5"></div>
         </div>
       </section>
 
@@ -1135,8 +1139,12 @@ document.addEventListener('DOMContentLoaded', async () => {
     renderUsers(await fetchUsers());
     toast('Users refreshed', 'info');
   };
-  document.getElementById('refresh-logs').onclick = refreshLogs;
-  document.getElementById('logs-lines').onchange = refreshLogs;
+  document.getElementById("refresh-logs").onclick = refreshLogs;
+  document.getElementById("logs-lines").onchange = refreshLogs;
+  document.getElementById("logs-job").onchange = () => {
+    localStorage.setItem("pm_logs_job", document.getElementById("logs-job").value || "");
+    refreshSelectedLog();
+  };
   document.getElementById('logs-autorefresh').onchange = () => {
     if (logsPoller) { clearInterval(logsPoller); logsPoller = null; }
     if (document.getElementById('logs-autorefresh').checked) logsPoller = setInterval(refreshLogs, 5000);
@@ -1149,52 +1157,111 @@ document.addEventListener('DOMContentLoaded', async () => {
     const n = parseInt(vals.duration || fallback, 10);
     return Number.isFinite(n) && n >= 0 ? n : fallback;
   }
+  const SCRIPT_LOG_JOBS = [
+    { job: "transcribe", title: "Transcription", page: "transcribe", log_file: "/app/data/transcription.log" },
+    { job: "translate", title: "Translation", page: "translate", log_file: "/app/data/translation.log" },
+    { job: "maintenance-audit", title: "Library Audit", page: "maintenance", log_file: "/app/data/maintenance.log" },
+    { job: "maintenance-dupes", title: "Duplicate Cleanup", page: "maintenance", log_file: "/app/data/maintenance.log" },
+    { job: "maintenance-pgs", title: "PGS Cleanup", page: "maintenance", log_file: "/app/data/maintenance.log" },
+    { job: "maintenance-all", title: "Full Maintenance", page: "maintenance", log_file: "/app/data/maintenance.log" }
+  ];
+  let logsJobsCache = [];
+
   function appendLogLine(el, line) {
     el.textContent = `${el.textContent || ''}${el.textContent ? '\n' : ''}[${new Date().toLocaleTimeString()}] ${line}`;
     el.scrollTop = el.scrollHeight;
   }
+  function getLogLineCount() {
+    const n = parseInt(document.getElementById("logs-lines")?.value || "500", 10);
+    return Math.max(1, Math.min(Number.isFinite(n) ? n : 500, 500));
+  }
+
+  async function fetchLogJobStatuses() {
+    if (DEMO) return SCRIPT_LOG_JOBS.map(job => ({ ...job, running: false, mode: "demo" }));
+    const results = await Promise.all(SCRIPT_LOG_JOBS.map(async base => {
+      try {
+        const res = await apiFetch(`${API_BASE}/api/scripts/${encodeURIComponent(base.job)}/status`, { signal: AbortSignal.timeout(5000) });
+        if (!res.ok) throw new Error(`status HTTP ${res.status}`);
+        const status = await res.json();
+        return { ...base, ...status };
+      } catch (error) {
+        return { ...base, status_error: error.message || "status unavailable" };
+      }
+    }));
+    return results;
+  }
+
+  function chooseDefaultLogJob(jobs) {
+    const current = document.getElementById("logs-job")?.value || "";
+    if (current && jobs.some(job => job.job === current)) return current;
+    const running = jobs.find(job => job.running);
+    if (running) return running.job;
+    const recent = [...jobs].sort((a, b) => Number(b.log_mtime || 0) - Number(a.log_mtime || 0))[0];
+    if (recent?.log_mtime) return recent.job;
+    const saved = localStorage.getItem("pm_logs_job") || "";
+    if (saved && jobs.some(job => job.job === saved)) return saved;
+    return jobs[0]?.job || "";
+  }
+
+  function renderLogOptions(jobs, selectedJob) {
+    const select = document.getElementById("logs-job");
+    if (!select) return;
+    select.innerHTML = jobs.map(job => {
+      const state = job.running ? "running" : (job.log_exists ? "last log" : "no log");
+      return `<option value="${escapeHtml(job.job)}" ${job.job === selectedJob ? "selected" : ""}>${escapeHtml(job.title || job.job)} - ${state}</option>`;
+    }).join("");
+  }
+
   refreshLogs = async function() {
-    const grid = document.getElementById('logs-grid');
+    const grid = document.getElementById("logs-grid");
     if (!grid) return;
-    const lineCount = parseInt(document.getElementById('logs-lines')?.value || '240', 10) || 240;
-    grid.innerHTML = `<div class="col-span-full text-sm text-slate-500">Loading script logs...</div>`;
+    grid.innerHTML = `<div class="text-sm text-slate-500">Loading script logs...</div>`;
     try {
-      const jobsPayload = DEMO
-        ? { jobs: MOCK.script_jobs || [] }
-        : await (async () => {
-            const res = await apiFetch(`${API_BASE}/api/scripts/jobs`, { signal: AbortSignal.timeout(5000) });
-            if (!res.ok) throw new Error(`jobs HTTP ${res.status}`);
-            return await res.json();
-          })();
-      const jobs = jobsPayload?.jobs || [];
-      if (!jobs.length) {
-        grid.innerHTML = `<div class="col-span-full text-sm text-slate-500">No PlexMind script logs found.</div>`;
+      logsJobsCache = await fetchLogJobStatuses();
+      if (!logsJobsCache.length) {
+        grid.innerHTML = `<div class="text-sm text-slate-500">No PlexMind script logs found.</div>`;
         return;
       }
-      grid.innerHTML = jobs.map(job => renderLogShell(job)).join('');
-      lucide.createIcons({ nodes: [grid] });
-      await Promise.all(jobs.map(job => refreshLogCard(job, lineCount).catch(e => showLogCardError(job, e))));
+      const selectedJob = chooseDefaultLogJob(logsJobsCache);
+      renderLogOptions(logsJobsCache, selectedJob);
+      if (selectedJob) localStorage.setItem("pm_logs_job", selectedJob);
+      await refreshSelectedLog();
     } catch (e) {
-      grid.innerHTML = `<div class="col-span-full text-sm text-red-200">Could not load script logs: ${escapeHtml(e.message || 'unknown error')}</div>`;
+      grid.innerHTML = `<div class="text-sm text-red-200">Could not load script logs: ${escapeHtml(e.message || "unknown error")}</div>`;
     }
+  }
+
+  async function refreshSelectedLog() {
+    const grid = document.getElementById("logs-grid");
+    const select = document.getElementById("logs-job");
+    if (!grid || !select) return;
+    const jobName = select.value || chooseDefaultLogJob(logsJobsCache);
+    const job = logsJobsCache.find(item => item.job === jobName) || SCRIPT_LOG_JOBS.find(item => item.job === jobName);
+    if (!job) {
+      grid.innerHTML = `<div class="text-sm text-slate-500">No log job selected.</div>`;
+      return;
+    }
+    grid.innerHTML = renderLogShell(job);
+    lucide.createIcons({ nodes: [grid] });
+    await refreshLogCard(job, getLogLineCount()).catch(e => showLogCardError(job, e));
   }
 
   function renderLogShell(job) {
     const running = !!job.running;
-    const dot = running ? 'bg-emerald-400 shadow-[0_0_8px_rgba(16,185,129,.6)]' : 'bg-slate-600';
-    const status = running ? `Running pid ${escapeHtml(String(job.pid || 'unknown'))}` : 'Idle';
-    return `<article class="rounded-2xl bg-slate-900/50 border border-slate-700/60 overflow-hidden flex flex-col min-h-[420px]">
+    const dot = running ? "bg-emerald-400 shadow-[0_0_8px_rgba(16,185,129,.6)]" : "bg-slate-600";
+    const status = running ? `Running pid ${escapeHtml(String(job.pid || "unknown"))}` : (job.status_error ? `Status unavailable: ${escapeHtml(job.status_error)}` : "Idle");
+    return `<article class="rounded-2xl bg-slate-900/50 border border-slate-700/60 overflow-hidden flex flex-col min-h-[520px]">
       <div class="px-4 py-3 border-b border-slate-800 flex items-start justify-between gap-3">
         <div class="min-w-0">
           <h4 class="font-semibold flex items-center gap-2"><span class="w-2.5 h-2.5 rounded-full ${dot}"></span>${escapeHtml(job.title || job.job)}</h4>
-          <p class="text-xs text-slate-500 mt-1 truncate">${status} · ${escapeHtml(job.log_file || '')}</p>
+          <p class="text-xs text-slate-500 mt-1 truncate">${status} · ${escapeHtml(job.log_file || "")}</p>
         </div>
         <div class="flex items-center gap-2 shrink-0">
           <button data-log-download="${escapeHtml(job.job)}" title="Download log" class="text-xs text-slate-400 hover:text-white flex items-center gap-1"><i data-lucide="download" class="w-3.5 h-3.5"></i></button>
           <button data-log-open-job="${escapeHtml(job.job)}" class="text-xs px-2 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700">Open</button>
         </div>
       </div>
-      <pre data-log-job="${escapeHtml(job.job)}" class="flex-1 p-4 text-[12px] leading-5 font-mono text-slate-300 overflow-auto min-h-[340px] whitespace-pre-wrap">Loading log...</pre>
+      <pre data-log-job="${escapeHtml(job.job)}" class="flex-1 p-4 text-[12px] leading-5 font-mono text-slate-300 overflow-auto min-h-[430px] whitespace-pre-wrap">Loading log...</pre>
     </article>`;
   }
 
@@ -1207,19 +1274,19 @@ document.addEventListener('DOMContentLoaded', async () => {
       const res = await apiFetch(`${API_BASE}/api/scripts/${encodeURIComponent(job.job)}/log?lines=${lineCount}`, { signal: AbortSignal.timeout(5000) });
       if (!res.ok) throw new Error(`${job.job} log HTTP ${res.status}`);
       const data = await res.json();
-      logEl.textContent = data.log || 'No log output yet.';
+      logEl.textContent = data.log || "No log output yet.";
     }
     logEl.scrollTop = logEl.scrollHeight;
     const dl = document.querySelector(`[data-log-download="${CSS.escape(job.job)}"]`);
     if (dl) dl.onclick = () => downloadLog(logEl, `${job.job}-${new Date().toISOString().slice(0,10)}.txt`);
     const open = document.querySelector(`[data-log-open-job="${CSS.escape(job.job)}"]`);
-    if (open) open.onclick = () => showPage(job.page || 'logs');
+    if (open) open.onclick = () => showPage(job.page || "logs");
   }
 
   function showLogCardError(job, error) {
     const logEl = document.querySelector(`[data-log-job="${CSS.escape(job.job)}"]`);
     if (!logEl) return;
-    logEl.textContent = `Could not load ${job.job} log: ${error.message || 'unknown error'}`;
+    logEl.textContent = `Could not load ${job.job} log: ${error.message || "unknown error"}`;
   }
 
   if (currentRoutePage() === 'logs') refreshLogs();

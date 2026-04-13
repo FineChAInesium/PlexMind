@@ -82,7 +82,7 @@ limiter = Limiter(key_func=get_remote_address)
 app = FastAPI(
     title="PlexMind",
     description="Gemma 3 powered movie/TV recommendation engine for Plex",
-    version="0.8.9",
+    version="0.8.10",
     lifespan=lifespan,
 )
 app.state.limiter = limiter
@@ -518,7 +518,7 @@ async def script_job_status(job: str):
 
 
 @app.get("/api/scripts/{job}/log", dependencies=[Depends(_require_key)])
-async def script_job_log(job: str, lines: int = Query(200, ge=1, le=1000)):
+async def script_job_log(job: str, lines: int = Query(200, ge=1, le=500)):
     """Return the tail of a transcription or translation log."""
     job = _validate_script_job(job)
     return await _scripts_request("GET", f"/jobs/{job}/log", params={"lines": lines})
