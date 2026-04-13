@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.8.1 - 2026-04-13
+
+- Align the dashboard, FastAPI metadata, package metadata, and script runtime banners on the `v0.8.1` release line.
+- Replace the old standalone script `2.0` labels with PlexMind release-line versions so script logs and docs no longer imply a separate production-ready major version.
+
 ## v0.8.0 - 2026-04-12
 
 - Add a live Whisper ASR health probe to `/health` using the configured `WHISPER_API_URL`.

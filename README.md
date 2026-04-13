@@ -18,15 +18,16 @@ The demo uses mock data in the browser. A real install connects to your Plex ser
 
 ## Versioning Note
 
-PlexMind is currently on the `v0.8.x` release line. The project briefly published `v2.1.0` and `v2.1.1` tags while the dashboard and container workflow were still being hardened. Those numbers overstated the maturity of the project, so the release line was reset to a more honest pre-1.0 sequence:
+PlexMind is currently on the `v0.8.x` release line, with `v0.8.1` as the current metadata and versioning cleanup release. The project briefly published `v2.1.0` and `v2.1.1` tags while the dashboard and container workflow were still being hardened. Those numbers overstated the maturity of the project, so the release line was reset to a more honest pre-1.0 sequence:
 
 | Former tag | Replacement tag | What it represents |
 |---|---|---|
 | `v2.1.0` | `v0.7.0` | GUI-owned script jobs, compiled Tailwind, local script execution, recommendation history, and CORS hardening. |
 | `v2.1.1` | `v0.7.1` | Script log polling resilience and already-running job handling. |
-| unpublished `v2.1.2` work | `v0.8.0` | Live Whisper ASR dashboard status wiring and the current release line. |
+| unpublished `v2.1.2` work | `v0.8.0` | Live Whisper ASR dashboard status wiring. |
+| script `2.0` labels | `v0.8.1` | Aligns script headers and runtime banners with the app release line. |
 
-This was a version-number correction, not a code rollback. `v0.8.0` includes the work from the short-lived `v2.1.x` line plus the Whisper ASR dashboard status fix. The older `v2.0.0` tag may still appear because GitHub rejected its retroactive `v0.6.0` replacement with the current OAuth token; that old tag touches workflow files and requires a token with `workflow` scope to replace cleanly.
+This was a version-number correction, not a code rollback. `v0.8.0` includes the work from the short-lived `v2.1.x` line plus the Whisper ASR dashboard status fix. `v0.8.1` keeps that code line and cleans up metadata so the shell scripts no longer advertise a separate `2.0` version. The older `v2.0.0` tag may still appear because GitHub rejected its retroactive `v0.6.0` replacement with the current OAuth token; that old tag touches workflow files and requires a token with `workflow` scope to replace cleanly.
 
 ---
 

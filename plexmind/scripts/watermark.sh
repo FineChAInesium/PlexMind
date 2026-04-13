@@ -1,7 +1,7 @@
 #!/bin/bash
 # ==============================================================================
 # watermark.sh — SRT Mass Watermark Injector
-# Version: 2.0 — Containerized (PlexMind Suite)
+# Version: 0.8.1 — PlexMind release line
 #
 # Recursively scans for .srt files and safely prepends a 5-second
 # watermark block to the beginning of the file.
