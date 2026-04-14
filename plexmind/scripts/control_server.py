@@ -68,6 +68,33 @@ def _tail(path, lines):
     return "\n".join(data)
 
 
+def _current_session_tail(path, job, lines):
+    p = Path(path)
+    if not p.exists():
+        return ""
+    all_lines = p.read_text(errors="replace").splitlines()
+    markers = (
+        f"Control API starting {job};",
+        f"PlexMind API starting {job};",
+    )
+    fallback_markers = {
+        "transcribe": ("Transcription Backfill",),
+        "translate": ("Translation Backfill",),
+    }
+    start = None
+    for index in range(len(all_lines) - 1, -1, -1):
+        line = all_lines[index]
+        if any(marker in line for marker in markers):
+            start = index
+            break
+        if any(marker in line for marker in fallback_markers.get(job, ())):
+            start = index
+            break
+    if start is None:
+        return ""
+    return "\n".join(all_lines[start:][-lines:])
+
+
 def _status(job):
     pid = _running_pid(job)
     proc = PROCS.get(job)
@@ -113,8 +140,12 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(200, _status(parts[1]))
         if len(parts) == 3 and parts[0] == "jobs" and parts[1] in JOBS and parts[2] == "log":
             lines = int(parse_qs(parsed.query).get("lines", ["200"])[0])
-            lines = max(1, min(lines, 1000))
-            return self._json(200, {"job": parts[1], "log": _tail(JOBS[parts[1]]["log"], lines)})
+            lines = max(1, min(lines, 500))
+            return self._json(200, {
+                "job": parts[1],
+                "log": _current_session_tail(JOBS[parts[1]]["log"], parts[1], lines),
+                "session_only": True,
+            })
         return self._json(404, {"detail": "not found"})
 
     def do_POST(self):

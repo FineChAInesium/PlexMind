@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.8.14 - 2026-04-14
+
+- Limit dashboard script progress logs to the latest session for each selected job instead of showing retained historical log output.
+- Keep full retained log files on disk while marking API log responses as current-session views.
+
 ## v0.8.13 - 2026-04-14
 
 - Sync the transcription language fix into the API image scripts directory so GUI-launched transcription uses the same logic packaged for sidecar scripts.

@@ -27,7 +27,7 @@
       </div>
       <div>
         <div class="font-semibold leading-none tracking-tight">PlexMind Suite</div>
-        <div class="text-[11px] text-slate-400 mt-1">v0.8.13 • Self-hosted</div>
+        <div class="text-[11px] text-slate-400 mt-1">v0.8.14 • Self-hosted</div>
       </div>
     </div>
 
@@ -425,7 +425,7 @@
           <div class="px-5 py-4 border-b border-slate-700/60 flex flex-col lg:flex-row lg:items-center lg:justify-between gap-3">
             <div>
               <h3 class="font-semibold flex items-center gap-2"><i data-lucide="scroll-text" class="w-4 h-4 text-violet-400"></i>Script Logs</h3>
-              <p class="text-sm text-slate-400 mt-1">Read logs from PlexMind-managed transcription, translation, and maintenance scripts.</p>
+              <p class="text-sm text-slate-400 mt-1">Show the current session log for PlexMind-managed transcription, translation, and maintenance scripts.</p>
             </div>
             <div class="flex flex-wrap items-center gap-2">
               <label class="text-xs text-slate-400 flex items-center gap-2">Job
@@ -1274,7 +1274,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       const res = await apiFetch(`${API_BASE}/api/scripts/${encodeURIComponent(job.job)}/log?lines=${lineCount}`, { signal: AbortSignal.timeout(5000) });
       if (!res.ok) throw new Error(`${job.job} log HTTP ${res.status}`);
       const data = await res.json();
-      logEl.textContent = data.log || "No log output yet.";
+      logEl.textContent = data.log || "No current session log output yet.";
     }
     logEl.scrollTop = logEl.scrollHeight;
     const dl = document.querySelector(`[data-log-download="${CSS.escape(job.job)}"]`);
@@ -1295,7 +1295,7 @@ async function refreshScriptLog(job, logEl) {
     const logRes = await apiFetch(`${API_BASE}/api/scripts/${job}/log?lines=240`, { signal: AbortSignal.timeout(5000) });
     if (logRes.ok) {
       const data = await logRes.json();
-      logEl.textContent = data.log || 'No log output yet.';
+      logEl.textContent = data.log || 'No current session log output yet.';
       logEl.scrollTop = logEl.scrollHeight;
     } else {
       throw new Error(`log HTTP ${logRes.status}`);

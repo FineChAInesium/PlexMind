@@ -137,6 +137,39 @@ def _tail(path: Path, lines: int) -> str:
     return "\n".join(path.read_text(errors="replace").splitlines()[-lines:])
 
 
+def _current_session_tail(path: Path, job: str, lines: int) -> str:
+    if not path.exists():
+        return ""
+
+    all_lines = path.read_text(errors="replace").splitlines()
+    markers = (
+        f"PlexMind API starting {job};",
+        f"Control API starting {job};",
+    )
+    fallback_markers = {
+        "transcribe": ("Transcription Backfill",),
+        "translate": ("Translation Backfill",),
+        "maintenance-audit": ("Starting maintenance audit", "MAINTENANCE: audit"),
+        "maintenance-dupes": ("Starting duplicate cleanup", "MAINTENANCE: dedup"),
+        "maintenance-pgs": ("Starting PGS cleanup", "MAINTENANCE: pgs"),
+        "maintenance-all": ("Starting full maintenance", "MAINTENANCE: all"),
+    }
+
+    start = None
+    for index in range(len(all_lines) - 1, -1, -1):
+        line = all_lines[index]
+        if any(marker in line for marker in markers):
+            start = index
+            break
+        if any(marker in line for marker in fallback_markers.get(job, ())):
+            start = index
+            break
+
+    if start is None:
+        return ""
+    return "\n".join(all_lines[start:][-lines:])
+
+
 def _script_available(job: str) -> bool:
     return _job(job)["cmd"][0].exists()
 
@@ -187,7 +220,12 @@ def jobs() -> dict[str, Any]:
 def log(job: str, lines: int = 200) -> dict[str, Any]:
     info = _job(job)
     lines = max(1, min(int(lines), 500))
-    return {"job": job, "log": _tail(info["log"], lines), "mode": "local"}
+    return {
+        "job": job,
+        "log": _current_session_tail(info["log"], job, lines),
+        "mode": "local",
+        "session_only": True,
+    }
 
 
 def start(job: str, body: dict[str, Any] | None = None) -> dict[str, Any]:

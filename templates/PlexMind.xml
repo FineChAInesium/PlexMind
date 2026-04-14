@@ -17,7 +17,7 @@
   <Icon>https://raw.githubusercontent.com/FineChAInesium/PlexMind/main/templates/icon.png</Icon>
   <ExtraParams>--gpus all --group-add 281</ExtraParams>
   <Description>
-    PlexMind generates personalized Plex recommendations using a local LLM. No cloud. No subscriptions.&#xD;&#xA;&#xD;&#xA;Version line: v0.8.13. See the full README at https://github.com/FineChAInesium/PlexMind for setup instructions and configuration options.
+    PlexMind generates personalized Plex recommendations using a local LLM. No cloud. No subscriptions.&#xD;&#xA;&#xD;&#xA;Version line: v0.8.14. See the full README at https://github.com/FineChAInesium/PlexMind for setup instructions and configuration options.
   </Description>
 
   <Networking>
