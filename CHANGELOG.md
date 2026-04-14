@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.8.16 - 2026-04-14
+
+- Add a current-session recommendation batch log alongside transcription, translation, and maintenance logs.
+- Expose recommendation log status and log endpoints for the dashboard Logs page.
+- Include Recommendations in the Logs job picker and record manual or scheduled recommendation batch progress to `/app/data/recommendations.log`.
+
 ## v0.8.15 - 2026-04-14
 
 - Rewrite the README with clearer product positioning, setup flow, architecture, API, security, and dashboard documentation.

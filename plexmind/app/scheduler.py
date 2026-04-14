@@ -13,6 +13,7 @@ import os
 import re
 import subprocess
 from datetime import datetime
+from pathlib import Path
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -23,6 +24,8 @@ load_dotenv()
 GPU_THRESHOLD_PCT = int(os.getenv("GPU_THRESHOLD_PCT", "30"))
 GPU_BACKOFF_MINUTES = int(os.getenv("GPU_BACKOFF_MINUTES", "30"))
 MIN_HISTORY_ITEMS = int(os.getenv("MIN_HISTORY_ITEMS", "3"))
+DATA_DIR = Path(os.getenv("DATA_DIR") or ("/app/data" if Path("/app").exists() else "data"))
+RECOMMENDATION_LOG_PATH = DATA_DIR / "recommendations.log"
 
 log = logging.getLogger("plexmind.scheduler")
 
@@ -30,6 +33,96 @@ scheduler = AsyncIOScheduler(timezone="UTC")
 
 # Prevents simultaneous batch runs (from cron + API trigger racing each other)
 _run_lock = asyncio.Lock()
+
+
+def _log_ts() -> str:
+    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _append_recommendation_log(message: str) -> None:
+    try:
+        RECOMMENDATION_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with RECOMMENDATION_LOG_PATH.open("a", encoding="utf-8") as handle:
+            handle.write(f"{_log_ts()} - {message}\n")
+    except OSError:
+        log.warning("Could not write recommendation log", exc_info=True)
+
+
+def _event_log_line(event: dict) -> str | None:
+    event_type = event.get("type")
+    if event_type == "start":
+        return f"USERS: {event.get('total', 0)} queued; triggered_by={event.get('triggered_by', 'unknown')}"
+    if event_type == "user_start":
+        return f"PROCESSING: {event.get('user', 'unknown')}"
+    if event_type == "user":
+        user = event.get("user", "unknown")
+        status = event.get("status", "unknown")
+        if status == "ok":
+            return f"USER: {user} OK ({event.get('recs', 0)} recs)"
+        if status == "skipped":
+            return f"USER: {user} SKIPPED ({event.get('reason', 'unknown')})"
+        if status == "error":
+            return f"USER: {user} ERROR ({event.get('error', 'unknown error')})"
+        return f"USER: {user} {status}"
+    if event_type == "gpu_wait":
+        return f"GPU_WAIT: {event.get('user', 'batch')} at {event.get('pct', '?')}%"
+    if event_type == "done":
+        summary = event.get("summary") or {}
+        return "DONE: {ok} ok, {skipped} skipped, {errors} errors, {total} total".format(
+            ok=summary.get("ok", 0),
+            skipped=summary.get("skipped", 0),
+            errors=summary.get("errors", 0),
+            total=summary.get("total", 0),
+        )
+    if event_type == "already_running":
+        return "SKIPPED: recommendation batch already running"
+    if event_type == "error":
+        return f"ERROR: {event.get('error', 'unknown error')}"
+    return None
+
+
+def _tail(path: Path, lines: int) -> str:
+    if not path.exists():
+        return ""
+    return "\n".join(path.read_text(errors="replace").splitlines()[-lines:])
+
+
+def recommendation_log_tail(lines: int = 200) -> str:
+    lines = max(1, min(int(lines), 500))
+    if not RECOMMENDATION_LOG_PATH.exists():
+        return ""
+    all_lines = RECOMMENDATION_LOG_PATH.read_text(errors="replace").splitlines()
+    start = None
+    for index in range(len(all_lines) - 1, -1, -1):
+        if "Recommendation Batch" in all_lines[index]:
+            start = index
+            break
+    if start is None:
+        return _tail(RECOMMENDATION_LOG_PATH, lines)
+    return "\n".join(all_lines[start:][-lines:])
+
+
+def recommendation_log_status() -> dict:
+    try:
+        stat = RECOMMENDATION_LOG_PATH.stat()
+        log_meta = {"log_exists": True, "log_size": stat.st_size, "log_mtime": stat.st_mtime}
+    except OSError:
+        log_meta = {"log_exists": False, "log_size": 0, "log_mtime": 0}
+    return {
+        "job": "recommendations",
+        "title": "Recommendations",
+        "group": "recommendations",
+        "page": "recommendations",
+        "description": "Generate and sync PlexMind recommendations for Plex users.",
+        "destructive": False,
+        "running": _run_lock.locked(),
+        "pid": os.getpid() if _run_lock.locked() else None,
+        "returncode": None,
+        "log_file": str(RECOMMENDATION_LOG_PATH),
+        "script_available": True,
+        "mode": "local",
+        **log_meta,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -139,6 +232,7 @@ async def run_all_users(triggered_by: str = "scheduler", on_progress=None) -> di
     """
     if _run_lock.locked():
         log.warning("run_all_users called while a run is already in progress — skipping (triggered_by=%s).", triggered_by)
+        _append_recommendation_log(f"Recommendation Batch skipped; already running; triggered_by={triggered_by}")
         result = {
             "triggered_by": triggered_by,
             "timestamp": datetime.utcnow().isoformat(),
@@ -162,12 +256,16 @@ async def _do_run_all_users(triggered_by: str, on_progress=None) -> dict:
     from app.recommender import get_recommendations
 
     async def _emit(event: dict):
+        line = _event_log_line(event)
+        if line:
+            _append_recommendation_log(line)
         if on_progress:
             try:
                 await on_progress(event)
             except Exception:
                 pass  # Never let progress reporting break the run
 
+    _append_recommendation_log(f"Recommendation Batch starting; triggered_by={triggered_by}")
     await _wait_for_idle_gpu()
 
     # Write sentinel so translation/transcription scripts know PlexMind is active.

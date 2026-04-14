@@ -27,7 +27,7 @@
       </div>
       <div>
         <div class="font-semibold leading-none tracking-tight">PlexMind Suite</div>
-        <div class="text-[11px] text-slate-400 mt-1">v0.8.15 • Self-hosted</div>
+        <div class="text-[11px] text-slate-400 mt-1">v0.8.16 • Self-hosted</div>
       </div>
     </div>
 
@@ -425,7 +425,7 @@
           <div class="px-5 py-4 border-b border-slate-700/60 flex flex-col lg:flex-row lg:items-center lg:justify-between gap-3">
             <div>
               <h3 class="font-semibold flex items-center gap-2"><i data-lucide="scroll-text" class="w-4 h-4 text-violet-400"></i>Script Logs</h3>
-              <p class="text-sm text-slate-400 mt-1">Show the current session log for PlexMind-managed transcription, translation, and maintenance scripts.</p>
+              <p class="text-sm text-slate-400 mt-1">Show the current session log for PlexMind-managed recommendations, transcription, translation, and maintenance jobs.</p>
             </div>
             <div class="flex flex-wrap items-center gap-2">
               <label class="text-xs text-slate-400 flex items-center gap-2">Job
@@ -1158,12 +1158,13 @@ document.addEventListener('DOMContentLoaded', async () => {
     return Number.isFinite(n) && n >= 0 ? n : fallback;
   }
   const SCRIPT_LOG_JOBS = [
-    { job: "transcribe", title: "Transcription", page: "transcribe", log_file: "/app/data/transcription.log" },
-    { job: "translate", title: "Translation", page: "translate", log_file: "/app/data/translation.log" },
-    { job: "maintenance-audit", title: "Library Audit", page: "maintenance", log_file: "/app/data/maintenance.log" },
-    { job: "maintenance-dupes", title: "Duplicate Cleanup", page: "maintenance", log_file: "/app/data/maintenance.log" },
-    { job: "maintenance-pgs", title: "PGS Cleanup", page: "maintenance", log_file: "/app/data/maintenance.log" },
-    { job: "maintenance-all", title: "Full Maintenance", page: "maintenance", log_file: "/app/data/maintenance.log" }
+    { job: "recommendations", title: "Recommendations", page: "recommendations", log_file: "/app/data/recommendations.log", api: "recommendations" },
+    { job: "transcribe", title: "Transcription", page: "transcribe", log_file: "/app/data/transcription.log", api: "scripts" },
+    { job: "translate", title: "Translation", page: "translate", log_file: "/app/data/translation.log", api: "scripts" },
+    { job: "maintenance-audit", title: "Library Audit", page: "maintenance", log_file: "/app/data/maintenance.log", api: "scripts" },
+    { job: "maintenance-dupes", title: "Duplicate Cleanup", page: "maintenance", log_file: "/app/data/maintenance.log", api: "scripts" },
+    { job: "maintenance-pgs", title: "PGS Cleanup", page: "maintenance", log_file: "/app/data/maintenance.log", api: "scripts" },
+    { job: "maintenance-all", title: "Full Maintenance", page: "maintenance", log_file: "/app/data/maintenance.log", api: "scripts" }
   ];
   let logsJobsCache = [];
 
@@ -1180,10 +1181,13 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (DEMO) return SCRIPT_LOG_JOBS.map(job => ({ ...job, running: false, mode: "demo" }));
     const results = await Promise.all(SCRIPT_LOG_JOBS.map(async base => {
       try {
-        const res = await apiFetch(`${API_BASE}/api/scripts/${encodeURIComponent(base.job)}/status`, { signal: AbortSignal.timeout(5000) });
+        const statusUrl = base.api === "recommendations"
+          ? `${API_BASE}/api/recommendations/log/status`
+          : `${API_BASE}/api/scripts/${encodeURIComponent(base.job)}/status`;
+        const res = await apiFetch(statusUrl, { signal: AbortSignal.timeout(5000) });
         if (!res.ok) throw new Error(`status HTTP ${res.status}`);
         const status = await res.json();
-        return { ...base, ...status };
+        return { ...base, ...status, api: base.api || "scripts" };
       } catch (error) {
         return { ...base, status_error: error.message || "status unavailable" };
       }
@@ -1271,7 +1275,10 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (DEMO) {
       logEl.textContent = `${job.title || job.job} demo log\nNo live script output in demo mode.`;
     } else {
-      const res = await apiFetch(`${API_BASE}/api/scripts/${encodeURIComponent(job.job)}/log?lines=${lineCount}`, { signal: AbortSignal.timeout(5000) });
+      const logUrl = job.api === "recommendations"
+        ? `${API_BASE}/api/recommendations/log?lines=${lineCount}`
+        : `${API_BASE}/api/scripts/${encodeURIComponent(job.job)}/log?lines=${lineCount}`;
+      const res = await apiFetch(logUrl, { signal: AbortSignal.timeout(5000) });
       if (!res.ok) throw new Error(`${job.job} log HTTP ${res.status}`);
       const data = await res.json();
       logEl.textContent = data.log || "No current session log output yet.";

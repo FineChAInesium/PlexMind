@@ -82,7 +82,7 @@ limiter = Limiter(key_func=get_remote_address)
 app = FastAPI(
     title="PlexMind",
     description="Gemma 3 powered movie/TV recommendation engine for Plex",
-    version="0.8.14",
+    version="0.8.16",
     lifespan=lifespan,
 )
 app.state.limiter = limiter
@@ -315,6 +315,23 @@ def user_history(user_id: str, _: None = Depends(_require_key)):
 def recent_recommendations(limit: int = Query(24, ge=1, le=60), _: None = Depends(_require_key)):
     """Return recently generated recommendations from persistent history."""
     return cache.get_recent_recommendations(limit)
+
+
+@app.get("/api/recommendations/log/status", dependencies=[Depends(_require_key)])
+def recommendation_log_status():
+    """Return dashboard log metadata for recommendation batch runs."""
+    return scheduler.recommendation_log_status()
+
+
+@app.get("/api/recommendations/log", dependencies=[Depends(_require_key)])
+def recommendation_log(lines: int = Query(200, ge=1, le=500)):
+    """Return the current recommendation batch log session."""
+    return {
+        "job": "recommendations",
+        "log": scheduler.recommendation_log_tail(lines),
+        "mode": "local",
+        "session_only": True,
+    }
 
 
 @app.get("/api/users/{user_id}/recommendations", response_model=list[RecommendationItem])
