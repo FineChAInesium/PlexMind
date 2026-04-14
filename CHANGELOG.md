@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.8.13 - 2026-04-14
+
+- Sync the transcription language fix into the API image scripts directory so GUI-launched transcription uses the same logic packaged for sidecar scripts.
+
 ## v0.8.12 - 2026-04-14
 
 - Use primary audio stream language metadata before falling back to Whisper profiling so Japanese audio is not forced through English transcription.

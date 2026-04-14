@@ -132,6 +132,73 @@ check_dependencies() {
     log "All dependencies available: ${required[*]}"
 }
 
+
+stop_docker_container() {
+    local service_name="$1"
+    shift
+
+    [ "${STOP_SIDECAR_CONTAINERS:-1}" = "1" ] || return 0
+
+    local socket="${DOCKER_SOCKET:-/var/run/docker.sock}"
+    if [ ! -S "$socket" ]; then
+        log "${service_name}: Docker socket not available at ${socket}; leaving sidecar container running."
+        return 0
+    fi
+    if ! command -v curl >/dev/null 2>&1; then
+        log "${service_name}: curl not available; cannot stop sidecar container."
+        return 0
+    fi
+
+    local timeout="${CONTAINER_STOP_TIMEOUT_SECONDS:-30}"
+    local name status
+    for name in "$@"; do
+        [ -n "${name:-}" ] || continue
+        status=$(curl -sS -o /dev/null -w "%{http_code}" --unix-socket "$socket" \
+            -X POST "http://docker/containers/${name}/stop?t=${timeout}" 2>/dev/null || true)
+        case "$status" in
+            204) log "${service_name}: stopped container ${name}."; return 0 ;;
+            304) log "${service_name}: container ${name} already stopped."; return 0 ;;
+            404) ;;
+            *) log "${service_name}: Docker stop request for ${name} returned HTTP ${status:-unknown}." ;;
+        esac
+    done
+
+    log "${service_name}: no matching sidecar container found to stop."
+}
+
+
+start_docker_container() {
+    local service_name="$1"
+    shift
+
+    [ "${START_SIDECAR_CONTAINERS:-1}" = "1" ] || return 0
+
+    local socket="${DOCKER_SOCKET:-/var/run/docker.sock}"
+    if [ ! -S "$socket" ]; then
+        log "${service_name}: Docker socket not available at ${socket}; cannot start sidecar container."
+        return 0
+    fi
+    if ! command -v curl >/dev/null 2>&1; then
+        log "${service_name}: curl not available; cannot start sidecar container."
+        return 0
+    fi
+
+    local name status
+    for name in "$@"; do
+        [ -n "${name:-}" ] || continue
+        status=$(curl -sS -o /dev/null -w "%{http_code}" --unix-socket "$socket" \
+            -X POST "http://docker/containers/${name}/start" 2>/dev/null || true)
+        case "$status" in
+            204) log "${service_name}: started container ${name}."; return 0 ;;
+            304) log "${service_name}: container ${name} already running."; return 0 ;;
+            404) ;;
+            *) log "${service_name}: Docker start request for ${name} returned HTTP ${status:-unknown}." ;;
+        esac
+    done
+
+    log "${service_name}: no matching sidecar container found to start."
+}
+
 wait_for_whisper_api() {
     local MAX="${1:-30}"
     log "Waiting for Whisper API at ${WHISPER_API_URL}..."
@@ -683,7 +750,8 @@ PYEOF
 score_confidence() {
     local VIDEO_FILE="$1"
     local SRT_FILE="$2"
-    local OFFSET="${3:-300}"
+    local CHECK_LANGUAGE="${3:-en}"
+    local OFFSET="${4:-300}"
     local SAMPLE_DURATION=30
 
     local TEMP_SAMPLE="/tmp/confidence_sample_$$.wav"
@@ -700,7 +768,10 @@ score_confidence() {
         return
     fi
 
-    local API_URL="${WHISPER_API_URL}?task=transcribe&output=srt&language=en"
+    local API_URL="${WHISPER_API_URL}?task=transcribe&output=srt"
+    if [ -n "$CHECK_LANGUAGE" ] && [ "$CHECK_LANGUAGE" != "auto" ]; then
+        API_URL="${API_URL}&language=${CHECK_LANGUAGE}"
+    fi
     curl -s --fail --connect-timeout 30 --max-time 300 \
         -X POST -F "audio_file=@${TEMP_SAMPLE}" \
         "$API_URL" -o "$TEMP_SRT" 2>/dev/null

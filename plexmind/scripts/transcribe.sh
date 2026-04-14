@@ -1,7 +1,7 @@
 #!/bin/bash
 # ==============================================================================
 # transcribe.sh — Library Transcription Backfill
-# Version: 0.8.3 — PlexMind release line
+# Version: 0.8.13 — PlexMind release line
 #
 # Scans Movies and TV directories, transcribes via Whisper ASR API.
 # Features: language profiling, bilingual VIP handling, hallucination
@@ -31,6 +31,25 @@ MAX_RUNTIME_MINUTES="${MAX_RUNTIME_MINUTES:-0}"
 # Bilingual / reality VIP lists (comma-separated env vars → arrays)
 IFS=',' read -ra KNOWN_BILINGUAL_TITLES <<< "${KNOWN_BILINGUAL_TITLES:-90 Day Fiancé,Shogun,Shōgun,Squid Game}"
 IFS=',' read -ra KNOWN_ENGLISH_REALITY_TITLES <<< "${KNOWN_ENGLISH_REALITY_TITLES:-Summer House,Vanderpump Rules}"
+
+normalize_lang_code() {
+    local LANG
+    LANG=$(printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]' | cut -d'-' -f1)
+    case "$LANG" in
+        eng|english) echo "en" ;;
+        jpn|jp|japanese) echo "ja" ;;
+        kor|korean) echo "ko" ;;
+        zho|chi|cmn|yue|chinese) echo "zh" ;;
+        por|portuguese) echo "pt" ;;
+        spa|spanish) echo "es" ;;
+        fre|fra|french) echo "fr" ;;
+        ger|deu|german) echo "de" ;;
+        ita|italian) echo "it" ;;
+        rus|russian) echo "ru" ;;
+        und|unknown|none) echo "" ;;
+        *) echo "$LANG" ;;
+    esac
+}
 
 # --- LOAD SHARED LIBRARY ---
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -95,6 +114,7 @@ EOF
     generate_report
 
     rm -f "$TEMP_AUDIO_FILE" /tmp/transcription_backfill.pid 2>/dev/null
+    stop_docker_container "Whisper" "${WHISPER_CONTAINER_NAME:-}" whisper-asr-webservice plexmind-whisper whisper
 }
 trap cleanup EXIT
 
@@ -194,40 +214,81 @@ process_video() {
     elif [ "$IS_REAL" = true ]; then
         log "Step 1/5: English Reality VIP!"
     else
-        # --- AI LANGUAGE PROFILER ---
-        log "Step 1/5: AI Language Profiler..."
-        local DURATION
-        DURATION=$(ffprobe -v error -show_entries format=duration \
-            -of default=noprint_wrappers=1:nokey=1 "${VIDEO_FILE}" | awk '{print int($1)}')
+        # --- LANGUAGE PROFILER ---
+        local PRIMARY_AUDIO_LANG
+        PRIMARY_AUDIO_LANG=$(ffprobe -v error -select_streams a:0 -show_entries stream_tags=language \
+            -of default=noprint_wrappers=1:nokey=1 "${VIDEO_FILE}" | head -n1)
+        PRIMARY_AUDIO_LANG=$(normalize_lang_code "$PRIMARY_AUDIO_LANG")
 
-        if [ -n "$DURATION" ] && [ "$DURATION" -gt 300 ]; then
-            local FOREIGN_VOTES=0
-            for PERCENT in 15 30 50 70 85; do
-                local ST=$(( DURATION * PERCENT / 100 ))
-                local TS="/tmp/sample_${PERCENT}.wav"
-                ffmpeg -nostdin -ss "$ST" -i "${VIDEO_FILE}" \
-                    -map 0:a:0 -t 30 -vn -acodec pcm_s16le -ar 16000 -ac 1 \
-                    -y "$TS" -loglevel quiet
-                local DL
-                DL=$(curl -s -X POST -F "audio_file=@${TS}" \
-                    "${WHISPER_API_URL}?task=transcribe&output=json" \
-                    | grep -o '"language":"[^"]*"' | cut -d'"' -f4 | head -n1)
-                rm -f "$TS"
-                if [ -n "$DL" ] && [ "$DL" != "en" ] && [ "$DL" != "english" ]; then
-                    log "  -> ${PERCENT}%: [${DL}]"
-                    FOREIGN_VOTES=$((FOREIGN_VOTES+1))
-                    [ -z "$DETECTED_FOREIGN_LANG" ] && DETECTED_FOREIGN_LANG="$DL"
-                else
-                    log "  -> ${PERCENT}%: [en]"
-                fi
-            done
-            if [ "$FOREIGN_VOTES" -gt 0 ]; then
-                log "Verdict: FOREIGN [${DETECTED_FOREIGN_LANG}]"; PROCESSING_MODE="FOREIGN"
-            else
-                log "Verdict: ENGLISH"
-            fi
+        if [ -n "$PRIMARY_AUDIO_LANG" ] && [ "$PRIMARY_AUDIO_LANG" != "en" ]; then
+            log "Step 1/5: Audio metadata language [${PRIMARY_AUDIO_LANG}]"
+            log "Verdict: FOREIGN [${PRIMARY_AUDIO_LANG}]"
+            PROCESSING_MODE="FOREIGN"
+            DETECTED_FOREIGN_LANG="$PRIMARY_AUDIO_LANG"
         else
-            log "Too short for profiling. Default: English."
+            log "Step 1/5: AI Language Profiler..."
+            local DURATION
+            DURATION=$(ffprobe -v error -show_entries format=duration \
+                -of default=noprint_wrappers=1:nokey=1 "${VIDEO_FILE}" | awk '{print int($1)}')
+
+            if [ -n "$DURATION" ] && [ "$DURATION" -gt 300 ]; then
+                local FOREIGN_VOTES=0
+                for PERCENT in 15 30 50 70 85; do
+                    local ST=$(( DURATION * PERCENT / 100 ))
+                    local TS="/tmp/sample_${PERCENT}.wav"
+                    local JSON_FILE="/tmp/profile_${PERCENT}_$$.json"
+                    ffmpeg -nostdin -ss "$ST" -i "${VIDEO_FILE}" \
+                        -map 0:a:0 -t 30 -vn -acodec pcm_s16le -ar 16000 -ac 1 \
+                        -y "$TS" -loglevel quiet
+                    local DL
+                    curl -s -X POST -F "audio_file=@${TS}" \
+                        "${WHISPER_API_URL}?task=transcribe&output=json" -o "$JSON_FILE"
+                    DL=$(python3 - "$JSON_FILE" <<'PYEOF'
+import json, sys, unicodedata
+path = sys.argv[1]
+try:
+    data = json.load(open(path, 'r', encoding='utf-8', errors='replace'))
+except Exception:
+    data = {}
+lang = str(data.get('language') or '').strip().lower()
+if lang:
+    print(lang)
+    raise SystemExit
+text = str(data.get('text') or '')
+letters = [c for c in text if unicodedata.category(c).startswith('L')]
+non_ascii = [c for c in letters if ord(c) > 127]
+if not letters or len(non_ascii) / max(len(letters), 1) < 0.25:
+    print('en')
+    raise SystemExit
+hangul = sum(1 for c in non_ascii if '가' <= c <= '힯' or 'ᄀ' <= c <= 'ᇿ')
+kana = sum(1 for c in non_ascii if '぀' <= c <= 'ヿ')
+arabic = sum(1 for c in non_ascii if '؀' <= c <= 'ۿ')
+cjk = sum(1 for c in non_ascii if '一' <= c <= '鿿')
+if hangul >= max(kana, arabic, cjk): print('ko')
+elif kana >= max(hangul, arabic, cjk): print('ja')
+elif arabic >= max(hangul, kana, cjk): print('ar')
+elif cjk: print('zh')
+else: print('en')
+PYEOF
+                    )
+                    DL=$(normalize_lang_code "$DL")
+                    rm -f "$TS" "$JSON_FILE"
+                    if [ -n "$DL" ] && [ "$DL" != "en" ]; then
+                        log "  -> ${PERCENT}%: [${DL}]"
+                        FOREIGN_VOTES=$((FOREIGN_VOTES+1))
+                        [ -z "$DETECTED_FOREIGN_LANG" ] && DETECTED_FOREIGN_LANG="$DL"
+                    else
+                        log "  -> ${PERCENT}%: [en]"
+                    fi
+                done
+                if [ "$FOREIGN_VOTES" -gt 0 ]; then
+                    log "Verdict: FOREIGN [${DETECTED_FOREIGN_LANG}]"; PROCESSING_MODE="FOREIGN"
+                else
+                    log "Verdict: ENGLISH"
+                fi
+            else
+                log "Too short for profiling. Default: English."
+            fi
         fi
     fi
 
@@ -419,8 +480,11 @@ PYEOF
     fi
 
     # Confidence check (non-blocking)
-    local CONF
-    CONF=$(score_confidence "$VIDEO_FILE" "$FINAL_OUTPUT_FILE" | awk '/^[0-9]+$/ { v=$0 } END { print v }'); CONF="${CONF:-50}"
+    local CONF CONF_LANG
+    CONF_LANG="en"
+    [ "$PROCESSING_MODE" = "FOREIGN" ] && [ -n "$DETECTED_FOREIGN_LANG" ] && CONF_LANG="$DETECTED_FOREIGN_LANG"
+    [ "$PROCESSING_MODE" = "BILINGUAL_VIP" ] && CONF_LANG="auto"
+    CONF=$(score_confidence "$VIDEO_FILE" "$FINAL_OUTPUT_FILE" "$CONF_LANG" | awk '/^[0-9]+$/ { v=$0 } END { print v }'); CONF="${CONF:-50}"
     [ "$CONF" -lt "$CONFIDENCE_THRESHOLD" ] && { log "WARNING: Low confidence ${CONF}/100"; quarantine_video "$VIDEO_FILE" "LOW_CONFIDENCE_${CONF}"; }
 
     case "$PROCESSING_MODE" in
@@ -436,7 +500,7 @@ PYEOF
 # MAIN
 # ==============================================================================
 log "========================================================="
-log "Transcription Backfill v0.8.3 (containerized)"
+log "Transcription Backfill v0.8.13 (containerized)"
 log "Window: $(time_window_label) ($(time_window_hours)h); max runtime: ${MAX_RUNTIME_MINUTES:-0}m; retention: ${LOG_RETENTION_DAYS}d; RUN_NOW=${RUN_NOW}"
 log "========================================================="
 check_dependencies curl ffmpeg ffprobe python3
@@ -452,6 +516,7 @@ if [ -f "$PLEXMIND_SENTINEL" ]; then
     log "PlexMind finished — proceeding."
 fi
 
+start_docker_container "Whisper" "${WHISPER_CONTAINER_NAME:-}" whisper-asr-webservice plexmind-whisper whisper
 wait_for_whisper_api
 
 ALL_MEDIA_DIRS=("${MOVIE_DIR}" "${TV_DIR}")
