@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.8.15 - 2026-04-14
+
+- Rewrite the README with clearer product positioning, setup flow, architecture, API, security, and dashboard documentation.
+- Document local AI dependencies including Ollama models, Whisper ASR webservice, Whisper model/device settings, and the Compose Whisper profile.
+
 ## v0.8.14 - 2026-04-14
 
 - Limit dashboard script progress logs to the latest session for each selected job instead of showing retained historical log output.
