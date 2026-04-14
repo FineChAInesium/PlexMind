@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.8.11 - 2026-04-14
+
+- Serve the existing PlexMind icon at `/favicon.ico` so browser favicon requests no longer return 404.
+
 ## v0.8.10 - 2026-04-13
 
 - Replace the Logs grid with a job dropdown so only the selected script log is loaded.

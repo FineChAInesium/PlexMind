@@ -82,7 +82,7 @@ limiter = Limiter(key_func=get_remote_address)
 app = FastAPI(
     title="PlexMind",
     description="Gemma 3 powered movie/TV recommendation engine for Plex",
-    version="0.8.10",
+    version="0.8.11",
     lifespan=lifespan,
 )
 app.state.limiter = limiter
@@ -703,6 +703,10 @@ if not _no_gui and _os.path.isdir(_static_dir):
     @app.get("/", include_in_schema=False)
     async def dashboard():
         return FileResponse(_os.path.join(_static_dir, "index.html"))
+
+    @app.get("/favicon.ico", include_in_schema=False)
+    async def favicon():
+        return FileResponse(_os.path.join(_static_dir, "icon.png"))
 else:
     @app.get("/", include_in_schema=False)
     async def api_root():
