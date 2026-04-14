@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.8.12 - 2026-04-14
+
+- Use primary audio stream language metadata before falling back to Whisper profiling so Japanese audio is not forced through English transcription.
+- Infer profiler language from Whisper JSON text when the API omits an explicit language field.
+- Score transcription confidence with the detected language instead of always forcing English.
+
 ## v0.8.11 - 2026-04-14
 
 - Serve the existing PlexMind icon at `/favicon.ico` so browser favicon requests no longer return 404.

@@ -750,7 +750,8 @@ PYEOF
 score_confidence() {
     local VIDEO_FILE="$1"
     local SRT_FILE="$2"
-    local OFFSET="${3:-300}"
+    local CHECK_LANGUAGE="${3:-en}"
+    local OFFSET="${4:-300}"
     local SAMPLE_DURATION=30
 
     local TEMP_SAMPLE="/tmp/confidence_sample_$$.wav"
@@ -767,7 +768,10 @@ score_confidence() {
         return
     fi
 
-    local API_URL="${WHISPER_API_URL}?task=transcribe&output=srt&language=en"
+    local API_URL="${WHISPER_API_URL}?task=transcribe&output=srt"
+    if [ -n "$CHECK_LANGUAGE" ] && [ "$CHECK_LANGUAGE" != "auto" ]; then
+        API_URL="${API_URL}&language=${CHECK_LANGUAGE}"
+    fi
     curl -s --fail --connect-timeout 30 --max-time 300 \
         -X POST -F "audio_file=@${TEMP_SAMPLE}" \
         "$API_URL" -o "$TEMP_SRT" 2>/dev/null
