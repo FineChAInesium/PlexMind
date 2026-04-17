@@ -356,7 +356,7 @@ print_summary() {
     echo -e "  ${BOLD}Data:${NC}          ./data/"
     echo ""
     echo -e "  ${DIM}Edit .env and restart to change settings.${NC}"
-    echo -e "  ${DIM}For help: https://github.com/s93simon0807-wq/PlexMind${NC}"
+    echo -e "  ${DIM}For help: https://github.com/FineChAInesium/PlexMind${NC}"
     echo ""
 }
 

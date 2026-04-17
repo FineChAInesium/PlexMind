@@ -5,12 +5,12 @@ services:
   # ---------------------------------------------------------------------------
   ollama:
     image: ollama/ollama:latest
-    container_name: plexmind-ollama
+    container_name: ollama
     restart: unless-stopped
     ports:
-      - "127.0.0.1:11434:11434"
+      - "11434:11434"
     volumes:
-      - ollama_data:/root/.ollama
+      - ${OLLAMA_DATA_DIR:-./data/ollama}:/root/.ollama
     deploy:
       resources:
         reservations:
@@ -26,10 +26,13 @@ services:
   # ---------------------------------------------------------------------------
   whisper:
     image: ${WHISPER_IMAGE:-onerahmet/openai-whisper-asr-webservice:latest-gpu}
-    container_name: plexmind-whisper
-    restart: unless-stopped
-    expose:
-      - "9000"
+    container_name: whisper-asr-webservice
+    restart: "no"
+    ports:
+      - "9000:9000"
+    volumes:
+      - ${WHISPER_CACHE_DIR:-./data/whisper-cache}:/root/.cache/whisper
+      - "${WHISPER_TMP_DIR:-/tmp}:/tmp"
     environment:
       - ASR_MODEL=${WHISPER_MODEL:-turbo}
       - ASR_DEVICE=${WHISPER_DEVICE:-cuda}
@@ -40,9 +43,7 @@ services:
             - driver: nvidia
               count: all
               capabilities: [gpu]
-    # Whisper stays stopped until transcription scripts start it
-    profiles:
-      - whisper
+    # Whisper is created by compose but controlled by PlexMind scripts.
 
   # ---------------------------------------------------------------------------
   # PlexMind — AI recommendation engine (FastAPI)
@@ -52,7 +53,7 @@ services:
       context: ./plexmind
       dockerfile: Dockerfile
     image: plexmind:latest
-    container_name: plexmind-api
+    container_name: plexmind
     restart: unless-stopped
     ports:
       - "8000:8000"
@@ -99,15 +100,19 @@ services:
       - SCRIPT_START_RATE_LIMIT=${SCRIPT_START_RATE_LIMIT:-60/hour}
       - PLEXMIND_SCRIPTS_DIR=/app/scripts
       - WHISPER_API_URL=http://whisper:9000/asr
-      - WHISPER_CONTAINER_NAME=${WHISPER_CONTAINER_NAME:-plexmind-whisper}
+      - WHISPER_CONTAINER_NAME=${WHISPER_CONTAINER_NAME:-whisper-asr-webservice}
       - OLLAMA_API_URL=http://ollama:11434/api/chat
-      - OLLAMA_CONTAINER_NAME=${OLLAMA_CONTAINER_NAME:-plexmind-ollama}
+      - OLLAMA_CONTAINER_NAME=${OLLAMA_CONTAINER_NAME:-ollama}
       - MOVIE_DIR=/media/movies
       - MOVIES_DIR=/media/movies
       - TV_DIR=/media/tv
       - TARGET_LANGUAGES=${TARGET_LANGUAGES:-zh,es-MX}
+      - TRANSCRIBE_START_HOUR=${TRANSCRIBE_START_HOUR:-5}
+      - TRANSCRIBE_END_HOUR=${TRANSCRIBE_END_HOUR:-12}
+      - TRANSLATE_START_HOUR=${TRANSLATE_START_HOUR:-23}
+      - TRANSLATE_END_HOUR=${TRANSLATE_END_HOUR:-3}
       - LOG_RETENTION_DAYS=${LOG_RETENTION_DAYS:-7}
-      - TZ=${TZ:-America/New_York}
+      - TZ=${TZ:-UTC}
     depends_on:
       - ollama
 
@@ -130,9 +135,9 @@ services:
       - "${DOCKER_SOCKET_GID:-281}"
     environment:
       - WHISPER_API_URL=http://whisper:9000/asr
-      - WHISPER_CONTAINER_NAME=${WHISPER_CONTAINER_NAME:-plexmind-whisper}
+      - WHISPER_CONTAINER_NAME=${WHISPER_CONTAINER_NAME:-whisper-asr-webservice}
       - OLLAMA_API_URL=http://ollama:11434/api/chat
-      - OLLAMA_CONTAINER_NAME=${OLLAMA_CONTAINER_NAME:-plexmind-ollama}
+      - OLLAMA_CONTAINER_NAME=${OLLAMA_CONTAINER_NAME:-ollama}
       - OLLAMA_MODEL=${OLLAMA_MODEL:-gemma3:12b}
       - SCRIPTS_API_URL=${SCRIPTS_API_URL:-http://scripts:9010}
       - WHISPER_MODEL=${WHISPER_MODEL:-turbo}
@@ -140,15 +145,11 @@ services:
       - TV_DIR=/media/tv
       - TARGET_LANGUAGES=${TARGET_LANGUAGES:-zh,es-MX}
       - WATERMARK_TEXT=${WATERMARK_TEXT:-Brought to you by PlexMind}
-      - TRANSCRIBE_START_HOUR=${TRANSCRIBE_START_HOUR:-5}
-      - TRANSCRIBE_END_HOUR=${TRANSCRIBE_END_HOUR:-12}
-      - TRANSLATE_START_HOUR=${TRANSLATE_START_HOUR:-23}
-      - TRANSLATE_END_HOUR=${TRANSLATE_END_HOUR:-3}
       - LOG_RETENTION_DAYS=${LOG_RETENTION_DAYS:-7}
       - MAX_RUNTIME_MINUTES=${MAX_RUNTIME_MINUTES:-0}
       - SCRIPTS_API_PORT=${SCRIPTS_API_PORT:-9010}
       - GPU_THRESHOLD_PCT=${GPU_THRESHOLD_PCT:-30}
-      - TZ=${TZ:-America/New_York}
+      - TZ=${TZ:-UTC}
     depends_on:
       - ollama
 
@@ -170,6 +171,3 @@ services:
             - driver: nvidia
               count: all
               capabilities: [gpu]
-
-volumes:
-  ollama_data:

@@ -9,7 +9,7 @@
 [![Whisper ASR](https://img.shields.io/badge/Whisper-ASR-purple.svg)](https://github.com/ahmetoner/whisper-asr-webservice)
 [![Docker](https://img.shields.io/badge/Docker-Unraid_ready-2496ED.svg)](https://www.docker.com/)
 
-PlexMind turns a Plex library into an active, private recommendation and subtitle automation system. It reads Plex watch history, asks a local Ollama model for explainable picks, syncs those picks back into Plex, and gives you a dashboard for health, users, schedules, GPU load, storage, current-session logs, and background jobs.
+PlexMind turns a Plex library into an active, private recommendation and subtitle automation system. It reads Plex watch history, asks a local Ollama model for explainable picks, syncs those picks back into Plex, and gives you a dashboard for health, users, schedules, GPU load, storage, current-session logs, and background jobs. The PlexMind app now owns the subtitle script schedule.
 
 It also handles the work that usually gets ignored until it becomes a mess: missing subtitles, multilingual libraries, duplicate SRTs, image-based PGS tracks, and broken subtitle encodings. The heavy AI work stays local. Your Plex history and media paths do not need to leave your server.
 
@@ -292,9 +292,9 @@ PlexMind uses pilot episodes for TV recommendations so a user can try a show wit
 | `DOCKER_SOCKET_GID` | Group id for Docker socket access. On Unraid this is often `281`. | `281` |
 | `LOG_RETENTION_DAYS` | Retain dated script logs under `/app/data/logs`. | `7` |
 | `MAX_RUNTIME_MINUTES` | Optional per-run cap for scripts. `0` means no cap. | `0` |
-| `TRANSCRIBE_START_HOUR` / `TRANSCRIBE_END_HOUR` | Default transcription window. | `5` / `12` |
-| `TRANSLATE_START_HOUR` / `TRANSLATE_END_HOUR` | Default translation window. | `23` / `3` |
-| `TZ` | Timezone for schedules and logs. | `America/New_York` |
+| `TRANSCRIBE_START_HOUR` / `TRANSCRIBE_END_HOUR` | PlexMind launch window for transcription jobs. | `5` / `12` |
+| `TRANSLATE_START_HOUR` / `TRANSLATE_END_HOUR` | PlexMind launch window for translation jobs. | `23` / `3` |
+| `TZ` | Timezone used by the PlexMind script scheduler and logs. | `UTC` |
 
 ---
 

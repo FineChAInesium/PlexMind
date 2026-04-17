@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # PlexMind Scripts Container Entrypoint
-# Keeps the container alive and runs transcription/translation on schedule.
+# Keeps the container alive and serves the script control API.
 # ==============================================================================
 set -u
 

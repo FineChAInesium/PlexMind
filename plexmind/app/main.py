@@ -18,6 +18,7 @@ import os
 import re
 import secrets
 import socket
+from pathlib import Path
 from urllib.parse import urlparse, urlunparse
 import httpx
 
@@ -82,7 +83,7 @@ limiter = Limiter(key_func=get_remote_address)
 app = FastAPI(
     title="PlexMind",
     description="Gemma 3 powered movie/TV recommendation engine for Plex",
-    version="0.8.16",
+    version="0.8.17",
     lifespan=lifespan,
 )
 app.state.limiter = limiter
@@ -248,11 +249,18 @@ def _bridge_fallback_url(url: str) -> str:
 
 async def _whisper_health() -> dict:
     url = _bridge_fallback_url(os.getenv("WHISPER_API_URL", "http://whisper-asr-webservice:9000/asr"))
+    try:
+        if script_runner.status("transcribe").get("running"):
+            return {"ready": True, "url": url, "busy": True, "status": "transcribing"}
+    except Exception:
+        pass
+
     base_url = url[:-4] if url.endswith("/asr") else url.rstrip("/")
     probes = [base_url or url, url]
+    last_error = ""
     for probe in probes:
         try:
-            async with httpx.AsyncClient(timeout=1.5) as client:
+            async with httpx.AsyncClient(timeout=5.0, follow_redirects=False) as client:
                 res = await client.get(probe)
             return {
                 "ready": res.status_code < 500,
@@ -262,6 +270,12 @@ async def _whisper_health() -> dict:
         except Exception as exc:
             last_error = str(exc)
     return {"ready": False, "url": url, "error": last_error or "unreachable"}
+
+
+@app.get("/health/live")
+def health_live():
+    """Fast liveness check for the UI connection badge. Does not probe sidecars."""
+    return {"status": "ok"}
 
 
 @app.get("/health")
@@ -624,6 +638,57 @@ def storage_info():
         }
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))
+
+
+def _read_env_stats(path: Path) -> dict[str, int]:
+    stats: dict[str, int] = {}
+    try:
+        for raw_line in path.read_text(errors="replace").splitlines():
+            line = raw_line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            try:
+                stats[key.strip()] = int(value.strip())
+            except ValueError:
+                continue
+    except OSError:
+        pass
+    return stats
+
+
+@app.get("/api/script-stats")
+def script_stats():
+    """Return lifetime transcription and translation counters."""
+    data_dir = Path(os.getenv("DATA_DIR", "/app/data"))
+    transcribe = _read_env_stats(data_dir / "lifetime_stats.env")
+    translate = _read_env_stats(data_dir / "translation_stats.env")
+    transcribe_processed = (
+        transcribe.get("LIFETIME_ENGLISH_PROCESSED", 0)
+        + transcribe.get("LIFETIME_BILINGUAL_PROCESSED", 0)
+        + transcribe.get("LIFETIME_FOREIGN_PROCESSED", 0)
+    )
+    return {
+        "transcribe": {
+            "scanned": transcribe.get("LIFETIME_SCANNED", 0),
+            "processed": transcribe_processed,
+            "english_processed": transcribe.get("LIFETIME_ENGLISH_PROCESSED", 0),
+            "bilingual_processed": transcribe.get("LIFETIME_BILINGUAL_PROCESSED", 0),
+            "foreign_processed": transcribe.get("LIFETIME_FOREIGN_PROCESSED", 0),
+            "skipped_existing": transcribe.get("LIFETIME_SKIPPED_EXISTING", 0),
+            "skipped_failed": transcribe.get("LIFETIME_SKIPPED_FAILED", 0),
+            "skipped_size": transcribe.get("LIFETIME_SKIPPED_SIZE", 0),
+            "hallucinations_cleaned": transcribe.get("LIFETIME_HALLUCINATIONS_CLEANED", 0),
+            "processing_seconds": transcribe.get("LIFETIME_PROCESSING_SECONDS", 0),
+        },
+        "translate": {
+            "scanned": translate.get("LIFETIME_SCANNED", 0),
+            "processed": translate.get("LIFETIME_PROCESSED", 0),
+            "skipped_existing": translate.get("LIFETIME_SKIPPED_EXISTING", 0),
+            "skipped_failed": translate.get("LIFETIME_SKIPPED_FAILED", 0),
+            "processing_seconds": translate.get("LIFETIME_PROCESSING_SECONDS", 0),
+        },
+    }
 
 
 @app.post("/webhook")

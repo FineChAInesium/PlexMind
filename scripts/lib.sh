@@ -17,7 +17,6 @@
 #   MIN_CUE_COUNT       MAX_AVG_CUE_DURATION   MAX_AVG_CUE_CHARS
 #   HALLUCINATION_REPEAT_THRESHOLD
 #   MAX_RETRIES_SOFT
-#   START_HOUR / END_HOUR
 #   QUARANTINE_DIR      — where to log quarantined files
 #   REPORT_DIR          — where generate_report writes output
 # ==============================================================================
@@ -31,8 +30,6 @@ MAX_AVG_CUE_DURATION="${MAX_AVG_CUE_DURATION:-15}"
 MAX_AVG_CUE_CHARS="${MAX_AVG_CUE_CHARS:-150}"
 HALLUCINATION_REPEAT_THRESHOLD="${HALLUCINATION_REPEAT_THRESHOLD:-3}"
 MAX_RETRIES_SOFT="${MAX_RETRIES_SOFT:-3}"
-START_HOUR="${START_HOUR:-0}"
-END_HOUR="${END_HOUR:-0}"
 RUN_NOW="${RUN_NOW:-0}"
 MAX_RUNTIME_MINUTES="${MAX_RUNTIME_MINUTES:-0}"
 SCRIPT_STARTED_AT="${SCRIPT_STARTED_AT:-$(date +%s)}"
@@ -85,26 +82,6 @@ prepare_log_file() {
     LOG_FILE="$today_file"
 
     find "$archive_dir" -type f -name "${base}-*.log" -mtime +"$LOG_RETENTION_DAYS" -delete 2>/dev/null || true
-}
-
-time_window_label() {
-    if [ "$START_HOUR" -eq "$END_HOUR" ]; then
-        echo "all day"
-    elif [ "$START_HOUR" -lt "$END_HOUR" ]; then
-        printf '%02d:00-%02d:00' "$START_HOUR" "$END_HOUR"
-    else
-        printf '%02d:00-%02d:00 overnight' "$START_HOUR" "$END_HOUR"
-    fi
-}
-
-time_window_hours() {
-    if [ "$START_HOUR" -eq "$END_HOUR" ]; then
-        echo "24"
-    elif [ "$START_HOUR" -lt "$END_HOUR" ]; then
-        echo $((END_HOUR - START_HOUR))
-    else
-        echo $((24 - START_HOUR + END_HOUR))
-    fi
 }
 
 # Acquire a lock file. Call early in the sourcing script.
@@ -227,33 +204,6 @@ check_runtime() {
     if [ "$elapsed" -ge "$limit" ]; then
         log "Max runtime reached (${MAX_RUNTIME_MINUTES}m). Exiting cleanly before starting more work."
         exit 0
-    fi
-}
-
-check_run_limits() {
-    check_time
-    check_runtime
-}
-
-check_time() {
-    if [ "${RUN_NOW:-0}" = "1" ]; then
-        return 0
-    fi
-
-    local CURRENT_HOUR
-    CURRENT_HOUR=$(date +%H)
-    if [ "$START_HOUR" -ne "$END_HOUR" ]; then
-        if [ "$START_HOUR" -lt "$END_HOUR" ]; then
-            if [ "$CURRENT_HOUR" -ge "$END_HOUR" ] || [ "$CURRENT_HOUR" -lt "$START_HOUR" ]; then
-                log "Outside allowed window ($(time_window_label)). Exiting. Set RUN_NOW=1 to bypass."
-                exit 0
-            fi
-        else
-            if [ "$CURRENT_HOUR" -ge "$END_HOUR" ] && [ "$CURRENT_HOUR" -lt "$START_HOUR" ]; then
-                log "Outside allowed window ($(time_window_label)). Exiting. Set RUN_NOW=1 to bypass."
-                exit 0
-            fi
-        fi
     fi
 }
 
@@ -859,7 +809,9 @@ verify_encoding() {
     if [ ! -f "$SRT_FILE" ]; then return 0; fi
 
     local DETECTED
-    DETECTED=$(file -bi "$SRT_FILE" 2>/dev/null | grep -oP 'charset=\K[^\s;]+')
+    if command -v file >/dev/null 2>&1; then
+        DETECTED=$(file -bi "$SRT_FILE" 2>/dev/null | grep -oP 'charset=\K[^\s;]+')
+    fi
     DETECTED="${DETECTED:-unknown}"
 
     local HAS_BOM=false
@@ -868,6 +820,11 @@ verify_encoding() {
     fi
 
     if [ "$DETECTED" = "utf-8" ] && [ "$HAS_BOM" = false ]; then
+        return 0
+    fi
+
+    if [ "$DETECTED" = "unknown" ]; then
+        log "  ENCODING: ${SRT_FILE##*/} encoding could not be detected. Keeping original."
         return 0
     fi
 

@@ -1,10 +1,9 @@
 """
-APScheduler-based monthly recommendation runner.
+APScheduler-based recommendation and script launcher.
 
-Runs on the 1st of each month at 03:00.
-Before each run it checks GPU utilisation via NVIDIA, Intel, or AMD CLI tools;
-if the GPU is busy (above GPU_THRESHOLD_PCT) it backs off in
-GPU_BACKOFF_MINUTES increments until the GPU is idle, then runs.
+Runs the monthly recommendation batch on the 1st of each month at 03:00.
+Also launches the subtitle backfill scripts on the configured daily schedule
+so PlexMind owns the timing and the sidecar scripts stay execution-only.
 """
 import asyncio
 import json as _json
@@ -12,8 +11,9 @@ import logging
 import os
 import re
 import subprocess
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -24,12 +24,17 @@ load_dotenv()
 GPU_THRESHOLD_PCT = int(os.getenv("GPU_THRESHOLD_PCT", "30"))
 GPU_BACKOFF_MINUTES = int(os.getenv("GPU_BACKOFF_MINUTES", "30"))
 MIN_HISTORY_ITEMS = int(os.getenv("MIN_HISTORY_ITEMS", "3"))
+TRANSCRIBE_START_HOUR = int(os.getenv("TRANSCRIBE_START_HOUR", "5"))
+TRANSCRIBE_END_HOUR = int(os.getenv("TRANSCRIBE_END_HOUR", "12"))
+TRANSLATE_START_HOUR = int(os.getenv("TRANSLATE_START_HOUR", "23"))
+TRANSLATE_END_HOUR = int(os.getenv("TRANSLATE_END_HOUR", "3"))
 DATA_DIR = Path(os.getenv("DATA_DIR") or ("/app/data" if Path("/app").exists() else "data"))
 RECOMMENDATION_LOG_PATH = DATA_DIR / "recommendations.log"
 
 log = logging.getLogger("plexmind.scheduler")
 
 scheduler = AsyncIOScheduler(timezone="UTC")
+_SCRIPT_LAST_WINDOW: dict[str, str] = {}
 
 # Prevents simultaneous batch runs (from cron + API trigger racing each other)
 _run_lock = asyncio.Lock()
@@ -124,6 +129,50 @@ def recommendation_log_status() -> dict:
         **log_meta,
     }
 
+
+def _script_schedule_timezone() -> ZoneInfo:
+    tz_name = os.getenv("TZ", "UTC")
+    try:
+        return ZoneInfo(tz_name)
+    except Exception:
+        log.warning("Invalid TZ %r for script scheduling; falling back to UTC.", tz_name)
+        return ZoneInfo("UTC")
+
+
+def _script_window_key(now: datetime, start_hour: int, end_hour: int) -> str | None:
+    if start_hour == end_hour:
+        return now.date().isoformat()
+    if start_hour < end_hour:
+        if start_hour <= now.hour < end_hour:
+            return now.date().isoformat()
+        return None
+    if now.hour >= start_hour:
+        return now.date().isoformat()
+    if now.hour < end_hour:
+        return (now.date() - timedelta(days=1)).isoformat()
+    return None
+
+
+def _script_window_tick(job: str, title: str, start_hour: int, end_hour: int) -> None:
+    from app import script_runner
+
+    now = datetime.now(_script_schedule_timezone())
+    window_key = _script_window_key(now, start_hour, end_hour)
+    if window_key is None:
+        return
+    last_key = _SCRIPT_LAST_WINDOW.get(job)
+    if last_key == window_key:
+        return
+
+    result = script_runner.start(job, {"run_now": True})
+    if result.get("status") == "started":
+        _SCRIPT_LAST_WINDOW[job] = window_key
+        log.info("%s scheduled launch started for window %s.", title, window_key)
+    elif result.get("status") == "already_running":
+        _SCRIPT_LAST_WINDOW[job] = window_key
+        log.info("%s scheduled launch skipped because the job is already running.", title)
+    else:
+        log.warning("%s scheduled launch did not start: %s", title, result.get("detail", "unknown"))
 
 # ---------------------------------------------------------------------------
 # GPU helpers
@@ -377,6 +426,7 @@ async def _do_run_all_users(triggered_by: str, on_progress=None) -> dict:
 
 def start(app=None) -> None:
     """Start the APScheduler. Call from FastAPI lifespan."""
+    script_tz = _script_schedule_timezone()
     scheduler.add_job(
         _scheduled_run,
         CronTrigger(day=1, hour=3, minute=0, timezone="UTC"),
@@ -384,8 +434,37 @@ def start(app=None) -> None:
         replace_existing=True,
         misfire_grace_time=3600,  # allow up to 1h late start
     )
+    scheduler.add_job(
+        _script_window_tick,
+        CronTrigger(minute="*/15", timezone=script_tz),
+        id="transcribe_schedule",
+        replace_existing=True,
+        misfire_grace_time=900,
+        kwargs={
+            "job": "transcribe",
+            "title": "Transcription",
+            "start_hour": TRANSCRIBE_START_HOUR,
+            "end_hour": int(os.getenv("TRANSCRIBE_END_HOUR", "12")),
+        },
+    )
+    scheduler.add_job(
+        _script_window_tick,
+        CronTrigger(minute="*/15", timezone=script_tz),
+        id="translate_schedule",
+        replace_existing=True,
+        misfire_grace_time=900,
+        kwargs={
+            "job": "translate",
+            "title": "Translation",
+            "start_hour": TRANSLATE_START_HOUR,
+            "end_hour": int(os.getenv("TRANSLATE_END_HOUR", "3")),
+        },
+    )
     scheduler.start()
-    log.info("Scheduler started — monthly recs run on the 1st at 03:00 UTC.")
+    log.info(
+        "Scheduler started — monthly recs run on the 1st at 03:00 UTC; script launches are checked every 15 minutes in %s.",
+        script_tz,
+    )
 
 
 def stop() -> None:

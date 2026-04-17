@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.8.17 - 2026-04-17
+
+- Move transcription and translation launch windows into the PlexMind scheduler so subtitle scripts run once per configured daily window.
+- Add script lifetime stats to the dashboard from persisted transcription and translation counters.
+- Improve Plex user discovery with a persistent cache, local account fallback, and optional admin username override.
+- Align bundled Ollama and Whisper sidecar container defaults, persistent cache paths, health probing, and UTC scheduling defaults.
+
 ## v0.8.16 - 2026-04-14
 
 - Add a current-session recommendation batch log alongside transcription, translation, and maintenance logs.

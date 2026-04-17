@@ -27,7 +27,7 @@
       </div>
       <div>
         <div class="font-semibold leading-none tracking-tight">PlexMind Suite</div>
-        <div class="text-[11px] text-slate-400 mt-1">v0.8.16 • Self-hosted</div>
+        <div class="text-[11px] text-slate-400 mt-1">v0.8.17 • Self-hosted</div>
       </div>
     </div>
 
@@ -289,14 +289,18 @@
               <h3 class="font-semibold mb-4 flex items-center gap-2"><i data-lucide="clock" class="w-4 h-4 text-violet-400"></i>Schedule</h3>
               <div data-sched="transcribe"></div>
             </div>
-            <div class="grid grid-cols-2 gap-3">
+            <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
               <div class="rounded-2xl bg-slate-800/40 border border-slate-700/60 p-4">
                 <div class="text-xs text-slate-400">Lifetime Processed</div>
-                <div id="tx-processed" class="text-2xl font-semibold mt-1">223</div>
+                <div id="tx-processed" class="text-2xl font-semibold mt-1">—</div>
               </div>
               <div class="rounded-2xl bg-slate-800/40 border border-slate-700/60 p-4">
                 <div class="text-xs text-slate-400">Hallucinations Cleaned</div>
-                <div id="tx-srts" class="text-2xl font-semibold mt-1">8,565</div>
+                <div id="tx-srts" class="text-2xl font-semibold mt-1">—</div>
+              </div>
+              <div class="rounded-2xl bg-slate-800/40 border border-slate-700/60 p-4">
+                <div class="text-xs text-slate-400">Skipped Existing</div>
+                <div id="tx-skipped-existing" class="text-2xl font-semibold mt-1">—</div>
               </div>
             </div>
           </div>
@@ -359,11 +363,11 @@
             <div class="grid grid-cols-2 gap-3">
               <div class="rounded-2xl bg-slate-800/40 border border-slate-700/60 p-4">
                 <div class="text-xs text-slate-400">Lifetime Translated</div>
-                <div id="tl-processed" class="text-2xl font-semibold mt-1">37</div>
+                <div id="tl-processed" class="text-2xl font-semibold mt-1">—</div>
               </div>
               <div class="rounded-2xl bg-slate-800/40 border border-slate-700/60 p-4">
                 <div class="text-xs text-slate-400">Skipped Existing</div>
-                <div id="tl-translated" class="text-2xl font-semibold mt-1">151</div>
+                <div id="tl-translated" class="text-2xl font-semibold mt-1">—</div>
               </div>
             </div>
           </div>
@@ -494,6 +498,10 @@ let API_BASE = saved.apiBase || window.location.origin;
 let API_KEY  = saved.apiKey  || '';
 let apiOnline = false;
 
+function persistApiSettings() {
+  localStorage.setItem("pm_settings", JSON.stringify({ apiBase: API_BASE, apiKey: API_KEY }));
+}
+
 function apiFetch(url, opts = {}) {
   const headers = { ...(opts.headers || {}) };
   if (API_KEY) headers['X-API-Key'] = API_KEY;
@@ -571,17 +579,70 @@ function setApiStatus(online) {
 }
 
 // ─── Health ─────────────────────────────────────────────────────────────────
+async function fetchApiLive() {
+  if (DEMO) { setApiStatus(true); return true; }
+  async function probe(baseUrl) {
+    const res = await apiFetch(baseUrl + "/health/live", { signal: AbortSignal.timeout(2000) });
+    if (!res.ok) throw new Error();
+  }
+  try {
+    await probe(API_BASE);
+    setApiStatus(true);
+    return true;
+  } catch {
+    const fallbackBase = window.location.origin;
+    if (API_BASE !== fallbackBase) {
+      try {
+        await probe(fallbackBase);
+        API_BASE = fallbackBase;
+        persistApiSettings();
+        const input = document.getElementById("api-base-url");
+        if (input) input.value = API_BASE;
+        setApiStatus(true);
+        return true;
+      } catch {}
+    }
+    setApiStatus(false);
+    return false;
+  }
+}
+
 async function fetchHealth() {
   if (DEMO) { setApiStatus(true); return MOCK.health; }
   try {
-    const res = await apiFetch(`${API_BASE}/health`, { signal: AbortSignal.timeout(2000) });
+    const res = await apiFetch(`${API_BASE}/health`, { signal: AbortSignal.timeout(6000) });
     if (!res.ok) throw new Error();
     setApiStatus(true);
     return await res.json();
   } catch {
-    setApiStatus(false);
     return null;
   }
+}
+
+function fmtCount(value) {
+  return Number(value || 0).toLocaleString();
+}
+
+async function fetchScriptStats() {
+  if (DEMO) return null;
+  try {
+    const res = await apiFetch(`${API_BASE}/api/script-stats`, { signal: AbortSignal.timeout(3000) });
+    if (!res.ok) throw new Error();
+    return await res.json();
+  } catch {
+    return null;
+  }
+}
+
+function updateScriptStatsUI(stats) {
+  if (!stats) return;
+  const tx = stats.transcribe || {};
+  const tl = stats.translate || {};
+  document.getElementById('tx-processed').textContent = fmtCount(tx.processed);
+  document.getElementById('tx-srts').textContent = fmtCount(tx.hallucinations_cleaned);
+  document.getElementById('tx-skipped-existing').textContent = fmtCount(tx.skipped_existing);
+  document.getElementById('tl-processed').textContent = fmtCount(tl.processed);
+  document.getElementById('tl-translated').textContent = fmtCount(tl.skipped_existing);
 }
 
 function updateHealthUI(h) {
@@ -937,13 +998,17 @@ document.addEventListener('DOMContentLoaded', async () => {
   document.getElementById('api-key-input').value = API_KEY;
 
   // Load dashboard
+  await fetchApiLive();
   const h = await fetchHealth();
   updateHealthUI(h);
   fetchSchedulerStatus();
   fetchStorage();
+  updateScriptStatsUI(await fetchScriptStats());
+  setInterval(fetchApiLive, 10000);
   setInterval(async () => updateHealthUI(await fetchHealth()), 30000);
   setInterval(fetchSchedulerStatus, 30000);
   setInterval(fetchStorage, 60000);
+  setInterval(async () => updateScriptStatsUI(await fetchScriptStats()), 60000);
   renderRecs(await fetchRecentRecs());
   renderUsers(await fetchUsers());
 
@@ -1566,7 +1631,7 @@ async function refreshScriptLog(job, logEl) {
     const apiKey = document.getElementById('api-key-input').value.trim();
     API_BASE = apiBaseUrl;
     API_KEY  = apiKey;
-    localStorage.setItem('pm_settings', JSON.stringify({ apiBase: apiBaseUrl, apiKey }));
+    persistApiSettings();
     toast('Settings saved', 'success');
   };
   document.getElementById('test-conn').onclick = withLoading(
@@ -1574,9 +1639,10 @@ async function refreshScriptLog(job, logEl) {
     async () => {
       API_BASE = document.getElementById('api-base-url').value.trim().replace(/\/$/, '');
       API_KEY  = document.getElementById('api-key-input').value.trim();
+      await fetchApiLive();
       const h = await fetchHealth();
       updateHealthUI(h);
-      toast(apiOnline ? `Connected — LLM: ${h.llm}` : 'Unreachable — check API_BASE_URL', apiOnline ? 'success' : 'error');
+      toast(apiOnline ? `Connected — LLM: ${h?.llm || 'unknown'}` : 'Unreachable — check API_BASE_URL', apiOnline ? 'success' : 'error');
     }
   );
 });

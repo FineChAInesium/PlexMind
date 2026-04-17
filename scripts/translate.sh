@@ -28,8 +28,6 @@ WHISPER_API_URL="${WHISPER_API_URL:-http://whisper:9000/asr}"
 IFS=',' read -ra TARGET_LANGUAGES <<< "${TARGET_LANGUAGES:-zh,es-MX}"
 
 HEALTH_CHECK_INTERVAL="${HEALTH_CHECK_INTERVAL:-5}"
-START_HOUR="${START_HOUR:-${TRANSLATE_START_HOUR:-23}}"
-END_HOUR="${END_HOUR:-${TRANSLATE_END_HOUR:-3}}"
 LOG_RETENTION_DAYS="${LOG_RETENTION_DAYS:-7}"
 MAX_RUNTIME_MINUTES="${MAX_RUNTIME_MINUTES:-0}"
 
@@ -294,8 +292,8 @@ PYEOF
 # MAIN
 # ==============================================================================
 log "========================================================="
-log "Translation Backfill v0.8.9 (containerized)"
-log "Window: $(time_window_label) ($(time_window_hours)h); max runtime: ${MAX_RUNTIME_MINUTES:-0}m; retention: ${LOG_RETENTION_DAYS}d; RUN_NOW=${RUN_NOW}"
+log "Translation Backfill v0.8.17 (containerized)"
+log "Schedule: launched by PlexMind; max runtime: ${MAX_RUNTIME_MINUTES:-0}m; retention: ${LOG_RETENTION_DAYS}d; RUN_NOW=${RUN_NOW}"
 log "========================================================="
 check_dependencies curl jq python3
 
@@ -305,7 +303,7 @@ if [ -f "$PLEXMIND_SENTINEL" ]; then
     log "PlexMind is running — waiting before using Ollama..."
     while [ -f "$PLEXMIND_SENTINEL" ]; do
         sleep 30
-        check_run_limits
+        check_runtime
     done
     log "PlexMind finished — proceeding."
 fi
@@ -320,10 +318,10 @@ ALL_MEDIA_DIRS=("${MOVIE_DIR}" "${TV_DIR}")
 calculate_pending_jobs
 
 while IFS= read -r -d '' SUB_FILE; do
-    check_run_limits
+    check_runtime
     TOTAL_FILES_SCANNED=$((TOTAL_FILES_SCANNED+1))
     for LANG in "${TARGET_LANGUAGES[@]}"; do
-        check_run_limits
+        check_runtime
         process_subtitle "$SUB_FILE" "$LANG"
     done
 done < <(find "${ALL_MEDIA_DIRS[@]}" -type f \( -iname "*.${SOURCE_LANG}.srt" -o -iname "*.${SOURCE_LANG}.sdh.srt" -o -iname "*.${SOURCE_LANG}.hi.srt" -o -iname "*.hi.${SOURCE_LANG}.srt" -o -iname "*.sdh.${SOURCE_LANG}.srt" \) -print0 2>/dev/null)

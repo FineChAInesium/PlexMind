@@ -1,10 +1,13 @@
 """
 Plex client — per-user watch history, token management, in-progress detection.
 """
+import json
 import os
+import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 
 from dotenv import load_dotenv
+import requests
 from plexapi.server import PlexServer
 
 load_dotenv()
@@ -12,6 +15,8 @@ load_dotenv()
 PLEX_URL = os.getenv("PLEX_URL", "http://localhost:32400")
 PLEX_TOKEN = os.getenv("PLEX_TOKEN", "")
 MIN_WATCH_PCT = float(os.getenv("MIN_WATCH_PCT", "0.70"))
+ADMIN_USERNAME_OVERRIDE = os.getenv("PLEXMIND_ADMIN_USERNAME", "").strip()
+USER_CACHE_FILE = os.getenv("PLEXMIND_USERS_CACHE_FILE", "data/plex_users_cache.json")
 
 
 @dataclass
@@ -31,18 +36,117 @@ def _get_server() -> PlexServer:
     return PlexServer(PLEX_URL, PLEX_TOKEN)
 
 
+def _user_cache_path() -> str:
+    return USER_CACHE_FILE if os.path.isabs(USER_CACHE_FILE) else os.path.join(os.getcwd(), USER_CACHE_FILE)
+
+
+def _read_cached_users() -> list[dict]:
+    try:
+        with open(_user_cache_path(), "r", encoding="utf-8") as fh:
+            users = json.load(fh)
+        return users if isinstance(users, list) else []
+    except Exception:
+        return []
+
+
+def _write_cached_users(users: list[dict]) -> None:
+    try:
+        path = _user_cache_path()
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(users, fh, indent=2)
+    except Exception:
+        pass
+
+
+def _admin_username(fallback: str | None = None) -> str:
+    """Return the configured or discovered Plex admin display name."""
+    if ADMIN_USERNAME_OVERRIDE:
+        return ADMIN_USERNAME_OVERRIDE
+    if fallback:
+        return fallback
+    try:
+        res = requests.get(
+            f"{PLEX_URL.rstrip('/')}/myplex/account",
+            params={"X-Plex-Token": PLEX_TOKEN},
+            timeout=10,
+        )
+        res.raise_for_status()
+        root = ET.fromstring(res.text)
+        return root.attrib.get("username") or "Admin"
+    except Exception:
+        return "Admin"
+
+
+def _local_accounts(server: PlexServer) -> list[dict]:
+    """Return accounts exposed by the local Plex server without calling Plex.tv."""
+    try:
+        res = requests.get(
+            f"{PLEX_URL.rstrip('/')}/accounts",
+            params={"X-Plex-Token": PLEX_TOKEN},
+            timeout=10,
+        )
+        res.raise_for_status()
+        root = ET.fromstring(res.text)
+    except Exception:
+        return []
+
+    accounts: list[dict] = []
+    for account in root.findall("Account"):
+        account_id = account.attrib.get("id") or account.attrib.get("key", "").split("/")[-1]
+        username = account.attrib.get("name") or account.attrib.get("title") or account.attrib.get("username")
+        if not account_id or not username:
+            continue
+        accounts.append({"id": str(account_id), "username": username, "type": "managed"})
+    return accounts
+
+
 def get_users() -> list[dict]:
     """Return list of managed users + admin. Each dict has id and username."""
     server = _get_server()
     users = []
-    account = server.myPlexAccount()
-    users.append({"id": "admin", "username": account.username, "type": "admin"})
     try:
-        for u in account.users():
-            users.append({"id": str(u.id), "username": u.title, "type": "managed"})
+        account = server.myPlexAccount()
+        users.append({"id": "admin", "username": _admin_username(account.username), "type": "admin"})
+        try:
+            for u in account.users():
+                users.append({"id": str(u.id), "username": u.title, "type": "managed"})
+        except Exception:
+            pass
+        _write_cached_users(users)
     except Exception:
-        pass
-    return users
+        users = _read_cached_users()
+        if not users:
+            admin_username = _admin_username()
+            users.append({"id": "admin", "username": admin_username, "type": "admin"})
+            for local_user in _local_accounts(server):
+                if local_user.get("username", "").casefold() == admin_username.casefold():
+                    continue
+                users.append(local_user)
+
+    if ADMIN_USERNAME_OVERRIDE:
+        found_admin = False
+        filtered = []
+        for user in users:
+            if user.get("type") == "admin":
+                user = {**user, "id": "admin", "username": ADMIN_USERNAME_OVERRIDE}
+                found_admin = True
+            elif user.get("username", "").casefold() == ADMIN_USERNAME_OVERRIDE.casefold():
+                continue
+            filtered.append(user)
+        if not found_admin:
+            filtered.insert(0, {"id": "admin", "username": ADMIN_USERNAME_OVERRIDE, "type": "admin"})
+        users = filtered
+
+    seen = set()
+    unique = []
+    for user in users:
+        key = (user.get("type"), user.get("id"))
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(user)
+    return unique
 
 
 def get_user_token(user_id: str) -> str | None:

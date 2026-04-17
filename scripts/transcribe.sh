@@ -1,13 +1,12 @@
 #!/bin/bash
 # ==============================================================================
 # transcribe.sh — Library Transcription Backfill
-# Version: 0.8.16 — PlexMind release line
+# Version: 0.8.17 — PlexMind release line
 #
 # Scans Movies and TV directories, transcribes via Whisper ASR API.
 # Features: language profiling, bilingual VIP handling, hallucination
 # cleaning, validation, watermarking, confidence scoring, quarantine,
-# retry/resume, lifetime stats, time-window enforcement.
-#
+# retry/resume, lifetime stats.
 # Requires: lib.sh, ffmpeg, ffprobe, curl, python3
 # ==============================================================================
 
@@ -23,8 +22,6 @@ MAX_FILE_SIZE_MB="${MAX_FILE_SIZE_MB:-54000}"
 INITIAL_PROMPT="${INITIAL_PROMPT:-Hello! Welcome to the show. Dr. Smith, Mr. Jones... fuck, shit, damn, okay, alright.}"
 CONFIDENCE_THRESHOLD="${CONFIDENCE_THRESHOLD:-30}"
 HEALTH_CHECK_INTERVAL="${HEALTH_CHECK_INTERVAL:-10}"
-START_HOUR="${START_HOUR:-${TRANSCRIBE_START_HOUR:-5}}"
-END_HOUR="${END_HOUR:-${TRANSCRIBE_END_HOUR:-12}}"
 LOG_RETENTION_DAYS="${LOG_RETENTION_DAYS:-7}"
 MAX_RUNTIME_MINUTES="${MAX_RUNTIME_MINUTES:-0}"
 
@@ -500,8 +497,8 @@ PYEOF
 # MAIN
 # ==============================================================================
 log "========================================================="
-log "Transcription Backfill v0.8.16 (containerized)"
-log "Window: $(time_window_label) ($(time_window_hours)h); max runtime: ${MAX_RUNTIME_MINUTES:-0}m; retention: ${LOG_RETENTION_DAYS}d; RUN_NOW=${RUN_NOW}"
+log "Transcription Backfill v0.8.17 (containerized)"
+log "Schedule: launched by PlexMind; max runtime: ${MAX_RUNTIME_MINUTES:-0}m; retention: ${LOG_RETENTION_DAYS}d; RUN_NOW=${RUN_NOW}"
 log "========================================================="
 check_dependencies curl ffmpeg ffprobe python3
 
@@ -511,7 +508,7 @@ if [ -f "$PLEXMIND_SENTINEL" ]; then
     log "PlexMind is running — waiting before starting Whisper..."
     while [ -f "$PLEXMIND_SENTINEL" ]; do
         sleep 30
-        check_run_limits
+        check_runtime
     done
     log "PlexMind finished — proceeding."
 fi
@@ -523,12 +520,11 @@ ALL_MEDIA_DIRS=("${MOVIE_DIR}" "${TV_DIR}")
 
 log "Checking for partial files from interrupted runs..."
 resume_partial "${MOVIE_DIR}" "${TV_DIR}" >/dev/null
-
-check_run_limits
+check_runtime
 calculate_pending_jobs
 
 while IFS= read -r -d '' VIDEO_FILE; do
-    check_run_limits
+    check_runtime
     TOTAL_SCANNED=$((TOTAL_SCANNED+1))
     process_video "$VIDEO_FILE"
 done < <(find "${ALL_MEDIA_DIRS[@]}" -type f \( -iname "*.mkv" -o -iname "*.mp4" -o -iname "*.avi" -o -iname "*.mov" -o -iname "*.wmv" -o -iname "*.m4v" \) -print0 2>/dev/null)
