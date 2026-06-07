@@ -214,11 +214,19 @@ def _docker_stream_text(raw: bytes) -> str:
     return payload.decode("utf-8", errors="replace")
 
 
-def _docker_exec_output(container: str, cmd: list[str]) -> str | None:
+def _short_probe_error(message: str | None) -> str | None:
+    if not message:
+        return None
+    return re.sub(r"\s+", " ", message).strip()[:220]
+
+
+def _docker_exec_probe(container: str, cmd: list[str]) -> tuple[str | None, str | None]:
     """Run a short command in another container through the Docker socket."""
     socket_path = os.getenv("DOCKER_SOCKET", "/var/run/docker.sock")
-    if not Path(socket_path).exists() or not shutil.which("curl"):
-        return None
+    if not Path(socket_path).exists():
+        return None, f"Docker socket unavailable at {socket_path}"
+    if not shutil.which("curl"):
+        return None, "curl unavailable for Docker socket probe"
 
     create_payload = _json.dumps({"AttachStdout": True, "AttachStderr": True, "Cmd": cmd})
     try:
@@ -231,12 +239,12 @@ def _docker_exec_output(container: str, cmd: list[str]) -> str | None:
             capture_output=True, text=True, timeout=3,
         )
         if create.returncode != 0:
-            return None
+            return None, f"docker exec create failed for {container}: {create.stderr or create.stdout}"
         exec_id = (_json.loads(create.stdout or "{}").get("Id") or "").strip()
         if not exec_id:
-            return None
+            return None, f"docker exec unavailable for {container}: {create.stdout}"
 
-        start = subprocess.run(
+        start_result = subprocess.run(
             [
                 "curl", "-sS", "--max-time", "5", "--unix-socket", socket_path,
                 "-H", "Content-Type: application/json", "-X", "POST", "-d", "{\"Detach\":false,\"Tty\":false}",
@@ -244,97 +252,123 @@ def _docker_exec_output(container: str, cmd: list[str]) -> str | None:
             ],
             capture_output=True, timeout=6,
         )
-        if start.returncode != 0:
-            return None
-        return _docker_stream_text(start.stdout)
-    except Exception:
-        return None
+        output = _docker_stream_text(start_result.stdout)
+        if start_result.returncode != 0:
+            return None, f"docker exec start failed for {container}: {output}"
+        return output, None
+    except Exception as exc:
+        return None, f"docker exec probe failed for {container}: {exc}"
 
 
-def _nvidia_info_from_docker() -> dict | None:
+def _nvidia_info_from_docker() -> tuple[dict | None, str | None]:
     names = [os.getenv("LLAMA_CPP_CONTAINER_NAME", "llama-cpp")]
     names.extend(os.getenv("GPU_PROBE_CONTAINERS", "llama-cpp,plexmind-llama-cpp").split(","))
     seen: set[str] = set()
+    errors: list[str] = []
     for raw_name in names:
         name = raw_name.strip()
         if not name or name in seen:
             continue
         seen.add(name)
-        output = _docker_exec_output(
+        output, error = _docker_exec_probe(
             name,
             ["nvidia-smi", "--query-gpu=utilization.gpu", "--format=csv,noheader,nounits"],
         )
+        if error:
+            errors.append(error)
         if not output:
             continue
         lines = [line.strip() for line in output.splitlines() if line.strip()]
         pcts = [_parse_pct(line) for line in lines]
         valid = [pct for pct in pcts if pct is not None]
         if valid:
-            return {"vendor": "nvidia", "pct": int(sum(valid) / len(valid))}
-    return None
+            return {
+                "vendor": "nvidia",
+                "pct": int(sum(valid) / len(valid)),
+                "source": f"docker:{name}",
+                "probe_error": None,
+            }, None
+        errors.append(f"docker:{name} returned no parseable nvidia-smi utilization")
+    return None, _short_probe_error("; ".join(errors))
 
 
 def gpu_info() -> dict:
     """
-    Probe NVIDIA → Intel Arc → AMD in order.
-    Returns {"vendor": str|None, "pct": int|None}.
-    vendor is one of: "nvidia", "intel", "amd", or None (not detected).
+    Probe NVIDIA -> Intel Arc -> AMD -> Docker fallback in order.
+    Returns vendor, utilization pct, detection source, and the last probe error.
     """
-    # NVIDIA
-    try:
-        r = subprocess.run(
-            ["nvidia-smi", "--query-gpu=utilization.gpu", "--format=csv,noheader,nounits"],
-            capture_output=True, text=True, timeout=5,
-        )
-        if r.returncode == 0:
-            lines = [l.strip() for l in r.stdout.strip().split("\n") if l.strip()]
-            if lines:
+    errors: list[str] = []
+
+    if shutil.which("nvidia-smi"):
+        try:
+            r = subprocess.run(
+                ["nvidia-smi", "--query-gpu=utilization.gpu", "--format=csv,noheader,nounits"],
+                capture_output=True, text=True, timeout=5,
+            )
+            if r.returncode == 0:
+                lines = [l.strip() for l in r.stdout.strip().split("\n") if l.strip()]
                 pcts = [_parse_pct(l) for l in lines]
                 valid = [p for p in pcts if p is not None]
-                avg = int(sum(valid) / len(valid)) if valid else None
-                return {"vendor": "nvidia", "pct": avg}
-    except Exception:
-        pass
+                if valid:
+                    return {"vendor": "nvidia", "pct": int(sum(valid) / len(valid)), "source": "local:nvidia-smi", "probe_error": None}
+                errors.append("local:nvidia-smi returned no parseable utilization")
+            else:
+                errors.append(f"local:nvidia-smi failed: {r.stderr or r.stdout}")
+        except Exception as exc:
+            errors.append(f"local:nvidia-smi failed: {exc}")
+    else:
+        errors.append("local:nvidia-smi unavailable")
 
-    # Intel Arc (xpu-smi — Level Zero / oneAPI driver)
-    # xpu-smi dump -d 0 -m 0 -n 1  →  CSV: Timestamp, DeviceId, GPU Utilization (%)
-    try:
-        r = subprocess.run(
-            ["xpu-smi", "dump", "-d", "0", "-m", "0", "-n", "1"],
-            capture_output=True, text=True, timeout=5,
-        )
-        if r.returncode == 0:
-            for line in r.stdout.strip().split("\n"):
-                parts = [p.strip() for p in line.split(",")]
-                if len(parts) >= 3:
-                    try:
-                        return {"vendor": "intel", "pct": _parse_pct(parts[2])}
-                    except ValueError:
-                        continue  # header row
-    except Exception:
-        pass
+    if shutil.which("xpu-smi"):
+        try:
+            r = subprocess.run(
+                ["xpu-smi", "dump", "-d", "0", "-m", "0", "-n", "1"],
+                capture_output=True, text=True, timeout=5,
+            )
+            if r.returncode == 0:
+                for line in r.stdout.strip().split("\n"):
+                    parts = [p.strip() for p in line.split(",")]
+                    if len(parts) >= 3:
+                        pct = _parse_pct(parts[2])
+                        if pct is not None:
+                            return {"vendor": "intel", "pct": pct, "source": "local:xpu-smi", "probe_error": None}
+                errors.append("local:xpu-smi returned no parseable utilization")
+            else:
+                errors.append(f"local:xpu-smi failed: {r.stderr or r.stdout}")
+        except Exception as exc:
+            errors.append(f"local:xpu-smi failed: {exc}")
+    else:
+        errors.append("local:xpu-smi unavailable")
 
-    # AMD (ROCm — rocm-smi)
-    try:
-        r = subprocess.run(
-            ["rocm-smi", "--showuse", "--json"],
-            capture_output=True, text=True, timeout=5,
-        )
-        if r.returncode == 0:
-            data = _json.loads(r.stdout)
-            for card_data in data.values():
-                pct_str = card_data.get("GPU use (%)") or card_data.get("GPU Activity")
-                if pct_str is not None:
-                    return {"vendor": "amd", "pct": _parse_pct(pct_str)}
-    except Exception:
-        pass
+    if shutil.which("rocm-smi"):
+        try:
+            r = subprocess.run(
+                ["rocm-smi", "--showuse", "--json"],
+                capture_output=True, text=True, timeout=5,
+            )
+            if r.returncode == 0:
+                data = _json.loads(r.stdout)
+                for card_data in data.values():
+                    pct_str = card_data.get("GPU use (%)") or card_data.get("GPU Activity")
+                    if pct_str is not None:
+                        pct = _parse_pct(pct_str)
+                        if pct is not None:
+                            return {"vendor": "amd", "pct": pct, "source": "local:rocm-smi", "probe_error": None}
+                errors.append("local:rocm-smi returned no utilization field")
+            else:
+                errors.append(f"local:rocm-smi failed: {r.stderr or r.stdout}")
+        except Exception as exc:
+            errors.append(f"local:rocm-smi failed: {exc}")
+    else:
+        errors.append("local:rocm-smi unavailable")
 
-    docker_nvidia = _nvidia_info_from_docker()
+    docker_nvidia, docker_error = _nvidia_info_from_docker()
     if docker_nvidia is not None:
         return docker_nvidia
+    if docker_error:
+        errors.append(docker_error)
 
-    return {"vendor": None, "pct": None}
-
+    return {"vendor": None, "pct": None, "source": "none", "probe_error": _short_probe_error("; ".join(errors))}
 
 def gpu_utilization() -> int | None:
     """Backwards-compatible shim — returns utilisation % or None."""

@@ -309,7 +309,7 @@ Video file
 | LLM model | qwen3-4b-q4_k_m via llama.cpp OpenAI-compatible API |
 | LLM health | `/health` returns `llm_ready: true` |
 | LLM endpoint | `http://192.168.2.10:11435` externally, `http://llama-cpp:8080` in Docker network |
-| GPU status | NVIDIA detected through Docker-socket fallback against `llama-cpp`; `/api/scheduler/status` returns `gpu_vendor: nvidia` |
+| GPU status | NVIDIA detected; `/api/scheduler/status` returns `gpu_vendor`, `gpu_detection_source`, and `gpu_probe_error` diagnostics |
 | GPU utilization | 0% at verification time, threshold 30% |
 | Recommendations | Live `GET /api/users/admin/recommendations?force=true` returns HTTP 200 with recommendation JSON |
 | Translation | Script status returns HTTP 200; direct `/no_think` llama.cpp SRT smoke returns valid translated SRT |
@@ -322,11 +322,11 @@ Video file
 
 ### Current Fix State
 
-The previous port 8000 UI and API failures were caused by stale Ollama/qwen3.5 references, oversized llama.cpp prompts, and Qwen reasoning output leaking into translation chunks. The live app now serves llama.cpp/qwen3-4b labels, caps recommendation prompt inputs, lowers max generation tokens to fit the 8192-token model context, preserves `/no_think` for every translation chunk, and reports NVIDIA GPU utilization even when the PlexMind app image does not include `nvidia-smi`. The 2026-06-07 release also fixes the Whisper large-audio crash path by extracting compressed 16 kHz mono MP3, segmenting uploads over 50 MB, adding a 12 GB Whisper sidecar memory limit, and moving bundled sidecar host ports to `11435` for llama.cpp and `9001` for Whisper so PlexMind does not contend with services using host `8080` or `9000`. A later same-day regression in local script-runner mode was fixed by routing API-container Whisper health checks and transcription launches through `172.17.0.1:9001` whenever the configured URL names the Whisper sidecar.
+The previous port 8000 UI and API failures were caused by stale Ollama/qwen3.5 references, oversized llama.cpp prompts, and Qwen reasoning output leaking into translation chunks. The live app now serves llama.cpp/qwen3-4b labels, caps recommendation prompt inputs, lowers max generation tokens to fit the 8192-token model context, preserves `/no_think` for every translation chunk, and reports NVIDIA GPU utilization with detection-source and probe-error diagnostics. The 2026-06-07 release also fixes the Whisper large-audio crash path by extracting compressed 16 kHz mono MP3, segmenting uploads over 50 MB, adding a 12 GB Whisper sidecar memory limit, and moving bundled sidecar host ports to `11435` for llama.cpp and `9001` for Whisper so PlexMind does not contend with services using host `8080` or `9000`. A later same-day regression in local script-runner mode was fixed by routing API-container Whisper health checks and transcription launches through `172.17.0.1:9001` whenever the configured URL names the Whisper sidecar.
 
 ### Current Live Verification
 
-The promoted 2026-06-07 containers expose PlexMind on host `8000`, llama.cpp on host `11435` mapped to container `8080`, and Whisper on host `9001` mapped to container `9000`. `bin/verify-live.sh` passed against `http://127.0.0.1:8000`, including `/health`, LLM readiness, GPU detection, translation script availability, recommendation smoke, and dashboard stale-label checks.
+The promoted 2026-06-07 containers expose PlexMind on host `8000`, llama.cpp on host `11435` mapped to container `8080`, and Whisper on host `9001` mapped to container `9000`. `bin/verify-live.sh` passed against `http://127.0.0.1:8000`, including `/health`, LLM readiness, GPU detection, translation script availability, recommendation smoke, and dashboard stale-label checks. `/api/scheduler/status` also returns GPU diagnostics (`gpu_detection_source`, `gpu_probe_error`); live verification showed NVIDIA at 0% via `local:nvidia-smi`.
 
 ---
 
@@ -344,7 +344,7 @@ The promoted 2026-06-07 containers expose PlexMind on host `8000`, llama.cpp on 
 
 | # | Location | Description |
 |---|---|---|
-| B3 | dashboard GPU card | Detection source and probe errors are not surfaced in the UI; failures currently collapse to generic unavailable text |
+| B3 | dashboard GPU card | Fixed 2026-06-07: scheduler GPU status now returns `gpu_detection_source` and `gpu_probe_error`, and the dashboard surfaces the source or failure reason in the GPU card. |
 | B4 | `recommender.py` | Fixed 2026-06-07: TMDB, TVDB, and OMDB provider batches are independently bounded by `ENRICH_PROVIDER_TIMEOUT_SECONDS` (default 45s) and fall back to empty metadata on timeout/error. |
 | B5 | `cache.py:35-52` | Fixed 2026-06-07: `_save_json_atomic()` logs persistence failures to stderr and removes abandoned temp files. |
 | B6 | `llm_client.py`, `recommender.py` | Fixed 2026-06-07: truncated single-object JSON can be repaired, and a valid single recommendation object is preserved as a one-item list. |
@@ -354,7 +354,7 @@ The promoted 2026-06-07 containers expose PlexMind on host `8000`, llama.cpp on 
 
 | # | Location | Description |
 |---|---|---|
-| B8 | `main.py:526` | SSE keepalive fires every 30s — can cause buffering on slow proxy connections |
+| B8 | `main.py` | Fixed 2026-05-07: SSE keepalive timeout is 10s and the stream sends `X-Accel-Buffering: no` for proxy friendliness. |
 | B9 | `plex_client.py:192` | Fixed 2026-06-07: watch history uses configurable `HISTORY_LIMIT` with default 2000 instead of the old 500-item cap. |
 | B10 | `recommender.py:85-98` | Fixed 2026-06-07: full Plex library scan is cached with a 5-minute TTL and invalidated by `library.new` webhook. |
 
@@ -440,9 +440,9 @@ The 2026-05-25 recommendation failure was a llama.cpp HTTP 400 caused by a 9,411
 
 Qwen can return reasoning-only output unless `/no_think` is preserved in every chunk. Add a lightweight `/api/scripts/translate/smoke` endpoint or script mode that sends a two-cue SRT and validates that the response contains timestamps and non-empty content. Run it after deployment and before long translation windows.
 
-### R12 - Harden GPU Detection *(Medium / Operations)*
+### R12 - Harden GPU Detection *(Completed 2026-06-07)*
 
-The app image does not include `nvidia-smi`, while the GPU-backed `llama-cpp` container does. The scheduler now falls back to Docker-socket exec against `LLAMA_CPP_CONTAINER_NAME`. Keep this behavior, but add visible diagnostics to the dashboard: detection source (`local`, `docker:llama-cpp`, or `none`) and the probe error if all methods fail.
+`/api/scheduler/status` now exposes `gpu_detection_source` (`local:nvidia-smi`, `local:xpu-smi`, `local:rocm-smi`, `docker:<container>`, or `none`) and `gpu_probe_error`. The dashboard GPU card shows the source when utilization is available and the probe failure reason when no GPU can be detected.
 
 ### R13 - Add Build/Deploy Parity Checks *(Medium / Operations)*
 
@@ -508,6 +508,7 @@ These are worth considering but not blocking anything current.
 
 | Date | Change |
 |---|---|
+| 2026-06-07 | Added GPU probe diagnostics to scheduler status and dashboard GPU card, closing B3; corrected the stale B8 known-bug row because SSE keepalive is already 10s with proxy buffering disabled. |
 | 2026-06-07 | Hardened Bilingual VIP transcription so the English translate pass can re-extract audio if the first-pass temp audio is missing, preventing one-language-only outputs from temp-file loss. |
 | 2026-06-07 | Fixed Japanese/CJK transcription confidence scoring by switching verification overlap from whitespace words to CJK character n-grams and stripping watermark/formatting noise before scoring. |
 | 2026-06-07 | Added independent metadata-provider timeout guards so TMDB, TVDB, or OMDB stalls no longer block the whole recommendation enrichment batch. |

@@ -596,6 +596,8 @@ def scheduler_status():
         "next_run_utc": next_run,
         "gpu_utilization_pct": util,
         "gpu_vendor": vendor,
+        "gpu_detection_source": info.get("source"),
+        "gpu_probe_error": info.get("probe_error"),
         "gpu_threshold_pct": threshold,
         "gpu_busy": (util or 0) >= threshold,
         "cron_day": cron_day,

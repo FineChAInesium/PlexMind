@@ -727,13 +727,17 @@ async function fetchSchedulerStatus() {
     const util = data.gpu_utilization_pct;
     const busy = data.gpu_busy;
     const vendor = data.gpu_vendor;
+    const source = data.gpu_detection_source;
+    const probeError = data.gpu_probe_error;
     const hasUtil = util !== null && util !== undefined;
     const vendorLabels = { nvidia: 'NVIDIA GPU', intel: 'Intel Arc GPU', amd: 'AMD GPU' };
-    const vendorTools = { nvidia: 'Run: nvidia-smi', intel: 'Run: xpu-smi dump -d 0 -m 0 -n 1', amd: 'Run: rocm-smi --showuse' };
+    const sourceLabel = source && source !== 'none' ? source : null;
     document.getElementById('gpu-dot').className = `w-2.5 h-2.5 rounded-full ${busy ? 'bg-amber-500 animate-pulse' : hasUtil ? 'bg-emerald-500 shadow-[0_0_10px_rgba(16,185,129,.5)]' : 'bg-slate-500'}`;
     document.getElementById('gpu-status').textContent = busy ? 'Busy' : hasUtil ? 'Available' : 'Unknown';
     document.getElementById('gpu-label').textContent = hasUtil ? `${util}% utilized` : (vendorLabels[vendor] || 'GPU');
-    document.getElementById('gpu-sub').textContent = hasUtil ? `Threshold: ${data.gpu_threshold_pct}% · ${vendorLabels[vendor] || 'GPU'}` : (vendor ? vendorTools[vendor] : 'No GPU detected');
+    document.getElementById('gpu-sub').textContent = hasUtil
+      ? `Threshold: ${data.gpu_threshold_pct}% · ${vendorLabels[vendor] || 'GPU'}${sourceLabel ? ' · ' + sourceLabel : ''}`
+      : `No GPU detected${probeError ? ' · ' + probeError : ''}`;
   } catch {
     document.getElementById('stat-schedule').textContent = '—';
     document.getElementById('gpu-dot').className = 'w-2.5 h-2.5 rounded-full bg-slate-500';
