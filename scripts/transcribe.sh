@@ -164,6 +164,25 @@ extract_audio() {
         -y "${OUTPUT_FILE}" -loglevel quiet
 }
 
+extract_bilingual_audio() {
+    local VIDEO_FILE="$1"
+    local OUTPUT_FILE="$2"
+    local _bil_lang
+
+    rm -f "${OUTPUT_FILE}" 2>/dev/null
+    for _bil_lang in kor jpn zho cmn yue ara fra deu spa ita por rus; do
+        extract_audio "${VIDEO_FILE}" "0:a:m:language:${_bil_lang}:0" "${OUTPUT_FILE}" 2>/dev/null
+        if [ -s "${OUTPUT_FILE}" ]; then
+            log "  Audio: found [${_bil_lang}] track."
+            return 0
+        fi
+        rm -f "${OUTPUT_FILE}" 2>/dev/null
+    done
+
+    extract_audio "${VIDEO_FILE}" "0:a:0" "${OUTPUT_FILE}"
+    [ -s "${OUTPUT_FILE}" ]
+}
+
 stitch_segment_srts() {
     local SEGMENT_DIR="$1"
     local OUTPUT_FILE="$2"
@@ -439,12 +458,7 @@ PYEOF
         [ ! -s "${TEMP_AUDIO_FILE}" ] && \
             extract_audio "${VIDEO_FILE}" "0:a:0" "${TEMP_AUDIO_FILE}"
     elif [ "$PROCESSING_MODE" = "BILINGUAL_VIP" ]; then
-        for _bil_lang in kor jpn zho cmn yue ara fra deu spa ita por rus; do
-            extract_audio "${VIDEO_FILE}" "0:a:m:language:${_bil_lang}:0" "${TEMP_AUDIO_FILE}" 2>/dev/null
-            [ -s "${TEMP_AUDIO_FILE}" ] && { log "  Audio: found [${_bil_lang}] track."; break; }
-        done
-        [ ! -s "${TEMP_AUDIO_FILE}" ] && \
-            extract_audio "${VIDEO_FILE}" "0:a:0" "${TEMP_AUDIO_FILE}"
+        extract_bilingual_audio "${VIDEO_FILE}" "${TEMP_AUDIO_FILE}"
     else
         extract_audio "${VIDEO_FILE}" "0:a:0" "${TEMP_AUDIO_FILE}"
     fi
@@ -590,6 +604,10 @@ PYEOF
             log "  Non-Latin detected [${FOREIGN_LANG_CODE}] — renamed to $(basename "${FOREIGN_SRT}")"
 
             # Translate pass → .en.srt
+            if [ ! -s "${TEMP_AUDIO_FILE}" ]; then
+                log "  Audio: re-extracting for bilingual translate pass..."
+                extract_bilingual_audio "${VIDEO_FILE}" "${TEMP_AUDIO_FILE}" || true
+            fi
             if [ -s "${TEMP_AUDIO_FILE}" ]; then
                 log "  Translate pass [${FOREIGN_LANG_CODE}] → en..."
                 local TRANSLATE_TMP="${DIR_PATH}/${BASENAME_NO_EXT}.translate_tmp.srt"
@@ -609,6 +627,8 @@ PYEOF
                     log "  WARNING: Translate pass failed (${WHISPER_UPLOAD_RESULT:-exit ${TRANSLATE_EXIT}}) — .en.srt not created."
                     rm -f "${TRANSLATE_TMP}" 2>/dev/null
                 fi
+            else
+                log "  WARNING: Translate pass skipped — bilingual audio could not be re-extracted."
             fi
         fi
         rm -f "${TEMP_AUDIO_FILE}" 2>/dev/null

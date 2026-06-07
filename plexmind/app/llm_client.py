@@ -134,6 +134,20 @@ def _extract_json(text: str) -> str:
                 except json.JSONDecodeError as e:
                     log.warning("Fallback repair failed: %s\nFirst 200: %s", e, repaired2[:200])
 
+    # Handle a truncated single object before falling back to retry.
+    obj_start = text.find("{")
+    obj_end = text.rfind("}")
+    if obj_start != -1 and (obj_end == -1 or obj_end <= obj_start):
+        truncated = text[obj_start:].rstrip(", \n\t")
+        missing = truncated.count("{") - truncated.count("}")
+        if missing > 0:
+            repaired_object = truncated + ("}" * missing)
+            try:
+                json.loads(repaired_object)
+                return repaired_object
+            except json.JSONDecodeError:
+                pass
+
     # Find the first JSON object
     start = text.find("{")
     end = text.rfind("}")

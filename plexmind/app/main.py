@@ -17,7 +17,6 @@ import logging
 import os
 import re
 import secrets
-import socket
 from pathlib import Path
 from urllib.parse import urlparse, urlunparse
 import httpx
@@ -242,12 +241,8 @@ def _bridge_fallback_url(url: str) -> str:
     parsed = urlparse(url)
     if parsed.hostname not in {"whisper", "whisper-asr-webservice"}:
         return url
-    try:
-        socket.gethostbyname(parsed.hostname)
-        return url
-    except OSError:
-        port = f":{parsed.port}" if parsed.port else ""
-        return urlunparse(parsed._replace(netloc=f"172.17.0.1{port}"))
+    host_port = os.getenv("WHISPER_HOST_PORT", "9001")
+    return urlunparse(parsed._replace(netloc=f"172.17.0.1:{host_port}"))
 
 
 async def _whisper_health() -> dict:

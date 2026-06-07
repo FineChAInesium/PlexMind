@@ -870,41 +870,66 @@ score_confidence() {
     local CHECK_LANGUAGE="${3:-en}"
     local OFFSET="${4:-300}"
     local SAMPLE_DURATION=30
-
-    local TEMP_SAMPLE="/tmp/confidence_sample_$$.wav"
-    local TEMP_SRT="/tmp/confidence_check_$$.srt"
-
-    # Direct ffmpeg call (container has ffmpeg installed)
-    ffmpeg -nostdin -ss "$OFFSET" -i "$VIDEO_FILE" \
-        -map 0:a:0 -t "$SAMPLE_DURATION" -vn -acodec pcm_s16le -ar 16000 -ac 1 \
-        -y "$TEMP_SAMPLE" -loglevel quiet 2>/dev/null
-
-    if [ ! -s "$TEMP_SAMPLE" ]; then
-        log "  CONFIDENCE: Could not extract audio sample."
-        echo "50"
-        return
-    fi
+    local THRESHOLD="${CONFIDENCE_THRESHOLD:-30}"
 
     local API_URL="${WHISPER_API_URL}?task=transcribe&output=srt"
     if [ -n "$CHECK_LANGUAGE" ] && [ "$CHECK_LANGUAGE" != "auto" ]; then
         API_URL="${API_URL}&language=${CHECK_LANGUAGE}"
     fi
-    curl -s --fail --connect-timeout 30 --max-time 300 \
-        -X POST -F "audio_file=@${TEMP_SAMPLE}" \
-        "$API_URL" -o "$TEMP_SRT" 2>/dev/null
 
-    rm -f "$TEMP_SAMPLE"
+    run_confidence_sample() {
+        local SAMPLE_OFFSET="$1"
+        local TEMP_SAMPLE="/tmp/confidence_sample_$$_${SAMPLE_OFFSET}.wav"
+        local TEMP_SRT="/tmp/confidence_check_$$_${SAMPLE_OFFSET}.srt"
 
-    if [ ! -s "$TEMP_SRT" ] || ! grep -qF -- '-->' "$TEMP_SRT"; then
-        log "  CONFIDENCE: Verification pass failed."
-        rm -f "$TEMP_SRT"
-        echo "50"
-        return
-    fi
+        ffmpeg -nostdin -ss "$SAMPLE_OFFSET" -i "$VIDEO_FILE" \
+            -map 0:a:0 -t "$SAMPLE_DURATION" -vn -acodec pcm_s16le -ar 16000 -ac 1 \
+            -y "$TEMP_SAMPLE" -loglevel quiet 2>/dev/null
 
-    local SCORE
-    SCORE=$(python3 - "$SRT_FILE" "$TEMP_SRT" "$OFFSET" "$SAMPLE_DURATION" <<'PYEOF'
+        if [ ! -s "$TEMP_SAMPLE" ]; then
+            rm -f "$TEMP_SAMPLE" "$TEMP_SRT"
+            echo "50"
+            return
+        fi
+
+        curl -s --fail --connect-timeout 30 --max-time 300 \
+            -X POST -F "audio_file=@${TEMP_SAMPLE}" \
+            "$API_URL" -o "$TEMP_SRT" 2>/dev/null
+
+        rm -f "$TEMP_SAMPLE"
+
+        if [ ! -s "$TEMP_SRT" ] || ! grep -qF -- '-->' "$TEMP_SRT"; then
+            rm -f "$TEMP_SRT"
+            echo "50"
+            return
+        fi
+
+        local SAMPLE_SCORE
+        SAMPLE_SCORE=$(python3 - "$SRT_FILE" "$TEMP_SRT" "$SAMPLE_OFFSET" "$SAMPLE_DURATION" <<'PYEOF'
 import sys, re
+
+CJK_RE = re.compile(r'[\u3040-\u30ff\u3400-\u9fff]')
+
+
+def normalize_text(text):
+    text = re.sub(r'\{\\an8[^}]*\}', ' ', text)
+    text = re.sub(r'<[^>]+>', ' ', text)
+    text = text.lower()
+    text = re.sub(r'[^\w\s\u3040-\u30ff\u3400-\u9fff]', '', text)
+    return re.sub(r'\s+', ' ', text).strip()
+
+
+def text_units(text):
+    text = normalize_text(text)
+    compact = re.sub(r'\s+', '', text)
+    cjk = ''.join(ch for ch in compact if CJK_RE.match(ch))
+    if len(cjk) >= 8:
+        units = set(cjk)
+        for n in (2, 3):
+            units.update(cjk[i:i+n] for i in range(0, max(0, len(cjk) - n + 1)))
+        return units
+    return set(text.split())
+
 
 def extract_text(path):
     with open(path, 'r', encoding='utf-8', errors='replace') as f:
@@ -913,16 +938,19 @@ def extract_text(path):
     for block in re.split(r'\n{2,}', content.strip()):
         lines = block.strip().splitlines()
         ts_i = next((i for i, l in enumerate(lines) if ' --> ' in l), None)
-        if ts_i is None: continue
-        text = ' '.join(lines[ts_i+1:]).strip().lower()
-        text = re.sub(r'[^\w\s]', '', text)
-        if text: texts.append(text)
-    return ' '.join(texts).split()
+        if ts_i is None:
+            continue
+        text = ' '.join(lines[ts_i+1:]).strip()
+        if text:
+            texts.append(text)
+    return text_units(' '.join(texts))
+
 
 def ts_to_sec(ts):
     ts = ts.strip().replace(',', '.')
     h, m, s = ts.split(':')
     return float(h)*3600 + float(m)*60 + float(s)
+
 
 def extract_text_in_range(path, start_sec, duration):
     end_sec = start_sec + duration
@@ -932,38 +960,60 @@ def extract_text_in_range(path, start_sec, duration):
     for block in re.split(r'\n{2,}', content.strip()):
         lines = block.strip().splitlines()
         ts_i = next((i for i, l in enumerate(lines) if ' --> ' in l), None)
-        if ts_i is None: continue
+        if ts_i is None:
+            continue
         try:
             parts = lines[ts_i].split(' --> ')
             cue_start = ts_to_sec(parts[0])
-        except: continue
+        except Exception:
+            continue
         if start_sec <= cue_start <= end_sec:
-            text = ' '.join(lines[ts_i+1:]).strip().lower()
-            text = re.sub(r'[^\w\s]', '', text)
-            if text: texts.append(text)
-    return ' '.join(texts).split()
+            text = ' '.join(lines[ts_i+1:]).strip()
+            if text:
+                texts.append(text)
+    return text_units(' '.join(texts))
+
 
 offset = float(sys.argv[3])
 duration = float(sys.argv[4])
 
-original_words = set(extract_text_in_range(sys.argv[1], offset, duration))
-verify_words = set(extract_text(sys.argv[2]))
+original_units = extract_text_in_range(sys.argv[1], offset, duration)
+verify_units = extract_text(sys.argv[2])
 
-if not original_words or not verify_words:
+if not original_units or not verify_units:
     print(50)
     sys.exit(0)
 
-union = original_words | verify_words
-intersection = original_words & verify_words
+union = original_units | verify_units
+intersection = original_units & verify_units
 score = int((len(intersection) / len(union)) * 100) if union else 50
 print(score)
 PYEOF
-    )
+        )
 
-    rm -f "$TEMP_SRT"
-    SCORE="${SCORE:-50}"
-    log "  CONFIDENCE: Score ${SCORE}/100"
-    echo "$SCORE"
+        rm -f "$TEMP_SRT"
+        echo "${SAMPLE_SCORE:-50}"
+    }
+
+    local BEST_SCORE
+    BEST_SCORE=$(run_confidence_sample "$OFFSET")
+    BEST_SCORE="${BEST_SCORE:-50}"
+
+    if [ "$BEST_SCORE" -lt "$THRESHOLD" ] 2>/dev/null; then
+        local SAMPLE_OFFSET SAMPLE_SCORE
+        for SAMPLE_OFFSET in 60 180 900 1200; do
+            [ "$SAMPLE_OFFSET" = "$OFFSET" ] && continue
+            SAMPLE_SCORE=$(run_confidence_sample "$SAMPLE_OFFSET")
+            SAMPLE_SCORE="${SAMPLE_SCORE:-50}"
+            if [ "$SAMPLE_SCORE" -gt "$BEST_SCORE" ] 2>/dev/null; then
+                BEST_SCORE="$SAMPLE_SCORE"
+            fi
+            [ "$BEST_SCORE" -ge "$THRESHOLD" ] 2>/dev/null && break
+        done
+    fi
+
+    log "  CONFIDENCE: Score ${BEST_SCORE}/100"
+    echo "$BEST_SCORE"
 }
 
 # ==============================================================================

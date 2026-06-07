@@ -14,6 +14,7 @@ Core recommendation engine — all 9 features:
 Metadata sources (concurrent): TMDB + TVDB + OMDB/IMDB
 """
 import asyncio
+import logging
 import os
 import re
 import time
@@ -35,6 +36,8 @@ RATING_BOOST_MAX = 0.04  # scaled by IMDB rating / 10
 MAX_HISTORY_PROMPT_ITEMS = int(os.getenv("MAX_HISTORY_PROMPT_ITEMS", "25"))
 MAX_CANDIDATE_PROMPT_ITEMS = int(os.getenv("MAX_CANDIDATE_PROMPT_ITEMS", "28"))
 MAX_FEEDBACK_PROMPT_ITEMS = int(os.getenv("MAX_FEEDBACK_PROMPT_ITEMS", "12"))
+ENRICH_PROVIDER_TIMEOUT_SECONDS = float(os.getenv("ENRICH_PROVIDER_TIMEOUT_SECONDS", "45"))
+log = logging.getLogger("plexmind.recommender")
 
 _LIBRARY_CACHE_TTL = 300  # seconds — invalidated by library.new webhook
 _library_cache: list[dict] | None = None
@@ -127,6 +130,18 @@ def _get_unwatched_library(
 # Metadata enrichment
 # ---------------------------------------------------------------------------
 
+async def _provider_results(name: str, awaitable, fallback_len: int) -> list:
+    """Run one metadata provider with a bounded budget and list-shaped fallback."""
+    try:
+        result = await asyncio.wait_for(awaitable, timeout=ENRICH_PROVIDER_TIMEOUT_SECONDS)
+        return result if isinstance(result, list) else [None] * fallback_len
+    except asyncio.TimeoutError:
+        log.warning("%s enrichment timed out after %.1fs; continuing without it", name, ENRICH_PROVIDER_TIMEOUT_SECONDS)
+    except Exception as exc:
+        log.warning("%s enrichment failed; continuing without it: %s", name, exc)
+    return [None] * fallback_len
+
+
 async def _enrich_all(items: list[tuple[str, int | None, str]]) -> list[dict]:
     """Enrich (title, year, media_type) list from TMDB + TVDB + OMDB concurrently."""
     if not items:
@@ -135,9 +150,13 @@ async def _enrich_all(items: list[tuple[str, int | None, str]]) -> list[dict]:
     tv_items = [(t, y) for t, y, mt in items if mt in ("show", "tv")]
 
     tmdb_metas, tvdb_metas, omdb_metas = await asyncio.gather(
-        tmdb_client.enrich_batch(items),
-        tvdb_client.enrich_batch_tv(tv_items) if tv_items else asyncio.sleep(0, result=[]),
-        imdb_client.enrich_batch([(t, y, mt) for t, y, mt in items]),
+        _provider_results("TMDB", tmdb_client.enrich_batch(items), len(items)),
+        _provider_results(
+            "TVDB",
+            tvdb_client.enrich_batch_tv(tv_items) if tv_items else asyncio.sleep(0, result=[]),
+            len(tv_items),
+        ),
+        _provider_results("OMDB", imdb_client.enrich_batch([(t, y, mt) for t, y, mt in items]), len(items)),
     )
 
     tvdb_by_title: dict[str, dict] = {}
@@ -663,7 +682,11 @@ async def get_recommendations(user_id: str, force: bool = False) -> list[dict]:
     # 9. Call LLM
     raw_recs: list | dict = await llm_client.generate_json(prompt, system=SYSTEM_PROMPT)
     if isinstance(raw_recs, dict):
-        raw_recs = raw_recs.get("recommendations", list(raw_recs.values())[0] if raw_recs else [])
+        if raw_recs.get("title"):
+            raw_recs = [raw_recs]
+        else:
+            nested = raw_recs.get("recommendations") or raw_recs.get("items") or raw_recs.get("results")
+            raw_recs = nested if isinstance(nested, list) else []
 
     # 10. Post-process LLM recs
     meta_by_title = {e["title"].lower(): e for e in library_meta}

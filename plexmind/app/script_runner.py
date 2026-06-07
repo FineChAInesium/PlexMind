@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import os
 import signal
-import socket
 import subprocess
 import time
 from pathlib import Path
@@ -22,12 +21,8 @@ def _bridge_fallback_url(url: str) -> str:
     parsed = urlparse(url)
     if parsed.hostname not in {"whisper", "whisper-asr-webservice"}:
         return url
-    try:
-        socket.gethostbyname(parsed.hostname)
-        return url
-    except OSError:
-        port = f":{parsed.port}" if parsed.port else ""
-        return urlunparse(parsed._replace(netloc=f"172.17.0.1{port}"))
+    host_port = os.getenv("WHISPER_HOST_PORT", "9001")
+    return urlunparse(parsed._replace(netloc=f"172.17.0.1:{host_port}"))
 
 JOBS = {
     "transcribe": {
