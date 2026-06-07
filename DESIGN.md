@@ -1,7 +1,7 @@
 # PlexMind Suite — Design Document
 
 > **Living document.** Updated as the system evolves.  
-> Last reviewed: 2026-05-25 | Version: v0.8.18
+> Last reviewed: 2026-06-07 | Version: v0.8.18
 
 ---
 
@@ -453,7 +453,7 @@ The live fix required direct `docker cp` because compose tooling was unavailable
 
 ### R14 - Store GitHub Deployment State *(Low / Release Hygiene)*
 
-Local `main` contains the llama.cpp fix set, but remote push was blocked by missing GitHub credentials. Track the deployed commit SHA in the dashboard or `/health` response so it is clear whether the running container, local repo, and GitHub remote agree.
+The v0.8.18 release is pushed to GitHub, but the dashboard still does not expose the deployed git SHA. Track the running commit SHA in the dashboard or `/health` response so it is clear whether the running container, local repo, and GitHub remote agree.
 
 
 ### R15 - Add Top-Level Degraded-Service Status Strip *(Medium / UI)*
@@ -476,6 +476,12 @@ Show active llama.cpp URL, model alias, context limit, max tokens, GPU layers, c
 
 The LLM reason text is useful but not auditable. Add a structured explanation drawer per recommendation showing matched genres, cast/director overlap, trend boost, feedback penalty, language match, and whether it was suppressed or reintroduced after the suppression window.
 
+### R20 - Add Folder-Scoped Subtitle Jobs *(High / Product)*
+
+Add dashboard and API support for transcribing or translating specific folders instead of always scanning the full Movies/TV roots. This should support one or more allowlisted paths under the mounted media roots, dry-run preview of matching videos/SRTs, per-job `target_paths` in `/api/scripts/{job}/start`, CLI/env compatibility via something like `TARGET_PATHS`, and clear logs showing the selected scope. Validate paths with `realpath` so requests cannot escape `/media/movies` or `/media/tv`.
+
+Implementation notes: update `script_runner.py`, `control_server.py`, `transcribe.sh`, and `translate.sh` so the same scoping works for local and sidecar modes. The dashboard should expose a folder picker/text field on the transcription and translation controls. The translation path should scan only matching `.en.srt` files beneath the selected folders; transcription should scan only matching video files beneath the selected folders.
+
 
 ---
 
@@ -497,6 +503,7 @@ These are worth considering but not blocking anything current.
 | Model settings and last-error panel | Medium — faster LLM debugging | Low |
 | Structured recommendation evidence drawer | Medium — improves trust | Medium |
 | Confidence threshold alerting (notify dashboard if quarantine > N files) | Medium — currently silent | Low |
+| Folder-scoped transcription/translation jobs | High — lets operator run subtitle work on one show/season/folder without scanning entire libraries | Medium |
 
 ---
 
@@ -504,7 +511,7 @@ These are worth considering but not blocking anything current.
 
 | Date | Change |
 |---|---|
-| 2026-06-07 | Fixed Whisper large-audio OOM/crash mitigation, moved PlexMind sidecar host ports to avoid conflicts, rebuilt/promoted live containers, and verified the suite with `bin/verify-live.sh`. |
+| 2026-06-07 | Fixed Whisper large-audio OOM/crash mitigation, moved PlexMind sidecar host ports to avoid conflicts, added conservative subtitle readability formatting, rebuilt/promoted live containers, pushed `main` and `v0.8.18` to GitHub, and verified the suite with `bin/verify-live.sh`. |
 | 2026-05-25 | Migrated design state to llama.cpp/qwen3-4b, documented live translation and recommendation fixes, added GPU detection fallback, and added R10-R19 hardening/UI recommendations. |
 | 2026-05-07 | **All recommendations actioned.** See details below. |
 | 2026-05-07 | Initial design doc created. Reviewed codebase at v0.8.17. Documented live state, bugs B1–B10, recommendations R1–R9. |
@@ -517,15 +524,18 @@ These are worth considering but not blocking anything current.
 - Whisper sidecar memory is capped at 12 GB to reduce crash risk during large ASR jobs.
 - PlexMind sidecar host ports moved to llama.cpp `11435` and Whisper `9001`; internal Docker service ports remain `8080` and `9000`.
 - Remaining install/template/setup drift from Ollama/qwen3.5 was corrected to llama.cpp/qwen3-4b defaults.
+- Future transcription outputs now run through conservative subtitle readability formatting: max two visual lines where safe, 42-character line target, oversized-cue splitting, and high-CPS protection so rapid dialogue is not made worse. Existing Malcolm in the Middle files were audited but not rewritten.
 
 **Verified live:**
 - Rebuilt `plexmind:latest` and `plexmind-scripts:latest`.
-- Recreated `llama-cpp`, `whisper-asr-webservice`, `plexmind`, and `plexmind-scripts` with the new port map and env.
-- `bin/verify-live.sh` passed: health, LLM readiness, GPU detection, translation status, recommendation smoke, and dashboard label checks.
+- Recreated `llama-cpp`, `whisper-asr-webservice`, `plexmind`, and `plexmind-scripts` with the new port map, subtitle readability env defaults, and live `.env` values.
+- `bin/verify-live.sh` passed on commit `444b66e`: health, LLM readiness, GPU detection, translation status, recommendation smoke, and dashboard label checks.
 
 **Release state:**
-- Local release commit: `Fix Whisper upload stability and sidecar ports`.
-- Local HTTPS `git push` is unavailable on this host because GitHub credentials are not configured; GitHub upload is performed through the GitHub connector.
+- Pushed release commit: `444b66e` (`Fix PlexMind llama.cpp and Whisper stability`) on remote `main`.
+- Pushed remote tag: `v0.8.18`.
+- Tracked-file secret scans found no GitHub token or hardcoded dashboard API key patterns before push. The temporary Git askpass helper was deleted after upload.
+- Local working tree has one untracked backup file: `plexmind/app/static/index.html.bak-20260509-apikey-autoseed`; it was not committed or pushed.
 
 ### 2026-05-25 - Changes Applied
 
