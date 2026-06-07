@@ -1,7 +1,7 @@
 #!/bin/bash
 # ==============================================================================
 # transcribe.sh — Library Transcription Backfill
-# Version: 0.8.17 — PlexMind release line
+# Version: 0.8.18 — PlexMind release line
 #
 # Scans Movies and TV directories, transcribes via Whisper ASR API.
 # Features: language profiling, bilingual VIP handling, hallucination
@@ -24,6 +24,11 @@ CONFIDENCE_THRESHOLD="${CONFIDENCE_THRESHOLD:-30}"
 HEALTH_CHECK_INTERVAL="${HEALTH_CHECK_INTERVAL:-10}"
 LOG_RETENTION_DAYS="${LOG_RETENTION_DAYS:-7}"
 MAX_RUNTIME_MINUTES="${MAX_RUNTIME_MINUTES:-0}"
+TRANSCRIBE_AUDIO_EXT="${TRANSCRIBE_AUDIO_EXT:-mp3}"
+TRANSCRIBE_AUDIO_CODEC="${TRANSCRIBE_AUDIO_CODEC:-libmp3lame}"
+TRANSCRIBE_AUDIO_BITRATE="${TRANSCRIBE_AUDIO_BITRATE:-64k}"
+WHISPER_UPLOAD_SPLIT_MB="${WHISPER_UPLOAD_SPLIT_MB:-50}"
+WHISPER_SEGMENT_SECONDS="${WHISPER_SEGMENT_SECONDS:-600}"
 
 # Bilingual / reality VIP lists (comma-separated env vars → arrays)
 IFS=',' read -ra KNOWN_BILINGUAL_TITLES <<< "${KNOWN_BILINGUAL_TITLES:-90 Day Fiancé,Shogun,Shōgun,Squid Game}"
@@ -43,7 +48,7 @@ normalize_lang_code() {
         ger|deu|german) echo "de" ;;
         ita|italian) echo "it" ;;
         rus|russian) echo "ru" ;;
-        und|unknown|none) echo "" ;;
+        und|unk|unknown|none) echo "" ;;
         *) echo "$LANG" ;;
     esac
 }
@@ -56,7 +61,7 @@ mkdir -p "$(dirname "$LOG_FILE")"
 prepare_log_file
 acquire_lock "/tmp/transcription_backfill.lock"
 
-TEMP_AUDIO_FILE="/tmp/transcribe_temp_audio.wav"
+TEMP_AUDIO_FILE="/tmp/transcribe_temp_audio.${TRANSCRIBE_AUDIO_EXT}"
 
 export TOTAL_SCANNED=0 ENGLISH_PROCESSED=0 VIP_PROCESSED=0 FOREIGN_PROCESSED=0
 export SKIPPED_EXISTING=0 SKIPPED_FAILED=0 SKIPPED_SIZE=0 HALLUCINATIONS_CLEANED=0
@@ -147,6 +152,139 @@ calculate_pending_jobs() {
     fi
 
     [ "$TEMP_PENDING" -eq 0 ] && { log "Library fully transcribed!"; exit 0; }
+}
+
+extract_audio() {
+    local VIDEO_FILE="$1"
+    local MAP_ARG="$2"
+    local OUTPUT_FILE="$3"
+
+    ffmpeg -nostdin -i "${VIDEO_FILE}" -map "${MAP_ARG}" \
+        -vn -ar 16000 -ac 1 -codec:a "${TRANSCRIBE_AUDIO_CODEC}" -b:a "${TRANSCRIBE_AUDIO_BITRATE}" \
+        -y "${OUTPUT_FILE}" -loglevel quiet
+}
+
+stitch_segment_srts() {
+    local SEGMENT_DIR="$1"
+    local OUTPUT_FILE="$2"
+    local SEGMENT_SECONDS="$3"
+
+    python3 - "$SEGMENT_DIR" "$OUTPUT_FILE" "$SEGMENT_SECONDS" <<'PYEOF'
+import glob
+import os
+import re
+import sys
+
+segment_dir, output_file, segment_seconds = sys.argv[1], sys.argv[2], float(sys.argv[3])
+
+def ts_to_sec(ts):
+    ts = ts.strip().replace(",", ".")
+    h, m, s = ts.split(":")
+    return int(h) * 3600 + int(m) * 60 + float(s)
+
+def sec_to_ts(value):
+    value = max(0.0, value)
+    h = int(value // 3600)
+    m = int((value % 3600) // 60)
+    s = value % 60
+    return f"{h:02d}:{m:02d}:{s:06.3f}".replace(".", ",")
+
+def parse_srt(path):
+    with open(path, "r", encoding="utf-8", errors="replace") as fh:
+        content = fh.read().replace("\r\n", "\n").replace("\r", "\n")
+    cues = []
+    for block in re.split(r"\n{2,}", content.strip()):
+        lines = [line.strip() for line in block.splitlines()]
+        ts_i = next((i for i, line in enumerate(lines) if " --> " in line), None)
+        if ts_i is None:
+            continue
+        try:
+            start, end = [part.strip() for part in lines[ts_i].split(" --> ", 1)]
+            text = "\n".join(lines[ts_i + 1:]).strip()
+        except Exception:
+            continue
+        if text:
+            cues.append((ts_to_sec(start), ts_to_sec(end), text))
+    return cues
+
+output = []
+for path in sorted(glob.glob(os.path.join(segment_dir, "chunk_*.srt"))):
+    match = re.search(r"chunk_(\d+)\.srt$", os.path.basename(path))
+    index = int(match.group(1)) if match else 0
+    offset = index * segment_seconds
+    for start, end, text in parse_srt(path):
+        output.append((start + offset, end + offset, text))
+
+with open(output_file, "w", encoding="utf-8") as fh:
+    for idx, (start, end, text) in enumerate(output, 1):
+        fh.write(f"{idx}\n{sec_to_ts(start)} --> {sec_to_ts(end)}\n{text}\n\n")
+PYEOF
+}
+
+upload_whisper_audio() {
+    local AUDIO_FILE="$1"
+    local OUTPUT_FILE="$2"
+    local API_URL_PARAMS="$3"
+    WHISPER_UPLOAD_RESULT=""
+
+    local AUDIO_SIZE_MB
+    AUDIO_SIZE_MB=$(( $(stat -c%s "$AUDIO_FILE") / 1024 / 1024 ))
+    if [ "$OUTPUT_FORMAT" = "srt" ] && [ "$AUDIO_SIZE_MB" -gt "$WHISPER_UPLOAD_SPLIT_MB" ]; then
+        local SEGMENT_DIR="/tmp/plexmind-whisper-segments-$$"
+        mkdir -p "$SEGMENT_DIR"
+        log "  Audio exceeds safe upload size (${AUDIO_SIZE_MB}MB > ${WHISPER_UPLOAD_SPLIT_MB}MB); segmenting into ${WHISPER_SEGMENT_SECONDS}s chunks."
+
+        if ! ffmpeg -nostdin -i "$AUDIO_FILE" -f segment -segment_time "$WHISPER_SEGMENT_SECONDS" \
+            -reset_timestamps 1 -c copy "${SEGMENT_DIR}/chunk_%03d.${TRANSCRIBE_AUDIO_EXT}" -loglevel quiet; then
+            rm -rf "$SEGMENT_DIR"
+            return 2
+        fi
+
+        local CHUNK CHUNK_OUT HTTP_STATUS CURL_EXIT
+        for CHUNK in "${SEGMENT_DIR}"/chunk_*.${TRANSCRIBE_AUDIO_EXT}; do
+            [ -f "$CHUNK" ] || continue
+            CHUNK_OUT="${CHUNK%.*}.srt"
+            log "  Uploading chunk $(basename "$CHUNK")..."
+            HTTP_STATUS=$(curl -s -w "%{http_code}" -o "$CHUNK_OUT" \
+                --connect-timeout 60 --max-time 7200 \
+                -X POST -F "audio_file=@${CHUNK}" "${API_URL_PARAMS}")
+            CURL_EXIT=$?
+            if [ $CURL_EXIT -ne 0 ]; then
+                rm -rf "$SEGMENT_DIR"
+                return 10
+            fi
+            if [ "$HTTP_STATUS" != "200" ]; then
+                rm -rf "$SEGMENT_DIR"
+                WHISPER_UPLOAD_RESULT="$HTTP_STATUS"
+                return 20
+            fi
+            if [ ! -s "$CHUNK_OUT" ] || ! grep -qF -- '-->' "$CHUNK_OUT"; then
+                rm -rf "$SEGMENT_DIR"
+                return 30
+            fi
+        done
+
+        if ! stitch_segment_srts "$SEGMENT_DIR" "$OUTPUT_FILE" "$WHISPER_SEGMENT_SECONDS"; then
+            rm -rf "$SEGMENT_DIR"
+            return 30
+        fi
+        rm -rf "$SEGMENT_DIR"
+        return 0
+    fi
+
+    local HTTP_STATUS CURL_EXIT
+    HTTP_STATUS=$(curl -s -w "%{http_code}" -o "${OUTPUT_FILE}" \
+        --connect-timeout 60 --max-time 7200 \
+        -X POST -F "audio_file=@${AUDIO_FILE}" "${API_URL_PARAMS}")
+    CURL_EXIT=$?
+    if [ $CURL_EXIT -ne 0 ]; then
+        return 10
+    fi
+    if [ "$HTTP_STATUS" != "200" ]; then
+        WHISPER_UPLOAD_RESULT="$HTTP_STATUS"
+        return 20
+    fi
+    return 0
 }
 
 # --- PROCESS VIDEO ---
@@ -295,27 +433,20 @@ PYEOF
     log "Step 2/5: Extracting audio..."
 
     if [ "$PROCESSING_MODE" = "ENGLISH" ]; then
-        ffmpeg -nostdin -i "${VIDEO_FILE}" -map 0:a:m:language:eng:0 \
-            -vn -acodec pcm_s16le -ar 16000 -ac 1 -y "${TEMP_AUDIO_FILE}" -loglevel quiet
+        extract_audio "${VIDEO_FILE}" "0:a:m:language:eng:0" "${TEMP_AUDIO_FILE}"
         [ ! -s "${TEMP_AUDIO_FILE}" ] && \
-            ffmpeg -nostdin -i "${VIDEO_FILE}" -map 0:a:m:language:en:0 \
-                -vn -acodec pcm_s16le -ar 16000 -ac 1 -y "${TEMP_AUDIO_FILE}" -loglevel quiet
+            extract_audio "${VIDEO_FILE}" "0:a:m:language:en:0" "${TEMP_AUDIO_FILE}"
         [ ! -s "${TEMP_AUDIO_FILE}" ] && \
-            ffmpeg -nostdin -i "${VIDEO_FILE}" -map 0:a:0 \
-                -vn -acodec pcm_s16le -ar 16000 -ac 1 -y "${TEMP_AUDIO_FILE}" -loglevel quiet
+            extract_audio "${VIDEO_FILE}" "0:a:0" "${TEMP_AUDIO_FILE}"
     elif [ "$PROCESSING_MODE" = "BILINGUAL_VIP" ]; then
         for _bil_lang in kor jpn zho cmn yue ara fra deu spa ita por rus; do
-            ffmpeg -nostdin -i "${VIDEO_FILE}" \
-                -map "0:a:m:language:${_bil_lang}:0" -vn -acodec pcm_s16le -ar 16000 -ac 1 \
-                -y "${TEMP_AUDIO_FILE}" -loglevel quiet 2>/dev/null
+            extract_audio "${VIDEO_FILE}" "0:a:m:language:${_bil_lang}:0" "${TEMP_AUDIO_FILE}" 2>/dev/null
             [ -s "${TEMP_AUDIO_FILE}" ] && { log "  Audio: found [${_bil_lang}] track."; break; }
         done
         [ ! -s "${TEMP_AUDIO_FILE}" ] && \
-            ffmpeg -nostdin -i "${VIDEO_FILE}" -map 0:a:0 \
-                -vn -acodec pcm_s16le -ar 16000 -ac 1 -y "${TEMP_AUDIO_FILE}" -loglevel quiet
+            extract_audio "${VIDEO_FILE}" "0:a:0" "${TEMP_AUDIO_FILE}"
     else
-        ffmpeg -nostdin -i "${VIDEO_FILE}" -map 0:a:0 \
-            -vn -acodec pcm_s16le -ar 16000 -ac 1 -y "${TEMP_AUDIO_FILE}" -loglevel quiet
+        extract_audio "${VIDEO_FILE}" "0:a:0" "${TEMP_AUDIO_FILE}"
     fi
 
     if [ ! -s "${TEMP_AUDIO_FILE}" ]; then
@@ -356,24 +487,28 @@ PYEOF
     esac
 
     log "Step 3/5: Uploading audio (${AUDIO_SIZE_MB}MB)..."
-    local HTTP_STATUS
-    HTTP_STATUS=$(curl -s -w "%{http_code}" -o "${TEMP_OUTPUT_FILE}" \
-        --connect-timeout 60 --max-time 7200 \
-        -X POST -F "audio_file=@${TEMP_AUDIO_FILE}" "${API_URL_PARAMS}")
-    local CURL_EXIT=$?
+    local UPLOAD_EXIT
+    upload_whisper_audio "${TEMP_AUDIO_FILE}" "${TEMP_OUTPUT_FILE}" "${API_URL_PARAMS}"
+    UPLOAD_EXIT=$?
     # Keep audio for BILINGUAL_VIP — may need it for translate pass
     [ "$PROCESSING_MODE" != "BILINGUAL_VIP" ] && rm -f "$TEMP_AUDIO_FILE"
 
-    if [ $CURL_EXIT -ne 0 ]; then
-        log "ERROR: Curl exit $CURL_EXIT."
+    if [ $UPLOAD_EXIT -eq 10 ]; then
+        log "ERROR: Curl failed during Whisper upload."
         rm -f "$TEMP_OUTPUT_FILE" 2>/dev/null
         write_failed_marker "$FAILED_MARKER_FILE" "$FAIL_CURL_TIMEOUT"
         return
     fi
-    if [ "$HTTP_STATUS" != "200" ]; then
-        log "ERROR: API HTTP $HTTP_STATUS"
+    if [ $UPLOAD_EXIT -eq 20 ]; then
+        log "ERROR: API HTTP ${WHISPER_UPLOAD_RESULT:-unknown}"
         rm -f "$TEMP_OUTPUT_FILE" 2>/dev/null
         write_failed_marker "$FAILED_MARKER_FILE" "$FAIL_API_ERROR"
+        return
+    fi
+    if [ $UPLOAD_EXIT -ne 0 ]; then
+        log "ERROR: Whisper upload failed while preparing or stitching segmented audio."
+        rm -f "$TEMP_OUTPUT_FILE" 2>/dev/null
+        write_failed_marker "$FAILED_MARKER_FILE" "$FAIL_INVALID_OUTPUT"
         return
     fi
     if [ ! -s "$TEMP_OUTPUT_FILE" ] || ! grep -qF -- '-->' "$TEMP_OUTPUT_FILE"; then
@@ -390,6 +525,9 @@ PYEOF
     [ "$REM" -gt 0 ] && { log "  Hallucinations: -${REM}"; HALLUCINATIONS_CLEANED=$((HALLUCINATIONS_CLEANED + REM)); }
     detect_music_cues "$TEMP_OUTPUT_FILE" "strip" >/dev/null
     normalize_timestamps "$TEMP_OUTPUT_FILE" >/dev/null
+    local READABILITY_FIXES
+    READABILITY_FIXES=$(format_srt_readability "$TEMP_OUTPUT_FILE"); READABILITY_FIXES="${READABILITY_FIXES:-0}"
+    [ "$READABILITY_FIXES" -gt 0 ] && log "  Readability formatting: ${READABILITY_FIXES} cue adjustment(s)"
 
     # --- STEP 5: VALIDATE + FINALIZE ---
     log "Step 5/5: Validate & finalize..."
@@ -455,20 +593,20 @@ PYEOF
             if [ -s "${TEMP_AUDIO_FILE}" ]; then
                 log "  Translate pass [${FOREIGN_LANG_CODE}] → en..."
                 local TRANSLATE_TMP="${DIR_PATH}/${BASENAME_NO_EXT}.translate_tmp.srt"
-                local TRANSLATE_HTTP
-                TRANSLATE_HTTP=$(curl -s -w "%{http_code}" -o "${TRANSLATE_TMP}" \
-                    --connect-timeout 60 --max-time 7200 \
-                    -X POST -F "audio_file=@${TEMP_AUDIO_FILE}" \
-                    "${WHISPER_API_URL}?task=translate&output=${OUTPUT_FORMAT}&language=${FOREIGN_LANG_CODE}")
-                if [ "$TRANSLATE_HTTP" = "200" ] && [ -s "${TRANSLATE_TMP}" ] && grep -qF -- '-->' "${TRANSLATE_TMP}"; then
+                local TRANSLATE_EXIT
+                upload_whisper_audio "${TEMP_AUDIO_FILE}" "${TRANSLATE_TMP}" \
+                    "${WHISPER_API_URL}?task=translate&output=${OUTPUT_FORMAT}&language=${FOREIGN_LANG_CODE}"
+                TRANSLATE_EXIT=$?
+                if [ "$TRANSLATE_EXIT" -eq 0 ] && [ -s "${TRANSLATE_TMP}" ] && grep -qF -- '-->' "${TRANSLATE_TMP}"; then
                     clean_hallucinations "${TRANSLATE_TMP}" >/dev/null
                     normalize_timestamps "${TRANSLATE_TMP}" >/dev/null
+                    format_srt_readability "${TRANSLATE_TMP}" >/dev/null
                     apply_watermark "${TRANSLATE_TMP}"
                     verify_encoding "${TRANSLATE_TMP}"
                     mv "${TRANSLATE_TMP}" "${FINAL_OUTPUT_FILE}"
                     log "  SUCCESS: English translation → $(basename "${FINAL_OUTPUT_FILE}")"
                 else
-                    log "  WARNING: Translate pass failed (HTTP ${TRANSLATE_HTTP}) — .en.srt not created."
+                    log "  WARNING: Translate pass failed (${WHISPER_UPLOAD_RESULT:-exit ${TRANSLATE_EXIT}}) — .en.srt not created."
                     rm -f "${TRANSLATE_TMP}" 2>/dev/null
                 fi
             fi
@@ -497,7 +635,7 @@ PYEOF
 # MAIN
 # ==============================================================================
 log "========================================================="
-log "Transcription Backfill v0.8.17 (containerized)"
+log "Transcription Backfill v0.8.18 (containerized)"
 log "Schedule: launched by PlexMind; max runtime: ${MAX_RUNTIME_MINUTES:-0}m; retention: ${LOG_RETENTION_DAYS}d; RUN_NOW=${RUN_NOW}"
 log "========================================================="
 check_dependencies curl ffmpeg ffprobe python3

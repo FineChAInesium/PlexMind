@@ -32,6 +32,19 @@ RECENCY_WARM_DAYS = 180  # within this → 2× weight
 TRENDING_BOOST = 0.08
 LANGUAGE_BOOST = 0.06
 RATING_BOOST_MAX = 0.04  # scaled by IMDB rating / 10
+MAX_HISTORY_PROMPT_ITEMS = int(os.getenv("MAX_HISTORY_PROMPT_ITEMS", "25"))
+MAX_CANDIDATE_PROMPT_ITEMS = int(os.getenv("MAX_CANDIDATE_PROMPT_ITEMS", "28"))
+MAX_FEEDBACK_PROMPT_ITEMS = int(os.getenv("MAX_FEEDBACK_PROMPT_ITEMS", "12"))
+
+_LIBRARY_CACHE_TTL = 300  # seconds — invalidated by library.new webhook
+_library_cache: list[dict] | None = None
+_library_cache_ts: float = 0.0
+
+
+def clear_library_cache() -> None:
+    global _library_cache, _library_cache_ts
+    _library_cache = None
+    _library_cache_ts = 0.0
 
 # Deep cut: obscure but genre-matched hidden gem (like Spotify's low-key picks)
 DEEP_CUT_MAX_VOTES = 8000   # under this TMDB vote_count = not widely seen
@@ -69,6 +82,31 @@ def _normalise(title: str) -> str:
 # Library helpers
 # ---------------------------------------------------------------------------
 
+def _fetch_full_library() -> list[dict]:
+    """Fetch all library items from Plex. Result is cached at module level."""
+    global _library_cache, _library_cache_ts
+    if _library_cache is not None and (time.time() - _library_cache_ts) < _LIBRARY_CACHE_TTL:
+        return _library_cache
+    from plexapi.server import PlexServer
+    server = PlexServer(plex_client.PLEX_URL, plex_client.PLEX_TOKEN)
+    items: list[dict] = []
+    for section_name, media_type in [("Movies", "movie"), ("TV Shows", "show")]:
+        try:
+            section = server.library.section(section_name)
+            for item in section.all():
+                items.append({
+                    "title": item.title,
+                    "year": getattr(item, "year", None),
+                    "media_type": media_type,
+                    "plex_genres": [g.tag for g in getattr(item, "genres", [])],
+                })
+        except Exception:
+            pass
+    _library_cache = items
+    _library_cache_ts = time.time()
+    return items
+
+
 def _get_unwatched_library(
     watched_titles: set[str],
     in_progress: set[str],
@@ -78,24 +116,11 @@ def _get_unwatched_library(
     the user hasn't watched and isn't currently in the middle of watching.
     Plex genres are used for the lightweight pre-score before API enrichment.
     """
-    from plexapi.server import PlexServer
-    server = PlexServer(plex_client.PLEX_URL, plex_client.PLEX_TOKEN)
     normalised_watched = {_normalise(t) for t in watched_titles | in_progress}
-    items: list[dict] = []
-    for section_name, media_type in [("Movies", "movie"), ("TV Shows", "show")]:
-        try:
-            section = server.library.section(section_name)
-            for item in section.all():
-                if _normalise(item.title) not in normalised_watched:
-                    items.append({
-                        "title": item.title,
-                        "year": getattr(item, "year", None),
-                        "media_type": media_type,
-                        "plex_genres": [g.tag for g in getattr(item, "genres", [])],
-                    })
-        except Exception:
-            pass
-    return items
+    return [
+        item for item in _fetch_full_library()
+        if _normalise(item["title"]) not in normalised_watched
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -178,14 +203,16 @@ def _recency_weight(viewed_at: float | None) -> float:
 def _build_fingerprint(
     history_meta: list[dict],
     history_items: list[plex_client.WatchedItem],
-) -> tuple[Counter, Counter, Counter]:
+) -> tuple[Counter, Counter, Counter, Counter, Counter]:
     """
-    Build recency-weighted genre, keyword, and language Counters from watch history.
-    Returns (genre_weights, kw_weights, lang_counts).
+    Build recency-weighted genre, keyword, language, director, and cast Counters.
+    Returns (genre_weights, kw_weights, lang_counts, director_weights, cast_weights).
     """
     genre_weights: Counter = Counter()
     kw_weights: Counter = Counter()
     lang_counts: Counter = Counter()
+    director_weights: Counter = Counter()
+    cast_weights: Counter = Counter()
 
     for entry, watched in zip(history_meta, history_items):
         w = _recency_weight(watched.viewed_at)
@@ -196,18 +223,26 @@ def _build_fingerprint(
         lang = entry.get("original_language")
         if lang and lang != "en":  # non-English languages are a strong signal
             lang_counts[lang] += w
+        director = entry.get("director")
+        if director:
+            director_weights[director.lower()] += w
+        for person in entry.get("cast", [])[:3]:
+            cast_weights[person.lower()] += w
 
-    return genre_weights, kw_weights, lang_counts
+    return genre_weights, kw_weights, lang_counts, director_weights, cast_weights
 
 
-def _disliked_genres(user_id: str, meta_by_title: dict[str, dict]) -> set[str]:
-    """Return genre set built from all titles the user has disliked."""
-    genres: set[str] = set()
+def _disliked_genres(user_id: str, meta_by_title: dict[str, dict]) -> Counter:
+    """
+    Return Counter of disliked genre frequencies.
+    A genre disliked across multiple titles accrues a higher penalty than one disliked once.
+    """
+    genres: Counter = Counter()
     for fb in cache.get_user_feedback(user_id):
         if fb["rating"] == "dislike":
             meta = meta_by_title.get(fb["title"].lower(), {})
             for g in meta.get("genres", []):
-                genres.add(g.lower())
+                genres[g.lower()] += 1
     return genres
 
 
@@ -256,9 +291,11 @@ def _score_candidate(
     genre_weights: Counter,
     kw_weights: Counter,
     lang_counts: Counter,
-    disliked_genres: set[str],
+    disliked_genres: Counter,
     trending_titles: set[str],
     dominant_langs: set[str],
+    director_weights: Counter | None = None,
+    cast_weights: Counter | None = None,
 ) -> float:
     total_genre_w = max(sum(genre_weights.values()), 1)
     total_kw_w = max(sum(kw_weights.values()), 1)
@@ -268,6 +305,21 @@ def _score_candidate(
 
     genre_score = sum(genre_weights.get(g, 0) for g in cand_genres) / total_genre_w
     kw_score = sum(kw_weights.get(k, 0) for k in cand_kws) / total_kw_w
+
+    # Director affinity
+    director_boost = 0.0
+    if director_weights:
+        total_dir_w = max(sum(director_weights.values()), 1)
+        director = (candidate.get("director") or "").lower()
+        if director:
+            director_boost = min(0.08, director_weights.get(director, 0) / total_dir_w)
+
+    # Cast affinity (top 3 cast members)
+    cast_boost = 0.0
+    if cast_weights:
+        total_cast_w = max(sum(cast_weights.values()), 1)
+        cand_cast = {p.lower() for p in candidate.get("cast", [])[:5]}
+        cast_boost = min(0.06, sum(cast_weights.get(p, 0) for p in cand_cast) / total_cast_w)
 
     # Language boost
     lang = candidate.get("original_language")
@@ -280,13 +332,14 @@ def _score_candidate(
     imdb = candidate.get("imdb_rating") or 0
     rating_boost = RATING_BOOST_MAX * min(float(imdb) / 10.0, 1.0)
 
-    # Dislike genre penalty — proportional to overlap
-    penalty = 0.25 * len(cand_genres & disliked_genres)
+    # Graduated dislike penalty — scales with how many disliked titles share this genre
+    penalty = sum(0.1 * min(disliked_genres.get(g, 0), 3) for g in cand_genres)
 
     # Small baseline so items with no enrichment data aren't zeroed out entirely
     baseline = 0.01
 
     return max(0.0, baseline + genre_score * 0.5 + kw_score * 0.3
+               + director_boost + cast_boost
                + lang_boost + trending_boost + rating_boost - penalty)
 
 
@@ -307,7 +360,8 @@ def _prefilter(
     if len(candidates) <= pool_size:
         return candidates
 
-    genre_weights, kw_weights, lang_counts = _build_fingerprint(history_meta, history_items)
+    genre_weights, kw_weights, lang_counts, director_weights, cast_weights = \
+        _build_fingerprint(history_meta, history_items)
     dominant_langs = {lang for lang, _ in lang_counts.most_common(3)} - {"en"}
     meta_by_title = {e["title"].lower(): e for e in history_meta}
     bad_genres = _disliked_genres(user_id, meta_by_title)
@@ -336,6 +390,7 @@ def _prefilter(
             key=lambda c: _score_candidate(
                 c, genre_weights, kw_weights, lang_counts,
                 bad_genres, trending_titles, dominant_langs,
+                director_weights, cast_weights,
             ),
             reverse=True,
         )
@@ -379,7 +434,7 @@ def _pick_deep_cut(
         score = _score_candidate(
             item, genre_weights, kw_weights, lang_counts,
             disliked_genres, trending_titles, dominant_langs,
-        )
+        )  # deep cut doesn't need director/cast boost
         scored.append((score, item))
 
     if not scored:
@@ -461,7 +516,7 @@ def _format_history(
         key=lambda x: _recency_weight(x[1].viewed_at),
         reverse=True,
     )
-    for meta, watched in paired:
+    for meta, watched in paired[:MAX_HISTORY_PROMPT_ITEMS]:
         w = _recency_weight(watched.viewed_at)
         lines.append(_fmt_meta(meta, weight=w))
     return "\n".join(lines) if lines else "No history."
@@ -490,14 +545,14 @@ def _fmt_candidate(entry: dict) -> str:
 
 
 def _format_candidates(candidates: list[dict]) -> str:
-    return "\n".join(_fmt_candidate(e) for e in candidates) if candidates else "None."
+    return "\n".join(_fmt_candidate(e) for e in candidates[:MAX_CANDIDATE_PROMPT_ITEMS]) if candidates else "None."
 
 
 def _format_feedback(feedback: list[dict]) -> str:
     if not feedback:
         return "No feedback recorded yet."
     lines = []
-    for fb in feedback[-30:]:
+    for fb in feedback[-MAX_FEEDBACK_PROMPT_ITEMS:]:
         emoji = {"like": "👍", "dislike": "👎", "watched": "✓"}.get(fb["rating"], "?")
         note = f' — "{fb["note"]}"' if fb.get("note") else ""
         lines.append(f"  {emoji} {fb['title']}{note}")
@@ -596,7 +651,8 @@ async def get_recommendations(user_id: str, force: bool = False) -> list[dict]:
     )
 
     # 8. Build prompt with recency-ordered history + top genres
-    genre_weights, kw_weights, lang_counts = _build_fingerprint(history_meta, history)
+    genre_weights, kw_weights, lang_counts, director_weights, cast_weights = \
+        _build_fingerprint(history_meta, history)
     top_genres_str = ", ".join(g for g, _ in genre_weights.most_common(8))
     history_text = _format_history(history_meta, history)
     candidates_text = _format_candidates(candidates)

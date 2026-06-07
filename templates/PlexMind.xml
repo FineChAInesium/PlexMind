@@ -9,7 +9,7 @@
   <Support>https://github.com/FineChAInesium/PlexMind/issues</Support>
   <Project>https://github.com/FineChAInesium/PlexMind</Project>
   <Overview>
-    AI-powered Plex recommendations using a fully local LLM (Ollama). Analyzes each user's watch history and generates personalized movie/TV picks — no cloud, no API costs, no data leaving your server.&#xD;&#xA;&#xD;&#xA;Also includes: Whisper ASR subtitle generation, Ollama-powered subtitle translation, and library maintenance tools.&#xD;&#xA;&#xD;&#xA;Requires: Ollama container running with a model pulled (recommended: qwen3.5:9b for 12GB VRAM, gemma3:4b for 8GB).&#xD;&#xA;&#xD;&#xA;Web dashboard at http://[IP]:[PORT:8000]/
+    AI-powered Plex recommendations using a fully local llama.cpp LLM. Analyzes each user&apos;s watch history and generates personalized movie/TV picks with no cloud, no API costs, and no data leaving your server.&#xD;&#xA;&#xD;&#xA;Also includes: Whisper ASR subtitle generation, llama.cpp-powered subtitle translation, and library maintenance tools.&#xD;&#xA;&#xD;&#xA;Requires a llama.cpp server with the configured GGUF model (default alias: qwen3-4b-q4_k_m).&#xD;&#xA;&#xD;&#xA;Web dashboard at http://[IP]:[PORT:8000]/
   </Overview>
   <Category>MediaApp:Other Tools:</Category>
   <WebUI>http://[IP]:[PORT:8000]/</WebUI>
@@ -17,7 +17,7 @@
   <Icon>https://raw.githubusercontent.com/FineChAInesium/PlexMind/main/templates/icon.png</Icon>
   <ExtraParams>--gpus all --group-add 281</ExtraParams>
   <Description>
-    PlexMind generates personalized Plex recommendations using a local LLM. No cloud. No subscriptions.&#xD;&#xA;&#xD;&#xA;Version line: v0.8.17. See the full README at https://github.com/FineChAInesium/PlexMind for setup instructions and configuration options.
+    PlexMind generates personalized Plex recommendations using a local LLM. No cloud. No subscriptions.&#xD;&#xA;&#xD;&#xA;Version line: v0.8.18. See the full README at https://github.com/FineChAInesium/PlexMind for setup instructions and configuration options.
   </Description>
 
   <Networking>
@@ -58,16 +58,16 @@
       <Description>Your Plex authentication token — find it at plex.tv/claim or in Plex web app preferences URL</Description>
     </Variable>
     <Variable>
-      <Value>http://192.168.1.10:11434</Value>
-      <Name>OLLAMA_URL</Name>
+      <Value>http://192.168.1.10:11435</Value>
+      <Name>LLAMA_CPP_URL</Name>
       <Mode/>
-      <Description>Ollama API URL — use LAN IP of the host running Ollama, not localhost</Description>
+      <Description>llama.cpp API URL — use LAN IP of the host running llama.cpp, not localhost</Description>
     </Variable>
     <Variable>
-      <Value>qwen3.5:9b</Value>
-      <Name>OLLAMA_MODEL</Name>
+      <Value>qwen3-4b-q4_k_m</Value>
+      <Name>LLAMA_CPP_MODEL_ALIAS</Name>
       <Mode/>
-      <Description>Ollama model name (must be pulled first: docker exec ollama ollama pull qwen3.5:9b)</Description>
+      <Description>llama.cpp model alias configured on the server</Description>
     </Variable>
     <Variable>
       <Value/>
@@ -106,8 +106,8 @@
       <Description>Docker container to start before transcription and stop when transcription exits</Description>
     </Variable>
     <Variable>
-      <Value>plexmind-ollama</Value>
-      <Name>OLLAMA_CONTAINER_NAME</Name>
+      <Value>llama-cpp</Value>
+      <Name>LLAMA_CPP_CONTAINER_NAME</Name>
       <Mode/>
       <Description>Docker container to start before translation and stop when translation exits</Description>
     </Variable>
@@ -115,13 +115,13 @@
       <Value>1</Value>
       <Name>START_SIDECAR_CONTAINERS</Name>
       <Mode/>
-      <Description>Set to 1 to start Whisper/Ollama sidecars before script jobs</Description>
+      <Description>Set to 1 to start Whisper/llama.cpp sidecars before script jobs</Description>
     </Variable>
     <Variable>
       <Value>1</Value>
       <Name>STOP_SIDECAR_CONTAINERS</Name>
       <Mode/>
-      <Description>Set to 1 to stop Whisper/Ollama sidecars when script jobs exit</Description>
+      <Description>Set to 1 to stop Whisper/llama.cpp sidecars when script jobs exit</Description>
     </Variable>
   </Environment>
 

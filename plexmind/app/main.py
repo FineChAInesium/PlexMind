@@ -58,11 +58,11 @@ async def lifespan(app: FastAPI):
     ok = await llm_client.health_check()
     if not ok:
         print(
-            f"WARNING: Ollama model '{llm_client.OLLAMA_MODEL}' not found at "
-            f"{llm_client.OLLAMA_URL}. Recommendations will fail until resolved."
+            f"WARNING: llama.cpp model '{llm_client.LLAMA_CPP_MODEL}' not found at "
+            f"{llm_client.LLAMA_CPP_URL}. Recommendations will fail until resolved."
         )
     else:
-        print(f"LLM ready: {llm_client.OLLAMA_MODEL} @ {llm_client.OLLAMA_URL}")
+        print(f"LLM ready: {llm_client.LLAMA_CPP_MODEL} @ {llm_client.LLAMA_CPP_URL}")
 
     # Remove legacy PlexMind *collections* only (not playlists — those are active).
     async def _cleanup():
@@ -82,8 +82,8 @@ limiter = Limiter(key_func=get_remote_address)
 
 app = FastAPI(
     title="PlexMind",
-    description="Gemma 3 powered movie/TV recommendation engine for Plex",
-    version="0.8.17",
+    description="llama.cpp powered movie/TV recommendation engine for Plex",
+    version="0.8.18",
     lifespan=lifespan,
 )
 app.state.limiter = limiter
@@ -286,7 +286,7 @@ async def health():
     )
     return {
         "status": "ok",
-        "llm": llm_client.OLLAMA_MODEL,
+        "llm": llm_client.LLAMA_CPP_MODEL,
         "llm_ready": llm_ok,
         "whisper": whisper,
     }
@@ -521,7 +521,7 @@ async def job_events(job_id: str, _: None = Depends(_require_key)):
                     job = _jobs.get(job_id)
                     if job and (index < len(job.get("details", [])) or job.get("status") in ("completed", "failed", "skipped")):
                         continue
-                    await asyncio.wait_for(_job_conditions[job_id].wait(), timeout=30)
+                    await asyncio.wait_for(_job_conditions[job_id].wait(), timeout=10)
             except asyncio.TimeoutError:
                 yield ": keepalive\n\n"  # SSE comment — keeps proxy/browser alive
 
@@ -716,16 +716,28 @@ async def plex_webhook(request: Request, _: None = Depends(_require_key)):
 
     if event == "library.new":
         cache.cache_clear_all()
+        recommender.clear_library_cache()
         media = payload.get("Metadata", {})
         title = media.get("title", "unknown")
         lib = media.get("librarySectionTitle", "")
         print(f"[webhook] library.new — '{title}' added to '{lib}'. All caches invalidated.")
         return {"status": "ok", "action": "cache_cleared", "title": title}
 
-    # Other events we might care about in future
-    if event in ("media.rate",):
-        # A user rated something — could use this to auto-add feedback
-        pass
+    if event == "media.rate":
+        media = payload.get("Metadata", {})
+        title = media.get("title", "")
+        account = payload.get("Account", {})
+        user_id = str(account.get("id") or "admin")
+        rating_val = payload.get("rating")
+        if title and rating_val is not None:
+            try:
+                rating_str = "like" if float(rating_val) >= 7.0 else "dislike"
+                cache.add_feedback(user_id, title, rating_str,
+                                   note=f"Plex rating {float(rating_val):.0f}/10")
+                print(f"[webhook] media.rate — '{title}' rated {rating_val}/10 by {user_id} → {rating_str}")
+                return {"status": "ok", "action": "feedback_recorded", "title": title}
+            except (ValueError, TypeError):
+                pass
 
     return {"status": "ok", "event": event, "action": "none"}
 

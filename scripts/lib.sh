@@ -1,7 +1,7 @@
 #!/bin/bash
 # ==============================================================================
 # common_lib.sh — Shared Infrastructure for Transcription/Translation Pipeline
-# Version: 0.8.3 — PlexMind release line
+# Version: 0.8.18 — PlexMind release line
 #
 # Source this file from any pipeline script:
 #   source /app/lib.sh || { echo "FATAL: Cannot load lib.sh"; exit 1; }
@@ -373,6 +373,173 @@ PYEOF
         return
     fi
     mv "$CLEANED_FILE" "$SRT_FILE"
+}
+
+
+format_srt_readability() {
+    local SRT_FILE="$1"
+    local OUT_FILE="${SRT_FILE}.readable"
+
+    local CHANGES
+    CHANGES=$(python3 - "$SRT_FILE" "$OUT_FILE" \
+        "${SUBTITLE_MAX_LINE_CHARS:-42}" \
+        "${SUBTITLE_MAX_LINES:-2}" \
+        "${SUBTITLE_MAX_CPS:-20}" \
+        "${SUBTITLE_MIN_CUE_SECONDS:-1.0}" \
+        "${SUBTITLE_MAX_CUE_SECONDS:-7.0}" \
+        "${SUBTITLE_MIN_GAP_SECONDS:-0.04}" <<'PYEOF'
+import math
+import re
+import sys
+
+srt_path, out_path = sys.argv[1], sys.argv[2]
+max_line = int(float(sys.argv[3]))
+max_lines = int(float(sys.argv[4]))
+max_cps = float(sys.argv[5])
+min_dur = float(sys.argv[6])
+max_dur = float(sys.argv[7])
+min_gap = float(sys.argv[8])
+
+
+def ts_to_sec(ts):
+    ts = ts.strip().replace(',', '.')
+    h, m, s = ts.split(':')
+    return int(h) * 3600 + int(m) * 60 + float(s)
+
+
+def sec_to_ts(value):
+    value = max(0.0, value)
+    h = int(value // 3600)
+    m = int((value % 3600) // 60)
+    s = value % 60
+    return f"{h:02d}:{m:02d}:{s:06.3f}".replace('.', ',')
+
+
+def parse_srt(content):
+    content = content.replace('\r\n', '\n').replace('\r', '\n')
+    cues = []
+    for block in re.split(r'\n{2,}', content.strip()):
+        lines = block.strip().splitlines()
+        ts_i = next((i for i, line in enumerate(lines) if ' --> ' in line), None)
+        if ts_i is None:
+            continue
+        try:
+            start_raw, end_raw = [part.strip() for part in lines[ts_i].split(' --> ', 1)]
+            start = ts_to_sec(start_raw)
+            end = ts_to_sec(end_raw.split()[0])
+        except Exception:
+            continue
+        text_lines = [line.strip() for line in lines[ts_i + 1:] if line.strip()]
+        text = ' '.join(text_lines)
+        if text:
+            cues.append({'start': start, 'end': max(end, start + 0.001), 'text': text, 'original_lines': text_lines})
+    return cues
+
+
+def wrap_text(text):
+    words = text.split()
+    if not words:
+        return []
+    lines = []
+    current = ''
+    for word in words:
+        if len(word) > max_line:
+            if current:
+                lines.append(current)
+                current = ''
+            while len(word) > max_line:
+                lines.append(word[:max_line])
+                word = word[max_line:]
+            current = word
+        elif not current:
+            current = word
+        elif len(current) + 1 + len(word) <= max_line:
+            current += ' ' + word
+        else:
+            lines.append(current)
+            current = word
+    if current:
+        lines.append(current)
+    return lines
+
+
+def line_groups(lines):
+    return [lines[i:i + max_lines] for i in range(0, len(lines), max_lines)]
+
+
+with open(srt_path, 'r', encoding='utf-8', errors='replace') as fh:
+    original = fh.read()
+
+source = parse_srt(original)
+expanded = []
+changes = 0
+for cue in source:
+    original_lines = cue.get('original_lines') or [line.strip() for line in cue['text'].split('\n') if line.strip()]
+    original_chars = sum(len(line) for line in original_lines)
+    original_cps = original_chars / max(0.001, cue['end'] - cue['start'])
+    original_overloaded = (
+        len(original_lines) > max_lines
+        or any(len(line) > max_line for line in original_lines)
+        or original_chars > max_line * max_lines
+    )
+    wrapped = wrap_text(cue['text'])
+    wrapped_overloaded = len(wrapped) > max_lines
+    if original_cps > max_cps and original_chars <= max_line * max_lines:
+        expanded.append({**cue, 'lines': original_lines})
+        continue
+    if not original_overloaded:
+        expanded.append({**cue, 'lines': original_lines})
+        continue
+    if len(wrapped) != len(original_lines) or any(len(line) > max_line for line in wrapped) or wrapped_overloaded:
+        changes += 1
+    groups = line_groups(wrapped) or [['']]
+    if len(groups) == 1:
+        expanded.append({**cue, 'lines': groups[0]})
+        continue
+
+    duration = max(0.001, cue['end'] - cue['start'])
+    weights = [max(1, sum(len(line) for line in group)) for group in groups]
+    total = sum(weights)
+    cursor = cue['start']
+    for idx, group in enumerate(groups):
+        if idx == len(groups) - 1:
+            end = cue['end']
+        else:
+            end = cursor + duration * (weights[idx] / total)
+            end = min(end, cue['end'] - min_gap * (len(groups) - idx - 1))
+        if end <= cursor:
+            end = min(cue['end'], cursor + 0.05)
+        expanded.append({'start': cursor, 'end': end, 'text': ' '.join(group), 'lines': group})
+        cursor = min(cue['end'], end + min_gap)
+
+# Keep timing stable. This pass is intentionally conservative: it fixes
+# visually overloaded captions without trying to retime rapid-fire dialogue.
+for cue in expanded:
+    if cue['end'] <= cue['start']:
+        cue['end'] = cue['start'] + 0.05
+        changes += 1
+
+out_lines = []
+for number, cue in enumerate(expanded, 1):
+    out_lines.append(str(number))
+    out_lines.append(f"{sec_to_ts(cue['start'])} --> {sec_to_ts(cue['end'])}")
+    out_lines.extend(cue['lines'][:max_lines])
+    out_lines.append('')
+
+with open(out_path, 'w', encoding='utf-8') as fh:
+    fh.write('\n'.join(out_lines).rstrip() + '\n')
+print(changes)
+PYEOF
+)
+
+    if [ $? -ne 0 ] || [ ! -s "$OUT_FILE" ]; then
+        log "  READABILITY: formatter failed. Keeping original."
+        rm -f "$OUT_FILE"
+        echo "0"
+        return
+    fi
+    mv "$OUT_FILE" "$SRT_FILE"
+    echo "${CHANGES:-0}"
 }
 
 # ==============================================================================

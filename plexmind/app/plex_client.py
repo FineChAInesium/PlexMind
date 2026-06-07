@@ -17,6 +17,7 @@ PLEX_TOKEN = os.getenv("PLEX_TOKEN", "")
 MIN_WATCH_PCT = float(os.getenv("MIN_WATCH_PCT", "0.70"))
 ADMIN_USERNAME_OVERRIDE = os.getenv("PLEXMIND_ADMIN_USERNAME", "").strip()
 USER_CACHE_FILE = os.getenv("PLEXMIND_USERS_CACHE_FILE", "data/plex_users_cache.json")
+HISTORY_LIMIT = int(os.getenv("HISTORY_LIMIT", "2000"))
 
 
 @dataclass
@@ -189,7 +190,7 @@ def get_watch_history(user_id: str) -> list[WatchedItem]:
     items: list[WatchedItem] = []
 
     try:
-        history = server.library.history(maxresults=500)
+        history = server.library.history(maxresults=HISTORY_LIMIT)
     except Exception as exc:
         raise RuntimeError(f"Failed to fetch Plex history: {exc}") from exc
 

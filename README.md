@@ -1,21 +1,21 @@
 # 🧠 PlexMind Suite
 
-**A local AI command center for Plex: taste-aware recommendations, Whisper subtitle backfills, Ollama translation, and library hygiene from one dashboard.**
+**A local AI command center for Plex: taste-aware recommendations, Whisper subtitle backfills, llama.cpp translation, and library hygiene from one dashboard.**
 
 [![Live Demo](https://img.shields.io/badge/demo-interactive-blue?style=for-the-badge)](https://finechainesium.github.io/PlexMind/)
 [![Python 3.12](https://img.shields.io/badge/python-3.12-blue.svg)](https://www.python.org/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-dashboard-green.svg)](https://fastapi.tiangolo.com/)
-[![Ollama](https://img.shields.io/badge/Ollama-local_LLM-orange.svg)](https://ollama.com/)
+[![llama.cpp](https://img.shields.io/badge/llama.cpp-local_LLM-orange.svg)](https://github.com/ggml-org/llama.cpp/)
 [![Whisper ASR](https://img.shields.io/badge/Whisper-ASR-purple.svg)](https://github.com/ahmetoner/whisper-asr-webservice)
 [![Docker](https://img.shields.io/badge/Docker-Unraid_ready-2496ED.svg)](https://www.docker.com/)
 
-PlexMind turns a Plex library into an active, private recommendation and subtitle automation system. It reads Plex watch history, asks a local Ollama model for explainable picks, syncs those picks back into Plex, and gives you a dashboard for health, users, schedules, GPU load, storage, current-session logs, and background jobs. The PlexMind app now owns the subtitle script schedule.
+PlexMind turns a Plex library into an active, private recommendation and subtitle automation system. It reads Plex watch history, asks a local llama.cpp model for explainable picks, syncs those picks back into Plex, and gives you a dashboard for health, users, schedules, GPU load, storage, current-session logs, and background jobs. The PlexMind app now owns the subtitle script schedule.
 
 It also handles the work that usually gets ignored until it becomes a mess: missing subtitles, multilingual libraries, duplicate SRTs, image-based PGS tracks, and broken subtitle encodings. The heavy AI work stays local. Your Plex history and media paths do not need to leave your server.
 
 **Live demo:** https://finechainesium.github.io/PlexMind/
 
-The demo uses mock browser data. A real install connects to your Plex server, Ollama, Whisper ASR, and mounted media folders.
+The demo uses mock browser data. A real install connects to your Plex server, llama.cpp, Whisper ASR, and mounted media folders.
 
 ---
 
@@ -27,7 +27,7 @@ Find watchable picks without sending viewing history to a cloud recommender.
 
 - Reads Plex users and deduplicated watch history.
 - Builds a candidate pool from your own library.
-- Uses a local Ollama model to generate explainable recommendations.
+- Uses a local llama.cpp model to generate explainable recommendations.
 - Syncs admin picks to the Plex Watchlist.
 - Creates managed-user playlists named `PlexMind Movies` and `PlexMind TV Pilots`.
 - Recommends TV pilot episodes so users can sample shows without queueing whole seasons.
@@ -44,14 +44,14 @@ Fill missing subtitles with local speech-to-text.
 - Writes SRTs beside the media files mounted into the container.
 - Shows only the current job session in dashboard progress logs while retaining full dated logs on disk.
 
-### 🌍 Ollama Subtitle Translation
+### 🌍 llama.cpp Subtitle Translation
 
 Translate existing or newly generated SRTs with the same local LLM stack.
 
-- Uses Ollama chat/generate APIs through `OLLAMA_API_URL`.
-- Defaults to `gemma3:12b` in Docker Compose.
+- Uses llama.cpp OpenAI-compatible chat API through `LLAMA_CPP_API_URL`.
+- Defaults to `qwen3-4b-q4_k_m` in Docker Compose.
 - Targets `TARGET_LANGUAGES`, default `zh,es-MX`.
-- Starts the configured Ollama sidecar container for translation jobs when Docker socket access is enabled.
+- Starts the configured llama.cpp sidecar container for translation jobs when Docker socket access is enabled.
 
 ### 🧹 Library Maintenance
 
@@ -86,37 +86,37 @@ PlexMind is a coordinator. The best results come from giving it the right local 
 | Component | Used For | Default / Recommended |
 |---|---|---|
 | Plex Media Server | Library metadata, users, watch history, Watchlist/playlists | `PLEX_URL` + admin `PLEX_TOKEN` |
-| Ollama | Recommendations and subtitle translation | Compose default: `gemma3:12b` |
+| llama.cpp | Recommendations and subtitle translation | Compose default: `qwen3-4b-q4_k_m` |
 | Whisper ASR webservice | Speech-to-text subtitle generation | `onerahmet/openai-whisper-asr-webservice:latest-gpu` |
 | Whisper model | Transcription model loaded by the ASR service | `WHISPER_MODEL=turbo` |
 | FFmpeg / ffprobe | Audio extraction and media inspection | included in the PlexMind script images |
-| Docker socket | Start/stop Whisper and Ollama sidecars for script jobs | mounted at `/var/run/docker.sock` |
+| Docker socket | Start/stop Whisper and llama.cpp sidecars for script jobs | mounted at `/var/run/docker.sock` |
 | Optional metadata APIs | TMDB/TVDB/OMDB enrichment | leave blank if you want Plex-only metadata |
 
-### Ollama Models
+### llama.cpp Models
 
-Docker Compose wires PlexMind to `http://ollama:11434` and sets:
+Docker Compose wires PlexMind to `http://llama-cpp:8080` and sets:
 
 ```bash
-OLLAMA_MODEL=gemma3:12b
+LLAMA_CPP_MODEL_ALIAS=qwen3-4b-q4_k_m
 ```
 
-Pull the model before expecting recommendation or translation work to succeed:
+Place the configured GGUF model before expecting recommendation or translation work to succeed:
 
 ```bash
-docker exec plexmind-ollama ollama pull gemma3:12b
+# place a GGUF model at LLAMA_CPP_MODEL_PATH
 ```
 
 Suggested model sizing:
 
-| Hardware | Suggested Ollama model |
+| Hardware | Suggested GGUF model |
 |---|---|
-| 16GB+ VRAM | `gemma3:27b` |
-| 8-15GB VRAM | `gemma3:12b` or `qwen3.5:9b` |
-| 4-7GB VRAM | `gemma3:4b` |
-| Low VRAM / CPU-only | `gemma3:1b`; try `gemma3:4b` if you have enough RAM and patience |
+| 16GB+ VRAM | a larger Qwen GGUF |
+| 8-15GB VRAM | `qwen3-4b-q4_k_m` or another GGUF alias |
+| 4-7GB VRAM | a 4B-class GGUF |
+| Low VRAM / CPU-only | a 1B-4B GGUF, depending on RAM |
 
-`setup.sh` auto-selects and pulls an Ollama model from the Gemma 3 family based on detected hardware. The Unraid template defaults to `qwen3.5:9b` because it is a good 12GB-VRAM target. Docker Compose defaults to `gemma3:12b`. Any of these are fine as long as the model is pulled into Ollama and matches `OLLAMA_MODEL`.
+Set `LLAMA_CPP_MODEL_PATH` to a GGUF file and keep `LLAMA_CPP_MODEL_ALIAS` aligned with the llama.cpp `--alias` value.
 
 ### Whisper ASR Webservice
 
@@ -143,7 +143,7 @@ Transcription jobs call:
 http://whisper:9000/asr
 ```
 
-The dashboard-owned script runner can start `plexmind-whisper` before transcription and stop it when the job exits. The same lifecycle is available for `plexmind-ollama` during translation.
+The dashboard-owned script runner can start `plexmind-whisper` before transcription and stop it when the job exits. The same lifecycle is available for `llama-cpp` during translation.
 
 ---
 
@@ -163,7 +163,7 @@ PLEX_TOKEN=your_plex_token
 PLEXMIND_API_KEY=$(openssl rand -hex 32)
 MOVIES_DIR=/mnt/media/Movies
 TV_DIR=/mnt/media/TV
-OLLAMA_MODEL=gemma3:12b
+LLAMA_CPP_MODEL_ALIAS=qwen3-4b-q4_k_m
 WHISPER_MODEL=turbo
 TARGET_LANGUAGES=zh,es-MX
 ```
@@ -186,10 +186,10 @@ If you plan to use transcription, create the profiled Whisper sidecar at least o
 docker compose --profile whisper up -d whisper
 ```
 
-Pull the configured Ollama model if it was not already pulled:
+Place the configured GGUF model before starting recommendations or translation:
 
 ```bash
-docker exec plexmind-ollama ollama pull gemma3:12b
+# place a GGUF model at LLAMA_CPP_MODEL_PATH
 ```
 
 Open:
@@ -211,8 +211,8 @@ https://raw.githubusercontent.com/FineChAInesium/PlexMind/main/templates/PlexMin
 1. Open Community Applications.
 2. Use the template URL/folder option.
 3. Paste the template URL above.
-4. Set `PLEX_URL`, `PLEX_TOKEN`, and `OLLAMA_URL`.
-5. Set `OLLAMA_MODEL` to a model already pulled in your Ollama container.
+4. Set `PLEX_URL`, `PLEX_TOKEN`, and `LLAMA_CPP_URL`.
+5. Set `LLAMA_CPP_MODEL_PATH` to a GGUF file and keep `LLAMA_CPP_MODEL_ALIAS` aligned with the llama.cpp alias.
 6. Set `PLEXMIND_API_KEY` before exposing the dashboard outside a trusted LAN.
 7. Start the container and open `http://[unraid-ip]:8000`.
 
@@ -226,14 +226,14 @@ The template includes `--gpus all --group-add 281` for NVIDIA GPU access and Unr
 Browser Dashboard
   -> FastAPI app (:8000)
       -> Plex API for users, history, Watchlist, and playlists
-      -> Ollama for recommendations and subtitle translation
+      -> llama.cpp for recommendations and subtitle translation
       -> Scheduler, GPU checks, storage checks, and SSE progress
       -> Local script runner for transcription, translation, maintenance
 
 AI Sidecars
-  -> Ollama (:11434)
+  -> llama.cpp (:8080 internal, :11435 host)
       -> local recommendation and translation model
-  -> Whisper ASR webservice (:9000/asr)
+  -> Whisper ASR webservice (:9000 internal, :9001 host)
       -> Whisper model, default turbo
 
 Mounted Media + Data
@@ -269,13 +269,15 @@ PlexMind uses pilot episodes for TV recommendations so a user can try a show wit
 | `TMDB_API_KEY` | Optional metadata enrichment. | unset |
 | `TVDB_API_KEY` | Optional TV metadata fallback. | unset |
 | `OMDB_API_KEY` | Optional IMDb/OMDB enrichment. | unset |
-| `OLLAMA_URL` | Ollama base URL for recommendations. | `http://ollama:11434` |
-| `OLLAMA_API_URL` | Ollama chat API URL for scripts. | `http://ollama:11434/api/chat` |
-| `OLLAMA_MODEL` | Recommendation and translation model. Must be pulled in Ollama. | `gemma3:12b` in Compose |
+| `LLAMA_CPP_URL` | llama.cpp base URL for recommendations. | `http://llama-cpp:8080` |
+| `LLAMA_CPP_API_URL` | llama.cpp OpenAI-compatible chat API URL for scripts. | `http://llama-cpp:8080/v1/chat/completions` |
+| `LLAMA_CPP_MODEL_ALIAS` | Recommendation and translation model alias. Must match llama.cpp `--alias`. | `qwen3-4b-q4_k_m` in Compose |
+| `LLAMA_CPP_HOST_PORT` | Host port for the bundled llama.cpp sidecar. Keep `8080` free for Chip Hedge Bot. | `11435` |
 | `WHISPER_API_URL` | Whisper ASR endpoint used by scripts. | `http://whisper:9000/asr` |
 | `WHISPER_IMAGE` | Whisper ASR Docker image. | `onerahmet/openai-whisper-asr-webservice:latest-gpu` |
 | `WHISPER_MODEL` | Whisper model: `tiny`, `base`, `small`, `medium`, `large`, `turbo`. | `turbo` |
 | `WHISPER_DEVICE` | Whisper device. Use `cuda` or `cpu`. | `cuda` |
+| `WHISPER_HOST_PORT` | Host port for the bundled Whisper sidecar. | `9001` |
 | `TARGET_LANGUAGES` | Comma-separated subtitle translation targets. | `zh,es-MX` |
 | `MAX_RECOMMENDATIONS` | Picks per user. | `10` |
 | `CANDIDATE_POOL_SIZE` | Prefiltered candidate count before LLM. | `40` |
@@ -286,7 +288,7 @@ PlexMind uses pilot episodes for TV recommendations so a user can try a show wit
 | `PLEXMIND_SCRIPT_MODE` | `local` runs scripts in the API container; `sidecar` proxies to scripts API. | `local` |
 | `SCRIPT_START_RATE_LIMIT` | Rate limit for script Start buttons. | `60/hour` |
 | `WHISPER_CONTAINER_NAME` | Container to start before transcription and stop on exit. | `plexmind-whisper` |
-| `OLLAMA_CONTAINER_NAME` | Container to start before translation and stop on exit. | `plexmind-ollama` |
+| `LLAMA_CPP_CONTAINER_NAME` | Container to start before translation and stop on exit. | `llama-cpp` |
 | `START_SIDECAR_CONTAINERS` | Start AI sidecars before script jobs. | `1` |
 | `STOP_SIDECAR_CONTAINERS` | Stop AI sidecars when script jobs exit. | `1` |
 | `DOCKER_SOCKET_GID` | Group id for Docker socket access. On Unraid this is often `281`. | `281` |
@@ -438,7 +440,7 @@ Important details:
 - API key comparison uses constant-time comparison.
 - `/api/run-all`, recommendation generation, script starts, and webhooks are rate-limited.
 - `/webhook` rejects non-LAN clients, but reverse proxies can make internet traffic appear local. Use `PLEXMIND_API_KEY` if proxied.
-- Script jobs mount `/var/run/docker.sock` so PlexMind can start and stop configured Whisper and Ollama sidecar containers.
+- Script jobs mount `/var/run/docker.sock` so PlexMind can start and stop configured Whisper and llama.cpp sidecar containers.
 - Subtitle maintenance modes can delete `.sup`, `.sub/.idx`, and duplicate `.srt` files from mounted media folders. Run audits first and keep backups if your media library is not disposable.
 - The dashboard stores its API key in browser localStorage. Use HTTPS when accessing it through a reverse proxy.
 

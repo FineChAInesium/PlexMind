@@ -44,6 +44,9 @@ def _save_json_atomic(path: str, data) -> None:
             f.flush()
             os.fsync(f.fileno())
         os.replace(tmp_name, path)
+    except Exception as exc:
+        import sys
+        print(f"[cache] ERROR: failed to persist {path}: {exc}", file=sys.stderr)
     finally:
         if tmp_name and os.path.exists(tmp_name):
             try:

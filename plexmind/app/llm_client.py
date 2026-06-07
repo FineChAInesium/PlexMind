@@ -1,5 +1,5 @@
 """
-Ollama client targeting Gemma 3.
+llama.cpp client targeting the local OpenAI-compatible server.
 Handles JSON parsing, fence stripping, variable-assignment prefix removal, and retries.
 """
 import json
@@ -14,9 +14,14 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434")
-OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen3.5:9b")
+LLAMA_CPP_URL = os.getenv("LLAMA_CPP_URL", "http://localhost:11435")
+LLAMA_CPP_MODEL = (
+    os.getenv("LLAMA_CPP_MODEL")
+    or os.getenv("LLAMA_CPP_MODEL_ALIAS")
+    or "qwen3-4b-q4_k_m"
+)
 REQUEST_TIMEOUT = 180  # seconds
+MAX_TOKENS = int(os.getenv("LLAMA_CPP_MAX_TOKENS", "768"))
 MAX_RETRIES = 2
 
 
@@ -37,7 +42,7 @@ def _extract_json(text: str) -> str:
       - variable assignments: `result = [...]` or `json_response = {...}`
       - leading prose before the JSON
     """
-    # Strip thinking blocks (qwen3.5 sometimes emits these even with think:false)
+    # Strip thinking blocks (Qwen sometimes emits these even with /no_think)
     text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
 
     text = _strip_fences(text)
@@ -144,25 +149,26 @@ def _extract_json(text: str) -> str:
 
 
 async def generate(prompt: str, system: str | None = None) -> str:
-    """Send a prompt to Ollama and return the raw text response."""
-    payload: dict = {
-        "model": OLLAMA_MODEL,
-        "prompt": prompt,
-        "stream": False,
-        "think": False,   # disable Qwen3.5 thinking mode — we want direct JSON
-        "options": {
-            "temperature": 0.2,
-            "top_p": 0.9,
-            "num_predict": 8192,
-        },
-    }
+    """Send a prompt to llama.cpp and return the raw text response."""
+    messages = []
     if system:
-        payload["system"] = system
+        messages.append({"role": "system", "content": system})
+    messages.append({"role": "user", "content": "/no_think\n" + prompt})
+
+    payload: dict = {
+        "model": LLAMA_CPP_MODEL,
+        "messages": messages,
+        "stream": False,
+        "temperature": 0.2,
+        "top_p": 0.9,
+        "max_tokens": MAX_TOKENS,
+    }
 
     async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT) as client:
-        resp = await client.post(f"{OLLAMA_URL}/api/generate", json=payload)
+        resp = await client.post(f"{LLAMA_CPP_URL.rstrip('/')}/v1/chat/completions", json=payload)
         resp.raise_for_status()
-        return resp.json().get("response", "")
+        data = resp.json()
+        return data.get("choices", [{}])[0].get("message", {}).get("content", "")
 
 
 async def generate_json(prompt: str, system: str | None = None) -> list | dict:
@@ -196,12 +202,12 @@ async def generate_json(prompt: str, system: str | None = None) -> list | dict:
 
 
 async def health_check() -> bool:
-    """Return True if Ollama is reachable and the configured model is available."""
+    """Return True if llama.cpp is reachable and exposes a model endpoint."""
     try:
         async with httpx.AsyncClient(timeout=5) as client:
-            resp = await client.get(f"{OLLAMA_URL}/api/tags")
-            models = [m["name"] for m in resp.json().get("models", [])]
-            base = OLLAMA_MODEL.split(":")[0]
-            return any(m.startswith(base) for m in models)
+            resp = await client.get(f"{LLAMA_CPP_URL.rstrip('/')}/v1/models")
+            resp.raise_for_status()
+            models = [m.get("id", "") for m in resp.json().get("data", [])]
+            return not models or LLAMA_CPP_MODEL in models
     except Exception:
         return False

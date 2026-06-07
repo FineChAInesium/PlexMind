@@ -27,7 +27,7 @@
       </div>
       <div>
         <div class="font-semibold leading-none tracking-tight">PlexMind Suite</div>
-        <div class="text-[11px] text-slate-400 mt-1">v0.8.17 • Self-hosted</div>
+        <div class="text-[11px] text-slate-400 mt-1">v0.8.18 • Self-hosted</div>
       </div>
     </div>
 
@@ -115,7 +115,7 @@
               <div class="flex items-center gap-1.5"><span id="llm-dot" class="w-2.5 h-2.5 rounded-full bg-slate-600"></span><span id="llm-status" class="text-xs text-slate-400">—</span></div>
             </div>
             <div class="relative mt-4">
-              <div class="text-sm text-slate-400">LLM (Ollama)</div>
+              <div class="text-sm text-slate-400">LLM (llama.cpp)</div>
               <div id="llm-label" class="text-xl font-semibold mt-1">—</div>
               <div id="llm-sub" class="text-xs text-slate-500 mt-1">Recommendation engine</div>
             </div>
@@ -344,7 +344,7 @@
                 </div>
                 <div class="rounded-xl bg-slate-900 border border-slate-700 p-3 text-xs text-slate-400">
                   <i data-lucide="info" class="w-3.5 h-3.5 inline mr-1 text-violet-400"></i>
-                  Uses Ollama (<span id="tl-model-label">qwen3.5:9b</span>) for chunk-based translation. Scheduled runs use 23:00-03:00 local; run now with <code>RUN_NOW=1</code> and optional <code>MAX_RUNTIME_MINUTES</code>.
+                  Uses llama.cpp (<span id="tl-model-label">qwen3-4b-q4_k_m</span>) for chunk-based translation. Scheduled runs use 23:00-03:00 local; run now with <code>RUN_NOW=1</code> and optional <code>MAX_RUNTIME_MINUTES</code>.
                 </div>
                 <div class="grid grid-cols-2 gap-2 mt-2">
                   <button id="btn-translate" class="rounded-xl bg-violet-600 hover:bg-violet-500 py-3 font-medium flex items-center justify-center gap-2 shadow-glow transition">
@@ -473,8 +473,8 @@
               <p class="text-[11px] text-slate-500 mt-1.5">Matches <code>PLEXMIND_API_KEY</code> in your .env — sent as <code>X-API-Key</code> header</p>
             </div>
             <div>
-              <label class="text-xs text-slate-400 mb-1.5 block">OLLAMA_MODEL (display only)</label>
-              <input id="ollama-model-display" type="text" readonly class="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2.5 text-sm text-slate-400 cursor-default" placeholder="Loaded from /health">
+              <label class="text-xs text-slate-400 mb-1.5 block">LLAMA_CPP_MODEL (display only)</label>
+              <input id="llm-model-display" type="text" readonly class="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2.5 text-sm text-slate-400 cursor-default" placeholder="Loaded from /health">
               <p class="text-[11px] text-slate-500 mt-1.5">Read from the API — set in your .env file</p>
             </div>
             <div class="pt-2 flex items-center gap-3">
@@ -496,6 +496,7 @@
 const saved = JSON.parse(localStorage.getItem('pm_settings') || '{}');
 let API_BASE = saved.apiBase || window.location.origin;
 let API_KEY  = saved.apiKey  || '';
+
 let apiOnline = false;
 
 function persistApiSettings() {
@@ -518,7 +519,7 @@ function escapeHtml(value) {
 const DEMO = !!window.__PLEXMIND_DEMO__;
 
 const MOCK = {
-  health: { status: 'ok', llm: 'qwen3.5:9b', llm_ready: true },
+  health: { status: 'ok', llm: 'qwen3-4b-q4_k_m', llm_ready: true },
   scheduler: { next_run_utc: '2026-05-01T03:00:00Z', gpu_utilization_pct: 4, gpu_threshold_pct: 30, gpu_busy: false },
   storage: { total_bytes: 6e12, used_bytes: 3.41e12, free_bytes: 2.59e12, used_pct: 56.8 },
   users: [
@@ -657,9 +658,9 @@ function updateHealthUI(h) {
   const llmOk = h && h.llm_ready;
   document.getElementById('llm-dot').className = `w-2.5 h-2.5 rounded-full ${llmOk ? 'bg-emerald-500 shadow-[0_0_10px_rgba(16,185,129,.5)]' : h ? 'bg-amber-500' : 'bg-red-500'}`;
   document.getElementById('llm-status').textContent = llmOk ? 'Ready' : h ? 'Not ready' : 'Offline';
-  document.getElementById('llm-label').textContent = h ? (h.llm || 'qwen3.5:9b') : 'API Offline';
-  document.getElementById('ollama-model-display').value = h ? (h.llm || '') : '';
-  document.getElementById('tl-model-label').textContent = h ? (h.llm || 'qwen3.5:9b') : 'qwen3.5:9b';
+  document.getElementById('llm-label').textContent = h ? (h.llm || 'qwen3-4b-q4_k_m') : 'API Offline';
+  document.getElementById('llm-model-display').value = h ? (h.llm || '') : '';
+  document.getElementById('tl-model-label').textContent = h ? (h.llm || 'qwen3-4b-q4_k_m') : 'qwen3-4b-q4_k_m';
 
   // Whisper ASR
   const whisper = h?.whisper;

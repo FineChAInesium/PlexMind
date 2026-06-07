@@ -77,10 +77,10 @@ If you expose PlexMind through a proxy, set `PLEXMIND_API_KEY` and include `?api
 In Docker Compose:
 
 - PlexMind publishes port `8000`.
-- Ollama publishes `127.0.0.1:11434` only.
-- Whisper is exposed only on the internal Compose network unless started with a different override.
+- llama.cpp publishes the configured `LLAMA_CPP_HOST_PORT` (default `11435`) on the host.
+- Whisper publishes the configured `WHISPER_HOST_PORT` (default `9001`) on the host.
 
-The Unraid template expects an existing Ollama endpoint via `OLLAMA_URL`, typically on the LAN.
+The Unraid template expects an existing llama.cpp endpoint via `LLAMA_CPP_URL`, typically on the LAN.
 
 ### Containers and privileges
 

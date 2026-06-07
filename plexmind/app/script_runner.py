@@ -46,7 +46,7 @@ JOBS = {
         "title": "Translation",
         "group": "subtitles",
         "page": "translate",
-        "description": "Translate existing SRT subtitles with Ollama.",
+        "description": "Translate existing SRT subtitles with llama.cpp.",
     },
     "maintenance-audit": {
         "cmd": [_SCRIPT_DIR / "maintenance.sh", "audit"],
@@ -249,7 +249,9 @@ def start(job: str, body: dict[str, Any] | None = None) -> dict[str, Any]:
 
     env.setdefault("LOG_RETENTION_DAYS", os.getenv("LOG_RETENTION_DAYS", "7"))
     env["WHISPER_API_URL"] = _bridge_fallback_url(os.getenv("WHISPER_API_URL", "http://whisper:9000/asr"))
-    env.setdefault("OLLAMA_API_URL", os.getenv("OLLAMA_API_URL", "http://ollama:11434/api/chat"))
+    env.setdefault("LLAMA_CPP_API_URL", os.getenv("LLAMA_CPP_API_URL", "http://llama-cpp:8080/v1/chat/completions"))
+    env.setdefault("LLAMA_CPP_MODEL", os.getenv("LLAMA_CPP_MODEL", os.getenv("LLAMA_CPP_MODEL_ALIAS", "qwen3-4b-q4_k_m")))
+    env.setdefault("LLAMA_CPP_MAX_TOKENS", os.getenv("LLAMA_CPP_MAX_TOKENS", "768"))
     env.setdefault("MOVIE_DIR", os.getenv("MOVIE_DIR", os.getenv("MOVIES_DIR", "/media/movies")))
     env.setdefault("TV_DIR", os.getenv("TV_DIR", "/media/tv"))
 

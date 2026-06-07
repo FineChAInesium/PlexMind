@@ -114,24 +114,10 @@ select_models() {
     info "Selecting optimal models for your hardware..."
     echo ""
 
-    # --- LLM Model (Gemma 3 family for recommendations + translation) ---
-    if [[ $GPU_VRAM_GB -ge 16 ]]; then
-        LLM_MODEL="gemma3:27b"
-        LLM_TIER="Premium"
-    elif [[ $GPU_VRAM_GB -ge 8 ]]; then
-        LLM_MODEL="gemma3:12b"
-        LLM_TIER="Standard"
-    elif [[ $GPU_VRAM_GB -ge 4 ]]; then
-        LLM_MODEL="gemma3:4b"
-        LLM_TIER="Lite"
-    elif [[ $GPU_VRAM_GB -ge 2 ]]; then
-        LLM_MODEL="gemma3:1b"
-        LLM_TIER="Minimal"
-    else
-        # CPU-only: use smallest model
-        LLM_MODEL="gemma3:1b"
-        LLM_TIER="CPU"
-    fi
+    # --- llama.cpp model (recommendations + translation) ---
+    LLAMA_CPP_MODEL_ALIAS="qwen3-4b-q4_k_m"
+    LLAMA_CPP_MODEL_PATH="${LLAMA_CPP_MODEL_PATH:-/mnt/cache/appdata/llama-cpp/models/Qwen3-4B-Q4_K_M.gguf}"
+    LLM_TIER="Local GGUF"
 
     # --- Whisper Model (transcription) ---
     if [[ $GPU_VRAM_GB -ge 10 ]]; then
@@ -162,7 +148,7 @@ select_models() {
 
     echo -e "  ${BOLD}Model Selection${NC}"
     echo -e "  ────────────────────────────────────────"
-    echo -e "  LLM (recs + translation):  ${GREEN}${LLM_MODEL}${NC} [${LLM_TIER}]"
+    echo -e "  LLM (recs + translation):  ${GREEN}${LLAMA_CPP_MODEL_ALIAS}${NC} [${LLM_TIER}]"
     echo -e "  Whisper (transcription):   ${GREEN}${WHISPER_MODEL}${NC} [${WHISPER_TIER}]"
     echo -e "  Whisper device:            ${WHISPER_DEVICE}"
     echo ""
@@ -231,13 +217,25 @@ PLEX_TOKEN=${PLEX_TOKEN}
 MOVIES_DIR=${MOVIES_DIR}
 TV_DIR=${TV_DIR}
 
-# --- LLM (Ollama) ---
-OLLAMA_MODEL=${LLM_MODEL}
+# --- LLM (llama.cpp) ---
+LLAMA_CPP_URL=http://llama-cpp:8080
+LLAMA_CPP_API_URL=http://llama-cpp:8080/v1/chat/completions
+LLAMA_CPP_MODEL_ALIAS=${LLAMA_CPP_MODEL_ALIAS}
+LLAMA_CPP_MODEL_PATH=${LLAMA_CPP_MODEL_PATH}
+LLAMA_CPP_HOST_PORT=11435
+LLAMA_CPP_MAX_TOKENS=768
 
 # --- Whisper (Transcription) ---
 WHISPER_IMAGE=${WHISPER_IMAGE}
 WHISPER_MODEL=${WHISPER_MODEL}
 WHISPER_DEVICE=${WHISPER_DEVICE}
+WHISPER_MEM_LIMIT=12g
+WHISPER_HOST_PORT=9001
+TRANSCRIBE_AUDIO_EXT=mp3
+TRANSCRIBE_AUDIO_CODEC=libmp3lame
+TRANSCRIBE_AUDIO_BITRATE=64k
+WHISPER_UPLOAD_SPLIT_MB=50
+WHISPER_SEGMENT_SECONDS=600
 
 # --- API Keys ---
 TMDB_API_KEY=${TMDB_API_KEY}
@@ -288,29 +286,16 @@ ENVEOF
 # DOCKER SETUP
 # ==============================================================================
 
-pull_models() {
-    info "Pulling LLM model (${LLM_MODEL})... this may take a while."
+prepare_models() {
+    info "Checking llama.cpp model configuration..."
 
-    # Start Ollama temporarily to pull the model
-    ${COMPOSE_CMD} up -d ollama 2>/dev/null
+    if [[ -f "${LLAMA_CPP_MODEL_PATH}" ]]; then
+        ok "llama.cpp model found: ${LLAMA_CPP_MODEL_PATH}"
+    else
+        warn "llama.cpp model file not found: ${LLAMA_CPP_MODEL_PATH}"
+        warn "Place a GGUF model there or edit LLAMA_CPP_MODEL_PATH in .env before using recommendations or translation."
+    fi
 
-    # Wait for Ollama to be ready
-    local retries=0
-    while ! curl -s http://localhost:11434/api/tags &>/dev/null; do
-        sleep 2
-        retries=$((retries + 1))
-        if [[ $retries -gt 30 ]]; then
-            error "Ollama failed to start. Check: ${COMPOSE_CMD} logs ollama"
-            exit 1
-        fi
-    done
-
-    # Pull the model
-    echo -e "  ${DIM}Downloading ${LLM_MODEL}...${NC}"
-    docker exec plexmind-ollama ollama pull "${LLM_MODEL}" 2>&1 | tail -1
-    ok "LLM model ready: ${LLM_MODEL}"
-
-    # Whisper model downloads automatically on first request
     ok "Whisper model (${WHISPER_MODEL}) will download on first transcription"
 }
 
@@ -340,8 +325,8 @@ print_summary() {
     echo -e "${NC}"
     echo -e "  ${BOLD}Services:${NC}"
     echo -e "    Recommendations API:  http://localhost:8000/docs"
-    echo -e "    Whisper ASR:          http://localhost:9000"
-    echo -e "    Ollama LLM:           http://localhost:11434"
+    echo -e "    Whisper ASR:          http://localhost:${WHISPER_HOST_PORT:-9001}"
+    echo -e "    llama.cpp LLM:        http://localhost:${LLAMA_CPP_HOST_PORT:-11435}"
     echo ""
     echo -e "  ${BOLD}Commands:${NC}"
     echo -e "    Start all:            ${COMPOSE_CMD} up -d"
@@ -381,7 +366,7 @@ main() {
     generate_env
 
     echo ""
-    pull_models
+    prepare_models
     echo ""
 
     start_services

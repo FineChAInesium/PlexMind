@@ -1,16 +1,29 @@
-# PlexMind release line: v0.8.16
+# PlexMind release line: v0.8.18
 services:
   # ---------------------------------------------------------------------------
-  # Ollama — Local LLM server (recommendations + translation)
+  # llama.cpp — Local LLM server (recommendations + translation)
   # ---------------------------------------------------------------------------
-  ollama:
-    image: ollama/ollama:latest
-    container_name: ollama
+  llama-cpp:
+    image: ghcr.io/ggml-org/llama.cpp:server-cuda
+    container_name: llama-cpp
     restart: unless-stopped
     ports:
-      - "11434:11434"
+      - "${LLAMA_CPP_HOST_PORT:-11435}:8080"
     volumes:
-      - ${OLLAMA_DATA_DIR:-./data/ollama}:/root/.ollama
+      - ${LLAMA_CPP_MODEL_PATH:-/mnt/cache/appdata/llama-cpp/models/Qwen3-4B-Q4_K_M.gguf}:/models/model.gguf:ro
+    command:
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8080"
+      - --model
+      - /models/model.gguf
+      - --alias
+      - ${LLAMA_CPP_MODEL_ALIAS:-qwen3-4b-q4_k_m}
+      - --ctx-size
+      - ${LLAMA_CPP_CTX_SIZE:-8192}
+      - --n-gpu-layers
+      - ${LLAMA_CPP_N_GPU_LAYERS:-99}
     deploy:
       resources:
         reservations:
@@ -28,8 +41,9 @@ services:
     image: ${WHISPER_IMAGE:-onerahmet/openai-whisper-asr-webservice:latest-gpu}
     container_name: whisper-asr-webservice
     restart: "no"
+    mem_limit: ${WHISPER_MEM_LIMIT:-12g}
     ports:
-      - "9000:9000"
+      - "${WHISPER_HOST_PORT:-9001}:9000"
     volumes:
       - ${WHISPER_CACHE_DIR:-./data/whisper-cache}:/root/.cache/whisper
       - "${WHISPER_TMP_DIR:-/tmp}:/tmp"
@@ -83,8 +97,9 @@ services:
       - TMDB_API_KEY=${TMDB_API_KEY:-}
       - TVDB_API_KEY=${TVDB_API_KEY:-}
       - OMDB_API_KEY=${OMDB_API_KEY:-}
-      - OLLAMA_URL=http://ollama:11434
-      - OLLAMA_MODEL=${OLLAMA_MODEL:-gemma3:12b}
+      - LLAMA_CPP_URL=http://llama-cpp:8080
+      - LLAMA_CPP_MODEL=${LLAMA_CPP_MODEL_ALIAS:-qwen3-4b-q4_k_m}
+      - LLAMA_CPP_MAX_TOKENS=${LLAMA_CPP_MAX_TOKENS:-768}
       - MAX_RECOMMENDATIONS=${MAX_RECOMMENDATIONS:-10}
       - CANDIDATE_POOL_SIZE=${CANDIDATE_POOL_SIZE:-40}
       - MIN_HISTORY_ITEMS=${MIN_HISTORY_ITEMS:-3}
@@ -101,8 +116,19 @@ services:
       - PLEXMIND_SCRIPTS_DIR=/app/scripts
       - WHISPER_API_URL=http://whisper:9000/asr
       - WHISPER_CONTAINER_NAME=${WHISPER_CONTAINER_NAME:-whisper-asr-webservice}
-      - OLLAMA_API_URL=http://ollama:11434/api/chat
-      - OLLAMA_CONTAINER_NAME=${OLLAMA_CONTAINER_NAME:-ollama}
+      - TRANSCRIBE_AUDIO_EXT=${TRANSCRIBE_AUDIO_EXT:-mp3}
+      - TRANSCRIBE_AUDIO_CODEC=${TRANSCRIBE_AUDIO_CODEC:-libmp3lame}
+      - TRANSCRIBE_AUDIO_BITRATE=${TRANSCRIBE_AUDIO_BITRATE:-64k}
+      - WHISPER_UPLOAD_SPLIT_MB=${WHISPER_UPLOAD_SPLIT_MB:-50}
+      - WHISPER_SEGMENT_SECONDS=${WHISPER_SEGMENT_SECONDS:-600}
+      - SUBTITLE_MAX_LINE_CHARS=${SUBTITLE_MAX_LINE_CHARS:-42}
+      - SUBTITLE_MAX_LINES=${SUBTITLE_MAX_LINES:-2}
+      - SUBTITLE_MAX_CPS=${SUBTITLE_MAX_CPS:-20}
+      - SUBTITLE_MIN_CUE_SECONDS=${SUBTITLE_MIN_CUE_SECONDS:-1.0}
+      - SUBTITLE_MAX_CUE_SECONDS=${SUBTITLE_MAX_CUE_SECONDS:-7.0}
+      - SUBTITLE_MIN_GAP_SECONDS=${SUBTITLE_MIN_GAP_SECONDS:-0.04}
+      - LLAMA_CPP_API_URL=http://llama-cpp:8080/v1/chat/completions
+      - LLAMA_CPP_CONTAINER_NAME=${LLAMA_CPP_CONTAINER_NAME:-llama-cpp}
       - MOVIE_DIR=/media/movies
       - MOVIES_DIR=/media/movies
       - TV_DIR=/media/tv
@@ -114,7 +140,7 @@ services:
       - LOG_RETENTION_DAYS=${LOG_RETENTION_DAYS:-7}
       - TZ=${TZ:-UTC}
     depends_on:
-      - ollama
+      - llama-cpp
 
   # ---------------------------------------------------------------------------
   # Scripts — Transcription, translation, maintenance pipeline
@@ -136,11 +162,23 @@ services:
     environment:
       - WHISPER_API_URL=http://whisper:9000/asr
       - WHISPER_CONTAINER_NAME=${WHISPER_CONTAINER_NAME:-whisper-asr-webservice}
-      - OLLAMA_API_URL=http://ollama:11434/api/chat
-      - OLLAMA_CONTAINER_NAME=${OLLAMA_CONTAINER_NAME:-ollama}
-      - OLLAMA_MODEL=${OLLAMA_MODEL:-gemma3:12b}
+      - LLAMA_CPP_API_URL=http://llama-cpp:8080/v1/chat/completions
+      - LLAMA_CPP_CONTAINER_NAME=${LLAMA_CPP_CONTAINER_NAME:-llama-cpp}
+      - LLAMA_CPP_MODEL=${LLAMA_CPP_MODEL_ALIAS:-qwen3-4b-q4_k_m}
+      - LLAMA_CPP_MAX_TOKENS=${LLAMA_CPP_MAX_TOKENS:-768}
       - SCRIPTS_API_URL=${SCRIPTS_API_URL:-http://scripts:9010}
       - WHISPER_MODEL=${WHISPER_MODEL:-turbo}
+      - TRANSCRIBE_AUDIO_EXT=${TRANSCRIBE_AUDIO_EXT:-mp3}
+      - TRANSCRIBE_AUDIO_CODEC=${TRANSCRIBE_AUDIO_CODEC:-libmp3lame}
+      - TRANSCRIBE_AUDIO_BITRATE=${TRANSCRIBE_AUDIO_BITRATE:-64k}
+      - WHISPER_UPLOAD_SPLIT_MB=${WHISPER_UPLOAD_SPLIT_MB:-50}
+      - WHISPER_SEGMENT_SECONDS=${WHISPER_SEGMENT_SECONDS:-600}
+      - SUBTITLE_MAX_LINE_CHARS=${SUBTITLE_MAX_LINE_CHARS:-42}
+      - SUBTITLE_MAX_LINES=${SUBTITLE_MAX_LINES:-2}
+      - SUBTITLE_MAX_CPS=${SUBTITLE_MAX_CPS:-20}
+      - SUBTITLE_MIN_CUE_SECONDS=${SUBTITLE_MIN_CUE_SECONDS:-1.0}
+      - SUBTITLE_MAX_CUE_SECONDS=${SUBTITLE_MAX_CUE_SECONDS:-7.0}
+      - SUBTITLE_MIN_GAP_SECONDS=${SUBTITLE_MIN_GAP_SECONDS:-0.04}
       - MOVIES_DIR=/media/movies
       - TV_DIR=/media/tv
       - TARGET_LANGUAGES=${TARGET_LANGUAGES:-zh,es-MX}
@@ -151,7 +189,7 @@ services:
       - GPU_THRESHOLD_PCT=${GPU_THRESHOLD_PCT:-30}
       - TZ=${TZ:-UTC}
     depends_on:
-      - ollama
+      - llama-cpp
 
   # ---------------------------------------------------------------------------
   # FFmpeg — GPU-accelerated media processing

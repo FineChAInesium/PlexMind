@@ -1,9 +1,9 @@
 #!/bin/bash
 # ==============================================================================
-# translate.sh — SRT Translation Backfill via Ollama LLM
-# Version: 0.8.9 — PlexMind release line
+# translate.sh — SRT Translation Backfill via llama.cpp LLM
+# Version: 0.8.18 — PlexMind release line
 #
-# Finds .en.srt files, translates to target languages using Ollama chat API.
+# Finds .en.srt files, translates to target languages using llama.cpp's OpenAI-compatible chat API.
 # Chunks SRT into groups of N cues, sends each with previous context for
 # coherent translation. Post-processes with timestamp normalization and
 # encoding verification.
@@ -14,8 +14,9 @@
 set -u
 
 # --- CONFIGURATION ---
-OLLAMA_API_URL="${OLLAMA_API_URL:-http://ollama:11434/api/chat}"
-OLLAMA_MODEL="${OLLAMA_MODEL:-qwen3.5:9b}"
+LLAMA_CPP_API_URL="${LLAMA_CPP_API_URL:-http://llama-cpp:8080/v1/chat/completions}"
+LLAMA_CPP_MODEL="${LLAMA_CPP_MODEL:-qwen3-4b-q4_k_m}"
+LLAMA_CPP_MAX_TOKENS="${LLAMA_CPP_MAX_TOKENS:-768}"
 SOURCE_LANG="${SOURCE_LANG:-en}"
 CHUNK_SIZE="${CHUNK_SIZE:-5}"
 LOG_FILE="${LOG_FILE:-/app/data/translation.log}"
@@ -39,8 +40,8 @@ mkdir -p "$(dirname "$LOG_FILE")"
 prepare_log_file
 acquire_lock "/tmp/translation_backfill.lock"
 
-TEMP_JSON_PAYLOAD="/tmp/ollama_payload.json"
-TEMP_RESPONSE_FILE="/tmp/ollama_response.json"
+TEMP_JSON_PAYLOAD="/tmp/llama_cpp_payload.json"
+TEMP_RESPONSE_FILE="/tmp/llama_cpp_response.json"
 
 export TOTAL_FILES_SCANNED=0 TRANSLATIONS_PROCESSED=0 SKIPPED_EXISTING=0 SKIPPED_FAILED=0
 export SESSION_PROCESSING_SECONDS=0
@@ -101,26 +102,24 @@ EOF
     log "Translation Session: Scanned:${TOTAL_FILES_SCANNED} Done:${TRANSLATIONS_PROCESSED} Skip-Exist:${SKIPPED_EXISTING} Skip-Fail:${SKIPPED_FAILED}"
     log "Lifetime Total: ${LIFETIME_PROCESSED}"
     log "========================================================="
-    # Unload model from VRAM
-    curl -s "${OLLAMA_API_URL%/chat}/generate" -d "{\"model\": \"${OLLAMA_MODEL}\", \"keep_alive\": 0}" >/dev/null
     rm -f "$TEMP_JSON_PAYLOAD" "$TEMP_RESPONSE_FILE" /tmp/translation_backfill.pid 2>/dev/null
-    stop_docker_container "Ollama" "${OLLAMA_CONTAINER_NAME:-}" ollama plexmind-ollama
+    stop_docker_container "llama.cpp" "${LLAMA_CPP_CONTAINER_NAME:-}" llama-cpp plexmind-llama-cpp
 }
 trap cleanup EXIT
 
-# --- OLLAMA HEALTH CHECK ---
-health_check_ollama() {
+# --- LLAMA.CPP HEALTH CHECK ---
+health_check_llama_cpp() {
     local STATUS
-    STATUS=$(curl -s -o /dev/null -w "%{http_code}" --connect-timeout 5 "${OLLAMA_API_URL%/chat}/tags" 2>/dev/null)
+    STATUS=$(curl -s -o /dev/null -w "%{http_code}" --connect-timeout 5 "${LLAMA_CPP_API_URL%/v1/chat/completions}/v1/models" 2>/dev/null)
     if [ "$STATUS" -eq 200 ]; then return 0; fi
 
-    log "HEALTH CHECK: Ollama unresponsive (HTTP ${STATUS}). Waiting 60s..."
+    log "HEALTH CHECK: llama.cpp unresponsive (HTTP ${STATUS}). Waiting 60s..."
     sleep 60
-    STATUS=$(curl -s -o /dev/null -w "%{http_code}" --connect-timeout 5 "${OLLAMA_API_URL%/chat}/tags" 2>/dev/null)
+    STATUS=$(curl -s -o /dev/null -w "%{http_code}" --connect-timeout 5 "${LLAMA_CPP_API_URL%/v1/chat/completions}/v1/models" 2>/dev/null)
     if [ "$STATUS" -eq 200 ]; then
-        log "HEALTH CHECK: Ollama recovered."; return 0
+        log "HEALTH CHECK: llama.cpp recovered."; return 0
     fi
-    log "HEALTH CHECK: Ollama still down."; return 1
+    log "HEALTH CHECK: llama.cpp still down."; return 1
 }
 
 # --- CALCULATE PENDING ---
@@ -159,26 +158,26 @@ calculate_pending_jobs() {
 # --- TRANSLATE CHUNK ---
 translate_chunk() {
     local prev_chunk="$1" curr_chunk="$2" sys_prompt="$3"
-    local user_message=""
-    [ -n "$prev_chunk" ] && user_message="[PREVIOUS CONTEXT (DO NOT TRANSLATE)]\n${prev_chunk}\n"
+    local user_message="/no_think\n"
+    [ -n "$prev_chunk" ] && user_message+="[PREVIOUS CONTEXT (DO NOT TRANSLATE)]\n${prev_chunk}\n"
     user_message+="[TARGET TO TRANSLATE]\n${curr_chunk}"
 
-    jq -n --arg model "$OLLAMA_MODEL" --arg sys "$sys_prompt" --arg user_msg "$user_message" \
-        '{model: $model, stream: false, think: false, options: {temperature: 0.1, num_predict: 2048}, messages: [{role: "system", content: $sys}, {role: "user", content: $user_msg}]}' \
+    jq -n --arg model "$LLAMA_CPP_MODEL" --arg sys "$sys_prompt" --arg user_msg "$user_message" --argjson max_tokens "$LLAMA_CPP_MAX_TOKENS" \
+        '{model: $model, stream: false, temperature: 0.1, max_tokens: $max_tokens, messages: [{role: "system", content: $sys}, {role: "user", content: $user_msg}]}' \
         > "$TEMP_JSON_PAYLOAD"
 
     local HTTP_STATUS
     HTTP_STATUS=$(curl -s -w "%{http_code}" -o "$TEMP_RESPONSE_FILE" \
         --connect-timeout 30 --max-time 600 \
         -X POST -H "Content-Type: application/json" \
-        -d @"$TEMP_JSON_PAYLOAD" "${OLLAMA_API_URL}")
+        -d @"$TEMP_JSON_PAYLOAD" "${LLAMA_CPP_API_URL}")
     local CURL_EXIT=$?
 
     if [ $CURL_EXIT -ne 0 ]; then log "ERROR: curl exit $CURL_EXIT"; return 1; fi
-    if [ "$HTTP_STATUS" != "200" ]; then log "ERROR: Ollama HTTP $HTTP_STATUS"; return 1; fi
+    if [ "$HTTP_STATUS" != "200" ]; then log "ERROR: llama.cpp HTTP $HTTP_STATUS"; return 1; fi
 
     local TRANSLATED
-    TRANSLATED=$(jq -r '.message.content' < "$TEMP_RESPONSE_FILE")
+    TRANSLATED=$(jq -r '.choices[0].message.content // empty' < "$TEMP_RESPONSE_FILE")
     TRANSLATED=$(echo "$TRANSLATED" | sed '/^```/d' | sed '/^\[TARGET TO TRANSLATE\]/d' | sed '/^\[PREVIOUS CONTEXT/d')
 
     if ! echo "$TRANSLATED" | grep -qF -- '-->'; then
@@ -213,7 +212,7 @@ process_subtitle() {
     # Health check
     FILES_SINCE_HEALTH_CHECK=$((FILES_SINCE_HEALTH_CHECK + 1))
     if [ $FILES_SINCE_HEALTH_CHECK -ge $HEALTH_CHECK_INTERVAL ]; then
-        health_check_ollama || { log "FATAL: Ollama unrecoverable."; exit 1; }
+        health_check_llama_cpp || { log "FATAL: llama.cpp unrecoverable."; exit 1; }
         FILES_SINCE_HEALTH_CHECK=0
     fi
 
@@ -292,7 +291,7 @@ PYEOF
 # MAIN
 # ==============================================================================
 log "========================================================="
-log "Translation Backfill v0.8.17 (containerized)"
+log "Translation Backfill v0.8.18 (containerized)"
 log "Schedule: launched by PlexMind; max runtime: ${MAX_RUNTIME_MINUTES:-0}m; retention: ${LOG_RETENTION_DAYS}d; RUN_NOW=${RUN_NOW}"
 log "========================================================="
 check_dependencies curl jq python3
@@ -300,7 +299,7 @@ check_dependencies curl jq python3
 # Wait for PlexMind to finish if it's holding the GPU
 PLEXMIND_SENTINEL="/tmp/plexmind.running"
 if [ -f "$PLEXMIND_SENTINEL" ]; then
-    log "PlexMind is running — waiting before using Ollama..."
+    log "PlexMind is running — waiting before using llama.cpp..."
     while [ -f "$PLEXMIND_SENTINEL" ]; do
         sleep 30
         check_runtime
@@ -308,10 +307,10 @@ if [ -f "$PLEXMIND_SENTINEL" ]; then
     log "PlexMind finished — proceeding."
 fi
 
-start_docker_container "Ollama" "${OLLAMA_CONTAINER_NAME:-}" ollama plexmind-ollama
+start_docker_container "llama.cpp" "${LLAMA_CPP_CONTAINER_NAME:-}" llama-cpp plexmind-llama-cpp
 
-if ! curl -s --connect-timeout 5 "${OLLAMA_API_URL%/chat}/tags" >/dev/null; then
-    log "ERROR: Ollama not responding."; exit 1
+if ! curl -s --connect-timeout 5 "${LLAMA_CPP_API_URL%/v1/chat/completions}/v1/models" >/dev/null; then
+    log "ERROR: llama.cpp not responding."; exit 1
 fi
 
 ALL_MEDIA_DIRS=("${MOVIE_DIR}" "${TV_DIR}")

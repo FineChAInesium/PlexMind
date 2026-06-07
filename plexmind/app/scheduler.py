@@ -10,6 +10,7 @@ import json as _json
 import logging
 import os
 import re
+import shutil
 import subprocess
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -164,6 +165,20 @@ def _script_window_tick(job: str, title: str, start_hour: int, end_hour: int) ->
     if last_key == window_key:
         return
 
+    # Defer if recommendation batch is running (sentinel written by _do_run_all_users)
+    if Path(SENTINEL_PATH).exists():
+        log.info("%s scheduled launch deferred — recommendation batch is in progress.", title)
+        return
+
+    # Defer if GPU is already busy — retry on next tick rather than stacking load
+    info = gpu_info()
+    if info["pct"] is not None and info["pct"] >= GPU_THRESHOLD_PCT:
+        log.info(
+            "%s scheduled launch deferred — GPU at %d%% (threshold %d%%).",
+            title, info["pct"], GPU_THRESHOLD_PCT,
+        )
+        return
+
     result = script_runner.start(job, {"run_now": True})
     if result.get("status") == "started":
         _SCRIPT_LAST_WINDOW[job] = window_key
@@ -183,6 +198,82 @@ def _parse_pct(value) -> int | None:
     return int(float(match.group(0))) if match else None
 
 
+def _docker_stream_text(raw: bytes) -> str:
+    """Decode Docker exec raw-stream frames into text."""
+    chunks: list[bytes] = []
+    pos = 0
+    while pos + 8 <= len(raw):
+        stream_type = raw[pos]
+        size = int.from_bytes(raw[pos + 4:pos + 8], "big")
+        next_pos = pos + 8 + size
+        if stream_type not in (1, 2) or raw[pos + 1:pos + 4] != b"\x00\x00\x00" or next_pos > len(raw):
+            break
+        chunks.append(raw[pos + 8:next_pos])
+        pos = next_pos
+    payload = b"".join(chunks) if chunks else raw
+    return payload.decode("utf-8", errors="replace")
+
+
+def _docker_exec_output(container: str, cmd: list[str]) -> str | None:
+    """Run a short command in another container through the Docker socket."""
+    socket_path = os.getenv("DOCKER_SOCKET", "/var/run/docker.sock")
+    if not Path(socket_path).exists() or not shutil.which("curl"):
+        return None
+
+    create_payload = _json.dumps({"AttachStdout": True, "AttachStderr": True, "Cmd": cmd})
+    try:
+        create = subprocess.run(
+            [
+                "curl", "-sS", "--max-time", "2", "--unix-socket", socket_path,
+                "-H", "Content-Type: application/json", "-X", "POST", "-d", create_payload,
+                f"http://docker/containers/{container}/exec",
+            ],
+            capture_output=True, text=True, timeout=3,
+        )
+        if create.returncode != 0:
+            return None
+        exec_id = (_json.loads(create.stdout or "{}").get("Id") or "").strip()
+        if not exec_id:
+            return None
+
+        start = subprocess.run(
+            [
+                "curl", "-sS", "--max-time", "5", "--unix-socket", socket_path,
+                "-H", "Content-Type: application/json", "-X", "POST", "-d", "{\"Detach\":false,\"Tty\":false}",
+                f"http://docker/exec/{exec_id}/start",
+            ],
+            capture_output=True, timeout=6,
+        )
+        if start.returncode != 0:
+            return None
+        return _docker_stream_text(start.stdout)
+    except Exception:
+        return None
+
+
+def _nvidia_info_from_docker() -> dict | None:
+    names = [os.getenv("LLAMA_CPP_CONTAINER_NAME", "llama-cpp")]
+    names.extend(os.getenv("GPU_PROBE_CONTAINERS", "llama-cpp,plexmind-llama-cpp").split(","))
+    seen: set[str] = set()
+    for raw_name in names:
+        name = raw_name.strip()
+        if not name or name in seen:
+            continue
+        seen.add(name)
+        output = _docker_exec_output(
+            name,
+            ["nvidia-smi", "--query-gpu=utilization.gpu", "--format=csv,noheader,nounits"],
+        )
+        if not output:
+            continue
+        lines = [line.strip() for line in output.splitlines() if line.strip()]
+        pcts = [_parse_pct(line) for line in lines]
+        valid = [pct for pct in pcts if pct is not None]
+        if valid:
+            return {"vendor": "nvidia", "pct": int(sum(valid) / len(valid))}
+    return None
+
+
 def gpu_info() -> dict:
     """
     Probe NVIDIA → Intel Arc → AMD in order.
@@ -198,7 +289,10 @@ def gpu_info() -> dict:
         if r.returncode == 0:
             lines = [l.strip() for l in r.stdout.strip().split("\n") if l.strip()]
             if lines:
-                return {"vendor": "nvidia", "pct": _parse_pct(lines[0])}
+                pcts = [_parse_pct(l) for l in lines]
+                valid = [p for p in pcts if p is not None]
+                avg = int(sum(valid) / len(valid)) if valid else None
+                return {"vendor": "nvidia", "pct": avg}
     except Exception:
         pass
 
@@ -234,6 +328,10 @@ def gpu_info() -> dict:
                     return {"vendor": "amd", "pct": _parse_pct(pct_str)}
     except Exception:
         pass
+
+    docker_nvidia = _nvidia_info_from_docker()
+    if docker_nvidia is not None:
+        return docker_nvidia
 
     return {"vendor": None, "pct": None}
 
@@ -271,7 +369,7 @@ async def run_all_users(triggered_by: str = "scheduler", on_progress=None) -> di
     """
     Generate and sync recommendations for every Plex user that has
     at least MIN_HISTORY_ITEMS watched items.  Runs users sequentially
-    to avoid hammering Ollama / TMDB simultaneously.
+    to avoid hammering llama.cpp / TMDB simultaneously.
 
     If a run is already in progress (e.g. API trigger + cron overlap),
     the second call returns immediately rather than stacking GPU load.
@@ -436,7 +534,7 @@ def start(app=None) -> None:
     )
     scheduler.add_job(
         _script_window_tick,
-        CronTrigger(minute="*/15", timezone=script_tz),
+        CronTrigger(minute="0,15,30,45", timezone=script_tz),
         id="transcribe_schedule",
         replace_existing=True,
         misfire_grace_time=900,
@@ -449,7 +547,7 @@ def start(app=None) -> None:
     )
     scheduler.add_job(
         _script_window_tick,
-        CronTrigger(minute="*/15", timezone=script_tz),
+        CronTrigger(minute="7,22,37,52", timezone=script_tz),
         id="translate_schedule",
         replace_existing=True,
         misfire_grace_time=900,

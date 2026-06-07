@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.8.18 - 2026-06-07
+
+- Replace uncompressed Whisper WAV uploads with compressed 16 kHz mono MP3 extraction and segmented uploads above 50 MB to avoid large-audio ASR crashes.
+- Add a 12 GB Whisper sidecar memory limit and expose transcription upload controls in Compose and `.env.example`.
+- Move bundled PlexMind sidecar host ports away from common conflicts: llama.cpp defaults to `11435`, Whisper defaults to `9001`, while internal container ports remain unchanged.
+- Finish llama.cpp drift cleanup in setup, Unraid template, security docs, scheduler GPU fallback defaults, and app fallback URLs.
+- Rebuild and recreate the live PlexMind containers with the updated images, port map, and live `.env` values.
+- Add subtitle readability formatting for future transcription output: two-line visual reflow, conservative oversized-cue splitting, and high-CPS protection.
+
 ## v0.8.17 - 2026-04-17
 
 - Move transcription and translation launch windows into the PlexMind scheduler so subtitle scripts run once per configured daily window.
