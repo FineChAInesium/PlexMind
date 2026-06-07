@@ -511,6 +511,7 @@ These are worth considering but not blocking anything current.
 
 | Date | Change |
 |---|---|
+| 2026-06-07 | Fixed the dashboard transcribe/translate API-key regression by issuing a same-origin HttpOnly auth cookie from the runtime API key; rebuilt the live `plexmind` container and verified cookie auth plus `bin/verify-live.sh`. |
 | 2026-06-07 | Fixed Whisper large-audio OOM/crash mitigation, moved PlexMind sidecar host ports to avoid conflicts, added conservative subtitle readability formatting, rebuilt/promoted live containers, pushed `main` and `v0.8.18` to GitHub, and verified the suite with `bin/verify-live.sh`. |
 | 2026-05-25 | Migrated design state to llama.cpp/qwen3-4b, documented live translation and recommendation fixes, added GPU detection fallback, and added R10-R19 hardening/UI recommendations. |
 | 2026-05-07 | **All recommendations actioned.** See details below. |
@@ -519,6 +520,7 @@ These are worth considering but not blocking anything current.
 ### 2026-06-07 - Changes Applied
 
 **Bug fixes:**
+- Dashboard requests now authenticate with a same-origin HttpOnly cookie set when the root page is served, so transcribe/translate controls work after removing the committed static API-key seed. X-API-Key and query-string API keys remain supported for API clients and webhooks.
 - Large Whisper uploads now use compressed 16 kHz mono MP3 instead of uncompressed WAV.
 - Uploads over 50 MB are split into 10-minute chunks and stitched back into one SRT.
 - Whisper sidecar memory is capped at 12 GB to reduce crash risk during large ASR jobs.

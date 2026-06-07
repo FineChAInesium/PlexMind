@@ -114,15 +114,18 @@ if not _API_KEY:
 
 _api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
 
+_API_KEY_COOKIE = "plexmind_api_key"
+
+
 async def _require_key(
     request: Request,
     key: str | None = Depends(_api_key_header),
 ) -> None:
-    """Accept key via X-API-Key header OR ?api_key= query param (for Plex webhooks).
+    """Accept key via X-API-Key, same-origin dashboard cookie, or ?api_key=.
     Uses secrets.compare_digest for timing-safe comparison."""
     if not _API_KEY:
         return
-    provided = key or request.query_params.get("api_key", "")
+    provided = key or request.cookies.get(_API_KEY_COOKIE, "") or request.query_params.get("api_key", "")
     if not provided or not secrets.compare_digest(provided.encode(), _API_KEY.encode()):
         raise HTTPException(status_code=403, detail="Invalid or missing API key")
 
@@ -796,7 +799,17 @@ if not _no_gui and _os.path.isdir(_static_dir):
 
     @app.get("/", include_in_schema=False)
     async def dashboard():
-        return FileResponse(_os.path.join(_static_dir, "index.html"))
+        response = FileResponse(_os.path.join(_static_dir, "index.html"))
+        if _API_KEY:
+            response.set_cookie(
+                _API_KEY_COOKIE,
+                _API_KEY,
+                httponly=True,
+                samesite="lax",
+                secure=os.getenv("PLEXMIND_SECURE_COOKIE", "").lower() in ("1", "true", "yes"),
+                max_age=60 * 60 * 24 * 30,
+            )
+        return response
 
     @app.get("/favicon.ico", include_in_schema=False)
     async def favicon():
