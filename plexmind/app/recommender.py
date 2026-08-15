@@ -93,18 +93,21 @@ def _fetch_full_library() -> list[dict]:
     from plexapi.server import PlexServer
     server = PlexServer(plex_client.PLEX_URL, plex_client.PLEX_TOKEN)
     items: list[dict] = []
-    for section_name, media_type in [("Movies", "movie"), ("TV Shows", "show")]:
+    for section in server.library.sections():
+        media_type = {"movie": "movie", "show": "show"}.get(getattr(section, "type", ""))
+        if not media_type:
+            continue
         try:
-            section = server.library.section(section_name)
             for item in section.all():
                 items.append({
                     "title": item.title,
                     "year": getattr(item, "year", None),
                     "media_type": media_type,
+                    "rating_key": str(getattr(item, "ratingKey", "") or ""),
                     "plex_genres": [g.tag for g in getattr(item, "genres", [])],
                 })
-        except Exception:
-            pass
+        except Exception as exc:
+            log.warning("Could not read Plex section %s: %s", getattr(section, "title", "unknown"), exc)
     _library_cache = items
     _library_cache_ts = time.time()
     return items
@@ -376,9 +379,6 @@ def _prefilter(
     Score candidates, exclude suppressed titles, preserve movie/TV ratio,
     return top `pool_size` items.
     """
-    if len(candidates) <= pool_size:
-        return candidates
-
     genre_weights, kw_weights, lang_counts, director_weights, cast_weights = \
         _build_fingerprint(history_meta, history_items)
     dominant_langs = {lang for lang, _ in lang_counts.most_common(3)} - {"en"}
@@ -655,6 +655,8 @@ async def get_recommendations(user_id: str, force: bool = False) -> list[dict]:
         _enrich_all(enrich_batch),
         _get_trending_titles(),
     )
+    for meta, source in zip(library_meta, shortlist):
+        meta["rating_key"] = source.get("rating_key")
 
     # 6. Shown-rec suppression data
     shown_recs = cache.get_shown_recs(user_id)
@@ -689,7 +691,13 @@ async def get_recommendations(user_id: str, force: bool = False) -> list[dict]:
             raw_recs = nested if isinstance(nested, list) else []
 
     # 10. Post-process LLM recs
-    meta_by_title = {e["title"].lower(): e for e in library_meta}
+    meta_by_identity = {
+        (e["title"].casefold().strip(), e.get("year"), e.get("media_type")): e
+        for e in candidates
+    }
+    title_candidates: dict[str, list[dict]] = {}
+    for candidate in candidates:
+        title_candidates.setdefault(candidate["title"].casefold().strip(), []).append(candidate)
     disliked = {fb["title"].lower() for fb in feedback if fb["rating"] == "dislike"}
     recs: list[dict] = []
     seen: set[str] = set()
@@ -697,19 +705,31 @@ async def get_recommendations(user_id: str, force: bool = False) -> list[dict]:
     for rec in raw_recs:
         if not isinstance(rec, dict):
             continue
-        title_lower = rec.get("title", "").lower()
+        title_lower = str(rec.get("title", "")).casefold().strip()
         if title_lower in seen or title_lower in disliked:
             continue
         seen.add(title_lower)
-        meta = meta_by_title.get(title_lower)
-        if meta:
-            if not rec.get("poster_url"):
-                rec["poster_url"] = meta.get("poster_url")
-            if not rec.get("year"):
-                rec["year"] = meta.get("year")
-            rec["_imdb_rating"] = meta.get("imdb_rating")
-            rec["_tmdb_rating"] = meta.get("tmdb_rating")
-        recs.append(rec)
+        rec_type = "show" if rec.get("type") in ("tv", "show") else "movie"
+        meta = meta_by_identity.get((title_lower, rec.get("year"), rec_type))
+        if meta is None:
+            matches = title_candidates.get(title_lower, [])
+            meta = matches[0] if len(matches) == 1 else None
+        if not meta:
+            log.warning("Discarding LLM title outside candidate allowlist: %r", rec.get("title"))
+            continue
+        canonical = {
+            "title": meta["title"],
+            "year": meta.get("year"),
+            "type": "movie" if meta.get("media_type") == "movie" else "tv",
+            "reason": str(rec.get("reason") or "Selected from your highest-scoring library matches.")[:500],
+            "poster_url": meta.get("poster_url"),
+            "_rating_key": meta.get("rating_key"),
+            "_imdb_rating": meta.get("imdb_rating"),
+            "_tmdb_rating": meta.get("tmdb_rating"),
+        }
+        recs.append(canonical)
+        if len(recs) >= llm_n:
+            break
 
     # 10b. Deep cut — pick one hidden gem the LLM wouldn't normally choose
     dominant_langs = {lang for lang, _ in lang_counts.most_common(3)} - {"en"}
@@ -726,14 +746,5 @@ async def get_recommendations(user_id: str, force: bool = False) -> list[dict]:
 
     # 11. Mark shown (for future suppression)
     cache.mark_shown_recs(user_id, [r["title"] for r in recs])
-
-    # 12. Sync to Plex (per-user isolation: collection for admin, playlist for others)
-    try:
-        users = plex_client.get_users()
-        username = next((u["username"] for u in users if str(u["id"]) == str(user_id)), str(user_id))
-        user_token = plex_client.get_user_token(user_id)
-        plex_sync.sync_to_plex(user_id, username, recs, user_token=user_token)
-    except Exception as exc:
-        print(f"[plex_sync] Warning: could not sync for {user_id}: {exc}")
 
     return recs

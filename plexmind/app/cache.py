@@ -5,6 +5,8 @@ import json
 import os
 import tempfile
 import time
+import fcntl
+from contextlib import contextmanager
 from threading import RLock
 from typing import Any
 
@@ -20,6 +22,16 @@ SUPPRESSION_DAYS = int(os.getenv("SUPPRESSION_DAYS", "60"))
 
 _cache: dict[str, dict[str, Any]] = {}
 _lock = RLock()
+_STATE_LOCK_FILE = os.getenv("PLEXMIND_STATE_LOCK", "data/plexmind_state.lock")
+
+
+@contextmanager
+def _process_lock():
+    directory = os.path.dirname(_STATE_LOCK_FILE) or "."
+    os.makedirs(directory, exist_ok=True)
+    with open(_STATE_LOCK_FILE, "a+") as handle:
+        fcntl.flock(handle, fcntl.LOCK_EX)
+        yield
 
 
 def _load_json(path: str, fallback):
@@ -28,8 +40,10 @@ def _load_json(path: str, fallback):
     try:
         with open(path) as f:
             return json.load(f)
-    except (json.JSONDecodeError, OSError):
-        return fallback
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"Persistent JSON is corrupt: {path}: {exc}") from exc
+    except OSError as exc:
+        raise RuntimeError(f"Persistent JSON is unreadable: {path}: {exc}") from exc
 
 
 def _save_json_atomic(path: str, data) -> None:
@@ -44,9 +58,8 @@ def _save_json_atomic(path: str, data) -> None:
             f.flush()
             os.fsync(f.fileno())
         os.replace(tmp_name, path)
-    except Exception as exc:
-        import sys
-        print(f"[cache] ERROR: failed to persist {path}: {exc}", file=sys.stderr)
+    except Exception:
+        raise
     finally:
         if tmp_name and os.path.exists(tmp_name):
             try:
@@ -71,9 +84,9 @@ def cache_get(user_id: str) -> list | None:
 
 
 def cache_set(user_id: str, data: list) -> None:
+    record_recommendations(user_id, data)
     with _lock:
         _cache[str(user_id)] = {"ts": time.time(), "data": data}
-    record_recommendations(user_id, data)
 
 
 def cache_invalidate(user_id: str) -> None:
@@ -105,7 +118,7 @@ def get_user_feedback(user_id: str) -> list[dict]:
 
 def add_feedback(user_id: str, title: str, rating: str, note: str = "") -> None:
     """rating: 'like' | 'dislike' | 'watched'. Invalidates the rec cache."""
-    with _lock:
+    with _lock, _process_lock():
         fb = _load_feedback()
         uid = str(user_id)
         fb.setdefault(uid, [])
@@ -139,7 +152,7 @@ def get_shown_recs(user_id: str) -> dict[str, float]:
 
 def mark_shown_recs(user_id: str, titles: list[str]) -> None:
     """Record that these titles were shown, pruning entries older than SUPPRESSION_DAYS."""
-    with _lock:
+    with _lock, _process_lock():
         data = _load_shown()
         uid = str(user_id)
         existing = data.get(uid, {})
@@ -173,7 +186,7 @@ def _save_rec_history(data: list[dict]) -> None:
 def record_recommendations(user_id: str, recs: list[dict]) -> None:
     if not recs:
         return
-    with _lock:
+    with _lock, _process_lock():
         history = _load_rec_history()
         history.append({"user_id": str(user_id), "ts": time.time(), "recommendations": recs})
         _save_rec_history(history)

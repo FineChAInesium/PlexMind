@@ -1,5 +1,39 @@
 # Changelog
 
+## v0.8.20 - 2026-08-15
+
+- Route scheduled media work through the authenticated worker instead of the API-local runner.
+- Add narrow broker-backed NVIDIA utilization telemetry and fail closed when telemetry is unavailable.
+- Move recommendation batches to a durable singleton queue worker and remove implicit duplicate Plex sync.
+- Persist worker idempotency and validate worker process identity across restarts.
+- Repair API/worker response parity, state ownership checks, stable Plex identities, and transactional playlist rollback.
+- Pin build/runtime images and GitHub Actions; publish API, scripts worker, and broker as one release set.
+- Add post-remediation blast-radius integration regression coverage.
+
+## v0.8.19 - 2026-08-15
+
+- Closed the dashboard API-key disclosure and introduced short-lived authenticated sessions.
+- Added authenticated/idempotent worker control and an allowlisted Docker lifecycle broker.
+- Moved media writes out of the API container and made worker/GPU locking cross-container.
+- Persisted scheduler receipts, recommendation jobs, and verified local process identity.
+- Removed implicit PGS deletion and exposed per-file partial failures.
+- Made Plex replacement transactional and LLM recommendations candidate-allowlisted.
+- Added collision-safe media resolution, atomic state writes, HTTPS metadata traffic,
+  pinned direct dependencies/images, release verification, SBOM, and provenance.
+- Corrected browser-only schedule wording, endpoint fallback, Whisper artifact/state/model truth.
+
+## Unreleased
+
+- Keep the PlexMind API card online during jobs by separating `/health/live` reachability from slower dependency health.
+- Populate the Whisper model dropdown from models actually present in the mounted local cache, and disable transcription when the configured model is unavailable.
+- Remove unwired language-detection and re-translate toggles, and clarify the destructive duplicate-subtitle action label.
+- Separate host media bind paths from fixed in-container scan roots and fail closed on missing, unreadable, identical, or unexpectedly empty roots.
+- Add Movies and TV mappings to the Unraid template and expose media inventory through scripts health.
+- Wait for cold llama.cpp startup, preserve failed job results, and stop only sidecars started by the current job.
+- Use one canonical llama.cpp base URL, keep the shared recommendation service externally managed by default, and remove brittle Docker bridge rewriting.
+- Consolidate application and scripts-sidecar builds on the root `scripts/` tree and add packaging, path, sidecar, readiness, and Plex-section regression tests.
+- Discover Plex video sections by media type instead of assuming the titles `Movies` and `TV Shows`.
+
 ## v0.8.18 - 2026-06-07
 
 - Replace uncompressed Whisper WAV uploads with compressed 16 kHz mono MP3 extraction and segmented uploads above 50 MB to avoid large-audio ASR crashes.

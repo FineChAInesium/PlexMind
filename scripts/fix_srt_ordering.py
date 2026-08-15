@@ -6,13 +6,14 @@ Fix timestamp ordering in script-generated SRT translations.
 - Skips files that are already in order
 """
 
+import os
 import re
 import sys
 from pathlib import Path
 
 MEDIA_DIRS = [
-    Path("/mnt/user/data/media/Movies"),
-    Path("/mnt/user/data/media/TV Shows"),
+    Path(os.getenv("MOVIE_DIR", "/media/movies")),
+    Path(os.getenv("TV_DIR", "/media/tv")),
 ]
 
 def parse_time_ms(ts):

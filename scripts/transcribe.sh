@@ -1,7 +1,7 @@
 #!/bin/bash
 # ==============================================================================
 # transcribe.sh — Library Transcription Backfill
-# Version: 0.8.18 — PlexMind release line
+# Version: 0.8.20 — PlexMind release line
 #
 # Scans Movies and TV directories, transcribes via Whisper ASR API.
 # Features: language profiling, bilingual VIP handling, hallucination
@@ -60,11 +60,13 @@ source "${SCRIPT_DIR}/lib.sh" || { echo "FATAL: Cannot load lib.sh"; exit 1; }
 mkdir -p "$(dirname "$LOG_FILE")"
 prepare_log_file
 acquire_lock "/tmp/transcription_backfill.lock"
+acquire_lock "/app/data/plexmind_media_mutation.lock"
+acquire_lock "/app/data/plexmind_gpu.lock"
 
 TEMP_AUDIO_FILE="/tmp/transcribe_temp_audio.${TRANSCRIBE_AUDIO_EXT}"
 
 export TOTAL_SCANNED=0 ENGLISH_PROCESSED=0 VIP_PROCESSED=0 FOREIGN_PROCESSED=0
-export SKIPPED_EXISTING=0 SKIPPED_FAILED=0 SKIPPED_SIZE=0 HALLUCINATIONS_CLEANED=0
+export SKIPPED_EXISTING=0 SKIPPED_FAILED=0 SKIPPED_SIZE=0 HALLUCINATIONS_CLEANED=0 FAILED_THIS_RUN=0
 export SESSION_PROCESSING_SECONDS=0
 FILES_SINCE_HEALTH_CHECK=0
 
@@ -89,7 +91,7 @@ cleanup() {
     LIFETIME_BILINGUAL_PROCESSED=$((LIFETIME_BILINGUAL_PROCESSED + VIP_PROCESSED))
     LIFETIME_FOREIGN_PROCESSED=$((LIFETIME_FOREIGN_PROCESSED + FOREIGN_PROCESSED))
     LIFETIME_SKIPPED_EXISTING=$((LIFETIME_SKIPPED_EXISTING + SKIPPED_EXISTING))
-    LIFETIME_SKIPPED_FAILED=$((LIFETIME_SKIPPED_FAILED + SKIPPED_FAILED))
+    LIFETIME_SKIPPED_FAILED=$((LIFETIME_SKIPPED_FAILED + SKIPPED_FAILED + FAILED_THIS_RUN))
     LIFETIME_SKIPPED_SIZE=$((LIFETIME_SKIPPED_SIZE + SKIPPED_SIZE))
     LIFETIME_HALLUCINATIONS_CLEANED=$((LIFETIME_HALLUCINATIONS_CLEANED + HALLUCINATIONS_CLEANED))
     LIFETIME_PROCESSING_SECONDS=$((LIFETIME_PROCESSING_SECONDS + SESSION_PROCESSING_SECONDS))
@@ -108,15 +110,14 @@ EOF
 
     log "========================================================="
     log "Session Finished! Scanned:${TOTAL_SCANNED} EN:${ENGLISH_PROCESSED} FGN:${FOREIGN_PROCESSED} VIP:${VIP_PROCESSED}"
-    log "Hallucinations:${HALLUCINATIONS_CLEANED} Skip-Exist:${SKIPPED_EXISTING} Skip-Fail:${SKIPPED_FAILED} Skip-Size:${SKIPPED_SIZE}"
+    log "Hallucinations:${HALLUCINATIONS_CLEANED} Skip-Exist:${SKIPPED_EXISTING} New-Fail:${FAILED_THIS_RUN} Deferred-Fail:${SKIPPED_FAILED} Skip-Size:${SKIPPED_SIZE}"
     log "========================================================="
 
-    log "Running end-of-session tasks..."
-    cleanup_pgs "${MOVIE_DIR}" "${TV_DIR}" >/dev/null
+    log "Running non-destructive end-of-session report..."
     generate_report
 
     rm -f "$TEMP_AUDIO_FILE" /tmp/transcription_backfill.pid 2>/dev/null
-    stop_docker_container "Whisper" "${WHISPER_CONTAINER_NAME:-}" whisper-asr-webservice plexmind-whisper whisper
+    stop_docker_container "Whisper" "${WHISPER_CONTAINER_NAME:-whisper-asr-webservice}"
 }
 trap cleanup EXIT
 
@@ -266,6 +267,7 @@ upload_whisper_audio() {
             log "  Uploading chunk $(basename "$CHUNK")..."
             HTTP_STATUS=$(curl -s -w "%{http_code}" -o "$CHUNK_OUT" \
                 --connect-timeout 60 --max-time 7200 \
+                --retry 2 --retry-delay 2 --retry-connrefused --retry-max-time 14400 \
                 -X POST -F "audio_file=@${CHUNK}" "${API_URL_PARAMS}")
             CURL_EXIT=$?
             if [ $CURL_EXIT -ne 0 ]; then
@@ -294,6 +296,7 @@ upload_whisper_audio() {
     local HTTP_STATUS CURL_EXIT
     HTTP_STATUS=$(curl -s -w "%{http_code}" -o "${OUTPUT_FILE}" \
         --connect-timeout 60 --max-time 7200 \
+        --retry 2 --retry-delay 2 --retry-connrefused --retry-max-time 14400 \
         -X POST -F "audio_file=@${AUDIO_FILE}" "${API_URL_PARAMS}")
     CURL_EXIT=$?
     if [ $CURL_EXIT -ne 0 ]; then
@@ -340,7 +343,7 @@ process_video() {
 
     # --- HEALTH CHECK ---
     FILES_SINCE_HEALTH_CHECK=$((FILES_SINCE_HEALTH_CHECK + 1))
-    if [ $FILES_SINCE_HEALTH_CHECK -ge $HEALTH_CHECK_INTERVAL ]; then
+    if [ "$FILES_SINCE_HEALTH_CHECK" -ge "$HEALTH_CHECK_INTERVAL" ]; then
         health_check_api || { log "FATAL: API unrecoverable."; exit 1; }
         FILES_SINCE_HEALTH_CHECK=0
     fi
@@ -465,7 +468,7 @@ PYEOF
 
     if [ ! -s "${TEMP_AUDIO_FILE}" ]; then
         log "ERROR: No audio extracted."
-        write_failed_marker "$FAILED_MARKER_FILE" "$FAIL_EMPTY_AUDIO"
+        write_failed_marker "$FAILED_MARKER_FILE" "$FAIL_EMPTY_AUDIO"; FAILED_THIS_RUN=$((FAILED_THIS_RUN+1))
         quarantine_video "$VIDEO_FILE" "$FAIL_EMPTY_AUDIO"
         return
     fi
@@ -510,25 +513,25 @@ PYEOF
     if [ $UPLOAD_EXIT -eq 10 ]; then
         log "ERROR: Curl failed during Whisper upload."
         rm -f "$TEMP_OUTPUT_FILE" 2>/dev/null
-        write_failed_marker "$FAILED_MARKER_FILE" "$FAIL_CURL_TIMEOUT"
+        write_failed_marker "$FAILED_MARKER_FILE" "$FAIL_CURL_TIMEOUT"; FAILED_THIS_RUN=$((FAILED_THIS_RUN+1))
         return
     fi
     if [ $UPLOAD_EXIT -eq 20 ]; then
         log "ERROR: API HTTP ${WHISPER_UPLOAD_RESULT:-unknown}"
         rm -f "$TEMP_OUTPUT_FILE" 2>/dev/null
-        write_failed_marker "$FAILED_MARKER_FILE" "$FAIL_API_ERROR"
+        write_failed_marker "$FAILED_MARKER_FILE" "$FAIL_API_ERROR"; FAILED_THIS_RUN=$((FAILED_THIS_RUN+1))
         return
     fi
     if [ $UPLOAD_EXIT -ne 0 ]; then
         log "ERROR: Whisper upload failed while preparing or stitching segmented audio."
         rm -f "$TEMP_OUTPUT_FILE" 2>/dev/null
-        write_failed_marker "$FAILED_MARKER_FILE" "$FAIL_INVALID_OUTPUT"
+        write_failed_marker "$FAILED_MARKER_FILE" "$FAIL_INVALID_OUTPUT"; FAILED_THIS_RUN=$((FAILED_THIS_RUN+1))
         return
     fi
     if [ ! -s "$TEMP_OUTPUT_FILE" ] || ! grep -qF -- '-->' "$TEMP_OUTPUT_FILE"; then
         log "ERROR: Invalid SRT output."
         rm -f "$TEMP_OUTPUT_FILE"
-        write_failed_marker "$FAILED_MARKER_FILE" "$FAIL_INVALID_OUTPUT"
+        write_failed_marker "$FAILED_MARKER_FILE" "$FAIL_INVALID_OUTPUT"; FAILED_THIS_RUN=$((FAILED_THIS_RUN+1))
         return
     fi
 
@@ -548,7 +551,7 @@ PYEOF
     if ! validate_srt "$TEMP_OUTPUT_FILE"; then
         log "ERROR: Validation failed."
         rm -f "$TEMP_OUTPUT_FILE"
-        write_failed_marker "$FAILED_MARKER_FILE" "$FAIL_VALIDATION"
+        write_failed_marker "$FAILED_MARKER_FILE" "$FAIL_VALIDATION"; FAILED_THIS_RUN=$((FAILED_THIS_RUN+1))
         quarantine_video "$VIDEO_FILE" "$FAIL_VALIDATION"
         return
     fi
@@ -655,13 +658,13 @@ PYEOF
 # MAIN
 # ==============================================================================
 log "========================================================="
-log "Transcription Backfill v0.8.18 (containerized)"
+log "Transcription Backfill v0.8.20 (containerized)"
 log "Schedule: launched by PlexMind; max runtime: ${MAX_RUNTIME_MINUTES:-0}m; retention: ${LOG_RETENTION_DAYS}d; RUN_NOW=${RUN_NOW}"
 log "========================================================="
 check_dependencies curl ffmpeg ffprobe python3
 
 # Wait for PlexMind to finish if it's holding the GPU
-PLEXMIND_SENTINEL="/tmp/plexmind.running"
+PLEXMIND_SENTINEL="/app/data/plexmind.running"
 if [ -f "$PLEXMIND_SENTINEL" ]; then
     log "PlexMind is running — waiting before starting Whisper..."
     while [ -f "$PLEXMIND_SENTINEL" ]; do
@@ -671,10 +674,10 @@ if [ -f "$PLEXMIND_SENTINEL" ]; then
     log "PlexMind finished — proceeding."
 fi
 
-start_docker_container "Whisper" "${WHISPER_CONTAINER_NAME:-}" whisper-asr-webservice plexmind-whisper whisper
-wait_for_whisper_api
-
 ALL_MEDIA_DIRS=("${MOVIE_DIR}" "${TV_DIR}")
+validate_media_directories || exit 1
+start_docker_container "Whisper" "${WHISPER_CONTAINER_NAME:-whisper-asr-webservice}" || exit 1
+wait_for_whisper_api
 
 log "Checking for partial files from interrupted runs..."
 resume_partial "${MOVIE_DIR}" "${TV_DIR}" >/dev/null
@@ -687,4 +690,8 @@ while IFS= read -r -d '' VIDEO_FILE; do
     process_video "$VIDEO_FILE"
 done < <(find "${ALL_MEDIA_DIRS[@]}" -type f \( -iname "*.mkv" -o -iname "*.mp4" -o -iname "*.avi" -o -iname "*.mov" -o -iname "*.wmv" -o -iname "*.m4v" \) -print0 2>/dev/null)
 
+if [ "$SKIPPED_FAILED" -gt 0 ] || [ "$FAILED_THIS_RUN" -gt 0 ]; then
+    log "COMPLETED_WITH_ERRORS: ${FAILED_THIS_RUN} new failure(s), ${SKIPPED_FAILED} deferred failure(s)."
+    exit 2
+fi
 exit 0

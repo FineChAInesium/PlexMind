@@ -1,7 +1,9 @@
 #!/bin/bash
 # ==============================================================================
+
+umask 077
 # common_lib.sh — Shared Infrastructure for Transcription/Translation Pipeline
-# Version: 0.8.18 — PlexMind release line
+# Version: 0.8.20 — PlexMind release line
 #
 # Source this file from any pipeline script:
 #   source /app/lib.sh || { echo "FATAL: Cannot load lib.sh"; exit 1; }
@@ -41,6 +43,7 @@ REPORT_DIR="${REPORT_DIR:-/app/data/reports}"
 # Media directories (container paths)
 MOVIE_DIR="${MOVIE_DIR:-/media/movies}"
 TV_DIR="${TV_DIR:-/media/tv}"
+SIDECAR_OWNED_CONTAINERS="${SIDECAR_OWNED_CONTAINERS:-}"
 
 # Failure reason codes
 FAIL_CURL_TIMEOUT="CURL_TIMEOUT"
@@ -88,11 +91,14 @@ prepare_log_file() {
 # Usage: acquire_lock "/tmp/my_script.lock"
 acquire_lock() {
     local LOCK="$1"
-    exec 200>"$LOCK"
-    if ! flock -n 200; then
+    local lock_fd
+    mkdir -p "$(dirname "$LOCK")"
+    exec {lock_fd}>"$LOCK"
+    if ! flock -n "$lock_fd"; then
         log "Another instance is already running (lock: $LOCK). Exiting."
         exit 1
     fi
+    PLEXMIND_LOCK_FDS="${PLEXMIND_LOCK_FDS:-} ${lock_fd}"
     echo "$$" > "${LOCK%.lock}.pid"
 }
 
@@ -116,9 +122,9 @@ stop_docker_container() {
 
     [ "${STOP_SIDECAR_CONTAINERS:-1}" = "1" ] || return 0
 
-    local socket="${DOCKER_SOCKET:-/var/run/docker.sock}"
-    if [ ! -S "$socket" ]; then
-        log "${service_name}: Docker socket not available at ${socket}; leaving sidecar container running."
+    local broker="${DOCKER_BROKER_URL:-}"
+    if [ -z "$broker" ] || [ -z "${PLEXMIND_BROKER_TOKEN:-}" ]; then
+        log "${service_name}: authenticated Docker broker is not configured; leaving sidecar container running."
         return 0
     fi
     if ! command -v curl >/dev/null 2>&1; then
@@ -130,8 +136,11 @@ stop_docker_container() {
     local name status
     for name in "$@"; do
         [ -n "${name:-}" ] || continue
-        status=$(curl -sS -o /dev/null -w "%{http_code}" --unix-socket "$socket" \
-            -X POST "http://docker/containers/${name}/stop?t=${timeout}" 2>/dev/null || true)
+        case " ${SIDECAR_OWNED_CONTAINERS} " in
+            *" ${name} "*) ;;
+            *) continue ;;
+        esac
+        status=$(curl -sS -o /dev/null -w "%{http_code}" -H "X-Broker-Token: ${PLEXMIND_BROKER_TOKEN}" -X POST "${broker%/}/containers/${name}/stop?t=${timeout}" 2>/dev/null || true)
         case "$status" in
             204) log "${service_name}: stopped container ${name}."; return 0 ;;
             304) log "${service_name}: container ${name} already stopped."; return 0 ;;
@@ -140,7 +149,7 @@ stop_docker_container() {
         esac
     done
 
-    log "${service_name}: no matching sidecar container found to stop."
+    log "${service_name}: no job-owned sidecar container to stop; leaving shared service unchanged."
 }
 
 
@@ -150,9 +159,9 @@ start_docker_container() {
 
     [ "${START_SIDECAR_CONTAINERS:-1}" = "1" ] || return 0
 
-    local socket="${DOCKER_SOCKET:-/var/run/docker.sock}"
-    if [ ! -S "$socket" ]; then
-        log "${service_name}: Docker socket not available at ${socket}; cannot start sidecar container."
+    local broker="${DOCKER_BROKER_URL:-}"
+    if [ -z "$broker" ] || [ -z "${PLEXMIND_BROKER_TOKEN:-}" ]; then
+        log "${service_name}: authenticated Docker broker is not configured; cannot start sidecar container."
         return 0
     fi
     if ! command -v curl >/dev/null 2>&1; then
@@ -163,17 +172,48 @@ start_docker_container() {
     local name status
     for name in "$@"; do
         [ -n "${name:-}" ] || continue
-        status=$(curl -sS -o /dev/null -w "%{http_code}" --unix-socket "$socket" \
-            -X POST "http://docker/containers/${name}/start" 2>/dev/null || true)
+        status=$(curl -sS -o /dev/null -w "%{http_code}" -H "X-Broker-Token: ${PLEXMIND_BROKER_TOKEN}" -X POST "${broker%/}/containers/${name}/start" 2>/dev/null || true)
         case "$status" in
-            204) log "${service_name}: started container ${name}."; return 0 ;;
+            204)
+                SIDECAR_OWNED_CONTAINERS="${SIDECAR_OWNED_CONTAINERS:+${SIDECAR_OWNED_CONTAINERS} }${name}"
+                log "${service_name}: started container ${name}; this job owns the transition."
+                return 0
+                ;;
             304) log "${service_name}: container ${name} already running."; return 0 ;;
             404) ;;
             *) log "${service_name}: Docker start request for ${name} returned HTTP ${status:-unknown}." ;;
         esac
     done
 
-    log "${service_name}: no matching sidecar container found to start."
+    log "ERROR: ${service_name}: no configured sidecar container could be started."
+    return 1
+}
+
+
+validate_media_directories() {
+    local root entries total=0
+    if [ "$MOVIE_DIR" = "$TV_DIR" ]; then
+        log "ERROR: MOVIE_DIR and TV_DIR resolve to the same container path: ${MOVIE_DIR}"
+        return 1
+    fi
+    for root in "$MOVIE_DIR" "$TV_DIR"; do
+        if [ ! -d "$root" ]; then
+            log "ERROR: configured media root is not a directory inside this container: ${root}"
+            return 1
+        fi
+        if [ ! -r "$root" ] || [ ! -x "$root" ]; then
+            log "ERROR: configured media root is not readable/searchable: ${root}"
+            return 1
+        fi
+        entries=$(find "$root" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null | wc -l)
+        total=$((total + entries))
+        log "MEDIA ROOT: ${root} is accessible; nonempty=${entries}."
+    done
+    if [ "$total" -eq 0 ] && [ "${ALLOW_EMPTY_MEDIA_ROOTS:-0}" != "1" ]; then
+        log "ERROR: all configured media roots are empty; set ALLOW_EMPTY_MEDIA_ROOTS=1 only for an intentional empty library."
+        return 1
+    fi
+    return 0
 }
 
 wait_for_whisper_api() {

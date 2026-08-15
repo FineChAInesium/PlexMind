@@ -1,12 +1,12 @@
 #!/bin/bash
 # ==============================================================================
 # translate.sh — SRT Translation Backfill via llama.cpp LLM
-# Version: 0.8.18 — PlexMind release line
+# Version: 0.8.20 — PlexMind release line
 #
 # Finds .en.srt files, translates to target languages using llama.cpp's OpenAI-compatible chat API.
-# Chunks SRT into groups of N cues, sends each with previous context for
-# coherent translation. Post-processes with timestamp normalization and
-# encoding verification.
+# Translates one cue per request, then rebuilds the SRT envelope from the
+# source cue. This prevents the model from merging cues or moving dialogue
+# across timestamps.
 #
 # Requires: lib.sh, curl, jq, python3
 # ==============================================================================
@@ -14,11 +14,20 @@
 set -u
 
 # --- CONFIGURATION ---
-LLAMA_CPP_API_URL="${LLAMA_CPP_API_URL:-http://llama-cpp:8080/v1/chat/completions}"
-LLAMA_CPP_MODEL="${LLAMA_CPP_MODEL:-qwen3-4b-q4_k_m}"
+LLAMA_CPP_URL="${LLAMA_CPP_URL:-http://llama-cpp:8080}"
+LLAMA_CPP_API_URL="${LLAMA_CPP_API_URL:-${LLAMA_CPP_URL%/}/v1/chat/completions}"
+LLAMA_CPP_MODEL="${LLAMA_CPP_MODEL:-qwen3.5-9b-q5_k_m}"
 LLAMA_CPP_MAX_TOKENS="${LLAMA_CPP_MAX_TOKENS:-768}"
+CHUNK_RETRY_ATTEMPTS="${CHUNK_RETRY_ATTEMPTS:-3}"
+CHUNK_RETRY_DELAY_SECONDS="${CHUNK_RETRY_DELAY_SECONDS:-2}"
+FAILED_RETRY_HOURS="${FAILED_RETRY_HOURS:-24}"
+case "$CHUNK_RETRY_ATTEMPTS:$CHUNK_RETRY_DELAY_SECONDS:$FAILED_RETRY_HOURS" in
+    *[!0-9:]*|0:*) echo "FATAL: Translation retry settings must be non-negative integers and attempts must be at least 1." >&2; exit 2 ;;
+esac
 SOURCE_LANG="${SOURCE_LANG:-en}"
-CHUNK_SIZE="${CHUNK_SIZE:-5}"
+# Cue alignment is a correctness boundary, not a tuning knob. Multi-cue
+# requests let small models merge or shift dialogue between timestamps.
+CHUNK_SIZE=1
 LOG_FILE="${LOG_FILE:-/app/data/translation.log}"
 LIFETIME_STATS_FILE="${LIFETIME_STATS_FILE:-/app/data/translation_stats.env}"
 
@@ -39,11 +48,13 @@ source "${SCRIPT_DIR}/lib.sh" || { echo "FATAL: Cannot load lib.sh"; exit 1; }
 mkdir -p "$(dirname "$LOG_FILE")"
 prepare_log_file
 acquire_lock "/tmp/translation_backfill.lock"
+acquire_lock "/app/data/plexmind_media_mutation.lock"
+acquire_lock "/app/data/plexmind_gpu.lock"
 
 TEMP_JSON_PAYLOAD="/tmp/llama_cpp_payload.json"
 TEMP_RESPONSE_FILE="/tmp/llama_cpp_response.json"
 
-export TOTAL_FILES_SCANNED=0 TRANSLATIONS_PROCESSED=0 SKIPPED_EXISTING=0 SKIPPED_FAILED=0
+export TOTAL_FILES_SCANNED=0 TRANSLATIONS_PROCESSED=0 SKIPPED_EXISTING=0 SKIPPED_FAILED=0 FAILED_THIS_RUN=0
 export SESSION_PROCESSING_SECONDS=0
 FILES_SINCE_HEALTH_CHECK=0
 
@@ -59,9 +70,9 @@ LIFETIME_PROCESSING_SECONDS="${LIFETIME_PROCESSING_SECONDS:-0}"
 get_system_prompt() {
     local lang="$1"
     case "$lang" in
-        "zh")    echo "你是一位專業的字幕翻譯員。我會提供「先前的上下文 (請勿翻譯)」以及「需要翻譯的目標」。請只翻譯「需要翻譯的目標」部分為繁體中文。保留原始的時間戳記。不要輸出任何標籤或 Markdown。只輸出翻譯後的 SRT 區塊。" ;;
-        "es-MX") echo "Eres un traductor profesional. Te proporcionaré 'CONTEXTO PREVIO (NO TRADUCIR)' y 'OBJETIVO A TRADUCIR'. Traduce SOLO el 'OBJETIVO A TRADUCIR' al español de México. Conserva los marcadores de tiempo. NO devuelvas las etiquetas de instrucción ni Markdown. Devuelve solo los bloques SRT traducidos." ;;
-        *)       echo "You are a professional subtitle translator. Translate ONLY the 'TARGET TO TRANSLATE' block to $lang. Keep timestamps intact. Output raw translated SRT blocks only." ;;
+        "zh")    echo "你是專業字幕翻譯員。將一句英文字幕翻譯為精簡的繁體中文。只輸出翻譯後的對白；不要輸出編號、時間戳、標籤、解釋或 Markdown。" ;;
+        "es-MX") echo "Eres traductor profesional de subtítulos. Traduce una sola entrada al español de México de forma breve. Devuelve solamente el diálogo traducido: sin números, marcas de tiempo, etiquetas, explicaciones ni Markdown." ;;
+        *)       echo "Translate one subtitle cue to $lang. Output only the translated dialogue, without cue numbers, timestamps, labels, explanations, or Markdown." ;;
     esac
 }
 
@@ -86,7 +97,7 @@ cleanup() {
     LIFETIME_SCANNED=$((LIFETIME_SCANNED + TOTAL_FILES_SCANNED))
     LIFETIME_PROCESSED=$((LIFETIME_PROCESSED + TRANSLATIONS_PROCESSED))
     LIFETIME_SKIPPED_EXISTING=$((LIFETIME_SKIPPED_EXISTING + SKIPPED_EXISTING))
-    LIFETIME_SKIPPED_FAILED=$((LIFETIME_SKIPPED_FAILED + SKIPPED_FAILED))
+    LIFETIME_SKIPPED_FAILED=$((LIFETIME_SKIPPED_FAILED + SKIPPED_FAILED + FAILED_THIS_RUN))
     LIFETIME_PROCESSING_SECONDS=$((LIFETIME_PROCESSING_SECONDS + SESSION_PROCESSING_SECONDS))
 
     cat <<EOF > "$LIFETIME_STATS_FILE"
@@ -99,11 +110,13 @@ EOF
 
     echo ""
     log "========================================================="
-    log "Translation Session: Scanned:${TOTAL_FILES_SCANNED} Done:${TRANSLATIONS_PROCESSED} Skip-Exist:${SKIPPED_EXISTING} Skip-Fail:${SKIPPED_FAILED}"
+    log "Translation Session: Scanned:${TOTAL_FILES_SCANNED} Done:${TRANSLATIONS_PROCESSED} Skip-Exist:${SKIPPED_EXISTING} New-Fail:${FAILED_THIS_RUN} Deferred-Fail:${SKIPPED_FAILED}"
     log "Lifetime Total: ${LIFETIME_PROCESSED}"
     log "========================================================="
     rm -f "$TEMP_JSON_PAYLOAD" "$TEMP_RESPONSE_FILE" /tmp/translation_backfill.pid 2>/dev/null
-    stop_docker_container "llama.cpp" "${LLAMA_CPP_CONTAINER_NAME:-}" llama-cpp plexmind-llama-cpp
+    if [ "${MANAGE_LLAMA_CPP_CONTAINER:-0}" = "1" ]; then
+        stop_docker_container "llama.cpp" "${LLAMA_CPP_CONTAINER_NAME:-llama-cpp}"
+    fi
 }
 trap cleanup EXIT
 
@@ -134,7 +147,11 @@ calculate_pending_jobs() {
         BASENAME_NO_EXT=$(basename "$SUB_FILE" | sed -E "s/\.${SOURCE_LANG}(\.hi|\.sdh)?\.srt$//I" | sed -E "s/(\.hi|\.sdh)\.${SOURCE_LANG}\.srt$//I")
 
         for TL in "${TARGET_LANGUAGES[@]}"; do
-            [ -f "${DIR_PATH}/${BASENAME_NO_EXT}.${TL}.failed" ] && continue
+            local marker="${DIR_PATH}/${BASENAME_NO_EXT}.${TL}.failed"
+            if [ -f "$marker" ]; then
+                local marker_age=$(( $(date +%s) - $(stat -c %Y "$marker" 2>/dev/null || echo 0) ))
+                [ "$marker_age" -lt $((FAILED_RETRY_HOURS * 3600)) ] && continue
+            fi
             shopt -s nullglob nocaseglob
             local EX=( "${DIR_PATH}/${BASENAME_NO_EXT}"*.${TL}.srt "${DIR_PATH}/${BASENAME_NO_EXT}.${TL}"*.srt )
             shopt -u nullglob nocaseglob
@@ -157,36 +174,72 @@ calculate_pending_jobs() {
 
 # --- TRANSLATE CHUNK ---
 translate_chunk() {
-    local prev_chunk="$1" curr_chunk="$2" sys_prompt="$3"
-    local user_message="/no_think\n"
-    [ -n "$prev_chunk" ] && user_message+="[PREVIOUS CONTEXT (DO NOT TRANSLATE)]\n${prev_chunk}\n"
-    user_message+="[TARGET TO TRANSLATE]\n${curr_chunk}"
+    local _prev_chunk="$1" curr_chunk="$2" sys_prompt="$3" diagnostic_key="$4" target_lang="$5"
+    local cue_id cue_timestamp source_dialogue previous_dialogue=""
+    cue_id=$(printf '%s\n' "$curr_chunk" | sed -n '1p')
+    cue_timestamp=$(printf '%s\n' "$curr_chunk" | sed -n '2p')
+    source_dialogue=$(printf '%s\n' "$curr_chunk" | sed '1,2d')
+    [ -z "$_prev_chunk" ] || previous_dialogue=$(printf '%s\n' "$_prev_chunk" | sed '1,2d')
+    local user_message="$source_dialogue"
 
-    jq -n --arg model "$LLAMA_CPP_MODEL" --arg sys "$sys_prompt" --arg user_msg "$user_message" --argjson max_tokens "$LLAMA_CPP_MAX_TOKENS" \
-        '{model: $model, stream: false, temperature: 0.1, max_tokens: $max_tokens, messages: [{role: "system", content: $sys}, {role: "user", content: $user_msg}]}' \
-        > "$TEMP_JSON_PAYLOAD"
+    local attempt HTTP_STATUS CURL_EXIT finish_reason translated_file="/tmp/llama_translated_$$.txt"
+    for attempt in $(seq 1 "$CHUNK_RETRY_ATTEMPTS"); do
+        local retry_instruction=""
+        [ "$attempt" -gt 1 ] && retry_instruction=" Previous output was invalid or untranslated. Return only a non-empty translation of the supplied dialogue in the requested target language."
+        local contextual_prompt="${sys_prompt}${retry_instruction}"
+        if [ -n "$previous_dialogue" ]; then
+            contextual_prompt+=$'\nThe previous source cue is context only. Do not translate or repeat it:\n'"${previous_dialogue}"
+        fi
+        jq -n --arg model "$LLAMA_CPP_MODEL" --arg sys "$contextual_prompt" --arg user_msg "$user_message" --argjson max_tokens "$LLAMA_CPP_MAX_TOKENS" \
+            '{model: $model, stream: false, temperature: 0.1, max_tokens: $max_tokens, chat_template_kwargs: {enable_thinking: false}, messages: [{role: "system", content: $sys}, {role: "user", content: $user_msg}]}' \
+            > "$TEMP_JSON_PAYLOAD"
 
-    local HTTP_STATUS
-    HTTP_STATUS=$(curl -s -w "%{http_code}" -o "$TEMP_RESPONSE_FILE" \
-        --connect-timeout 30 --max-time 600 \
-        -X POST -H "Content-Type: application/json" \
-        -d @"$TEMP_JSON_PAYLOAD" "${LLAMA_CPP_API_URL}")
-    local CURL_EXIT=$?
+        HTTP_STATUS=$(curl -s -w "%{http_code}" -o "$TEMP_RESPONSE_FILE" \
+            --connect-timeout 30 --max-time 600 -X POST -H "Content-Type: application/json" \
+            -d @"$TEMP_JSON_PAYLOAD" "${LLAMA_CPP_API_URL}")
+        CURL_EXIT=$?
+        if [ "$CURL_EXIT" -eq 0 ] && [ "$HTTP_STATUS" = "200" ]; then
+            jq -r '.choices[0].message.content // empty' < "$TEMP_RESPONSE_FILE" \
+                | sed '/^```/d; /^\[TARGET TO TRANSLATE\]/d; /^\[PREVIOUS CONTEXT/d' > "$translated_file"
+            finish_reason=$(jq -r '.choices[0].finish_reason // "unknown"' < "$TEMP_RESPONSE_FILE")
+            if python3 - "$source_dialogue" "$translated_file" "$target_lang" <<'PYEOF'
+import re, sys
+source, output_path, lang = sys.argv[1], sys.argv[2], sys.argv[3]
+output = open(output_path, encoding="utf-8", errors="strict").read().strip()
+if not output or "-->" in output or re.search(r"(?im)^\s*```|</?think>|\[(?:target|previous context)", output):
+    raise SystemExit(1)
+if re.search(r"(?m)^\s*\d+\s*$", output):
+    raise SystemExit(1)
+letters = re.findall(r"[A-Za-z]", source)
+if lang == "zh" and letters and not re.search(r"[\u3400-\u9fff]", output):
+    raise SystemExit(1)
+src_words = re.findall(r"[A-Za-z]+", source.casefold())
+out_words = re.findall(r"[A-Za-z]+", output.casefold())
+if len(src_words) >= 2 and src_words == out_words:
+    raise SystemExit(1)
+PYEOF
+            then
+                printf '%s\n%s\n' "$cue_id" "$cue_timestamp"
+                cat "$translated_file"
+                printf '\n\n'
+                rm -f "$translated_file"
+                return 0
+            fi
+            log "WARNING: Invalid SRT structure on chunk attempt ${attempt}/${CHUNK_RETRY_ATTEMPTS} (finish=${finish_reason})." >&2
+        else
+            log "WARNING: llama.cpp request failed on chunk attempt ${attempt}/${CHUNK_RETRY_ATTEMPTS} (curl=${CURL_EXIT}, HTTP=${HTTP_STATUS:-none})." >&2
+        fi
+        [ "$attempt" -lt "$CHUNK_RETRY_ATTEMPTS" ] && sleep "$CHUNK_RETRY_DELAY_SECONDS"
+    done
 
-    if [ $CURL_EXIT -ne 0 ]; then log "ERROR: curl exit $CURL_EXIT"; return 1; fi
-    if [ "$HTTP_STATUS" != "200" ]; then log "ERROR: llama.cpp HTTP $HTTP_STATUS"; return 1; fi
-
-    local TRANSLATED
-    TRANSLATED=$(jq -r '.choices[0].message.content // empty' < "$TEMP_RESPONSE_FILE")
-    TRANSLATED=$(echo "$TRANSLATED" | sed '/^```/d' | sed '/^\[TARGET TO TRANSLATE\]/d' | sed '/^\[PREVIOUS CONTEXT/d')
-
-    if ! echo "$TRANSLATED" | grep -qF -- '-->'; then
-        log "ERROR: Chunk has no SRT timestamps — hallucinated prose."
-        return 1
-    fi
-
-    echo "$TRANSLATED"; echo ""
-    return 0
+    local diagnostic_dir="${DATA_DIR:-/app/data}/translation-failures"
+    mkdir -p "$diagnostic_dir"
+    jq '{finish_reason: (.choices[0].finish_reason // null), content: (.choices[0].message.content // null), error: (.error // null)}' \
+        "$TEMP_RESPONSE_FILE" > "${diagnostic_dir}/${diagnostic_key}.json" 2>/dev/null || true
+    chmod 600 "${diagnostic_dir}/${diagnostic_key}.json" 2>/dev/null || true
+    rm -f "$translated_file"
+    log "ERROR: Chunk failed structural validation after ${CHUNK_RETRY_ATTEMPTS} attempts; diagnostic=${diagnostic_key}.json" >&2
+    return 1
 }
 
 # --- PROCESS SUBTITLE ---
@@ -202,7 +255,14 @@ process_subtitle() {
     local FINAL_OUTPUT_FILE="${DIR_PATH}/${BASENAME_NO_EXT}.${TARGET_LANG}.srt"
     local FAILED_MARKER_FILE="${DIR_PATH}/${BASENAME_NO_EXT}.${TARGET_LANG}.failed"
 
-    if [ -f "$FAILED_MARKER_FILE" ]; then SKIPPED_FAILED=$((SKIPPED_FAILED+1)); return; fi
+    if [ -f "$FAILED_MARKER_FILE" ]; then
+        local marker_age=$(( $(date +%s) - $(stat -c %Y "$FAILED_MARKER_FILE" 2>/dev/null || echo 0) ))
+        if [ "$marker_age" -lt $((FAILED_RETRY_HOURS * 3600)) ]; then
+            SKIPPED_FAILED=$((SKIPPED_FAILED+1)); return
+        fi
+        log "RETRY: Expired failure marker for $(basename "$SOURCE_FILE") [${TARGET_LANG}]."
+        rm -f "$FAILED_MARKER_FILE"
+    fi
 
     shopt -s nullglob nocaseglob
     local EX=( "${DIR_PATH}/${BASENAME_NO_EXT}"*.${TARGET_LANG}.srt "${DIR_PATH}/${BASENAME_NO_EXT}.${TARGET_LANG}"*.srt )
@@ -211,7 +271,7 @@ process_subtitle() {
 
     # Health check
     FILES_SINCE_HEALTH_CHECK=$((FILES_SINCE_HEALTH_CHECK + 1))
-    if [ $FILES_SINCE_HEALTH_CHECK -ge $HEALTH_CHECK_INTERVAL ]; then
+    if [ "$FILES_SINCE_HEALTH_CHECK" -ge "$HEALTH_CHECK_INTERVAL" ]; then
         health_check_llama_cpp || { log "FATAL: llama.cpp unrecoverable."; exit 1; }
         FILES_SINCE_HEALTH_CHECK=0
     fi
@@ -220,8 +280,11 @@ process_subtitle() {
     log "Translating to [${TARGET_LANG}]: $(basename "$SOURCE_FILE")"
 
     local TEMP_FINAL_FILE="${DIR_PATH}/${BASENAME_NO_EXT}.${TARGET_LANG}.temp"
-    > "$TEMP_FINAL_FILE"
-    local START_JOB_TIME=$(date +%s)
+    local CHECKPOINT_FILE="${TEMP_FINAL_FILE}.checkpoint"
+    local SOURCE_SIGNATURE
+    SOURCE_SIGNATURE="cue-v3-context:$(stat -c '%s:%Y' "$SOURCE_FILE")"
+    local START_JOB_TIME
+    START_JOB_TIME=$(date +%s)
 
     # Structural chunk splitting via Python
     local total_blocks
@@ -255,35 +318,61 @@ PYEOF
         return
     fi
 
-    local previous_chunk=""
-    draw_progress 0 "$total_chunks"
+    local previous_chunk="" resume_chunk=0
+    if [ -s "$TEMP_FINAL_FILE" ] && [ -f "$CHECKPOINT_FILE" ]; then
+        local checkpoint_signature=""
+        read -r checkpoint_signature resume_chunk < "$CHECKPOINT_FILE" || true
+        if [ "$checkpoint_signature" != "$SOURCE_SIGNATURE" ] || ! [[ "$resume_chunk" =~ ^[0-9]+$ ]]; then
+            resume_chunk=0; rm -f "$TEMP_FINAL_FILE" "$CHECKPOINT_FILE"
+        else
+            log "RESUME: Continuing at chunk ${resume_chunk}/${total_chunks}."
+        fi
+    fi
+    [ "$resume_chunk" -eq 0 ] && true > "$TEMP_FINAL_FILE"
+    draw_progress "$resume_chunk" "$total_chunks"
+    local chunk_index=0
     for cf in $chunk_files; do
         local cc
         cc=$(cat "$cf")
-        if ! translate_chunk "$previous_chunk" "$cc" "$SYSTEM_PROMPT" >> "$TEMP_FINAL_FILE"; then
+        if [ "$chunk_index" -lt "$resume_chunk" ]; then
+            previous_chunk="$cc"; chunk_index=$((chunk_index+1)); continue
+        fi
+        local diagnostic_key
+        diagnostic_key=$(printf '%s-%s-%05d' "$(printf '%s' "${SOURCE_FILE}:${TARGET_LANG}" | sha256sum | cut -c1-16)" "$TARGET_LANG" "$chunk_index")
+        if ! translate_chunk "$previous_chunk" "$cc" "$SYSTEM_PROMPT" "$diagnostic_key" "$TARGET_LANG" >> "$TEMP_FINAL_FILE"; then
             chunk_success=false; break
         fi
-        ((processed_chunks++))
+        processed_chunks=$((chunk_index+1))
+        printf '%s %s\n' "$SOURCE_SIGNATURE" "$processed_chunks" > "$CHECKPOINT_FILE"
         draw_progress "$processed_chunks" "$total_chunks"
         previous_chunk="$cc"
+        chunk_index=$((chunk_index+1))
     done
     rm -rf "$CHUNK_DIR"
     echo ""
 
     if [[ "$chunk_success" == true && -s "$TEMP_FINAL_FILE" ]]; then
-        if grep -q -- "-->" "$TEMP_FINAL_FILE"; then
+        if python3 - "$SOURCE_FILE" "$TEMP_FINAL_FILE" <<'PYEOF'
+import re, sys
+pattern = re.compile(r"^\s*(\d{2}:\d{2}:\d{2},\d{3}\s+-->\s+\d{2}:\d{2}:\d{2},\d{3})\s*$", re.M)
+source = open(sys.argv[1], encoding="utf-8", errors="replace").read()
+output = open(sys.argv[2], encoding="utf-8", errors="replace").read()
+raise SystemExit(0 if pattern.findall(source) and pattern.findall(output) == pattern.findall(source) else 1)
+PYEOF
+        then
             verify_encoding "$TEMP_FINAL_FILE"
             normalize_timestamps "$TEMP_FINAL_FILE" >/dev/null
 
             mv "$TEMP_FINAL_FILE" "$FINAL_OUTPUT_FILE"
+            rm -f "$CHECKPOINT_FILE" "$FAILED_MARKER_FILE"
             log "SUCCESS: ${TARGET_LANG} translation complete."
             TRANSLATIONS_PROCESSED=$((TRANSLATIONS_PROCESSED+1))
             SESSION_PROCESSING_SECONDS=$(( SESSION_PROCESSING_SECONDS + $(date +%s) - START_JOB_TIME ))
         else
-            log "ERROR: Invalid SRT."; rm -f "$TEMP_FINAL_FILE"; touch "$FAILED_MARKER_FILE"
+            log "ERROR: Complete translation does not preserve every source timestamp; partial output retained."; FAILED_THIS_RUN=$((FAILED_THIS_RUN+1)); touch "$FAILED_MARKER_FILE"
         fi
     else
-        log "ERROR: Chunk failure."; rm -f "$TEMP_FINAL_FILE"; touch "$FAILED_MARKER_FILE"
+        log "ERROR: Chunk failure; partial output retained for resume."; FAILED_THIS_RUN=$((FAILED_THIS_RUN+1)); touch "$FAILED_MARKER_FILE"
     fi
 }
 
@@ -291,13 +380,13 @@ PYEOF
 # MAIN
 # ==============================================================================
 log "========================================================="
-log "Translation Backfill v0.8.18 (containerized)"
+log "Translation Backfill v0.8.20 (containerized)"
 log "Schedule: launched by PlexMind; max runtime: ${MAX_RUNTIME_MINUTES:-0}m; retention: ${LOG_RETENTION_DAYS}d; RUN_NOW=${RUN_NOW}"
 log "========================================================="
 check_dependencies curl jq python3
 
 # Wait for PlexMind to finish if it's holding the GPU
-PLEXMIND_SENTINEL="/tmp/plexmind.running"
+PLEXMIND_SENTINEL="/app/data/plexmind.running"
 if [ -f "$PLEXMIND_SENTINEL" ]; then
     log "PlexMind is running — waiting before using llama.cpp..."
     while [ -f "$PLEXMIND_SENTINEL" ]; do
@@ -307,13 +396,28 @@ if [ -f "$PLEXMIND_SENTINEL" ]; then
     log "PlexMind finished — proceeding."
 fi
 
-start_docker_container "llama.cpp" "${LLAMA_CPP_CONTAINER_NAME:-}" llama-cpp plexmind-llama-cpp
-
-if ! curl -s --connect-timeout 5 "${LLAMA_CPP_API_URL%/v1/chat/completions}/v1/models" >/dev/null; then
-    log "ERROR: llama.cpp not responding."; exit 1
+ALL_MEDIA_DIRS=("${MOVIE_DIR}" "${TV_DIR}")
+validate_media_directories || exit 1
+if [ "${MANAGE_LLAMA_CPP_CONTAINER:-0}" = "1" ]; then
+    start_docker_container "llama.cpp" "${LLAMA_CPP_CONTAINER_NAME:-llama-cpp}" || exit 1
+else
+    log "llama.cpp lifecycle is externally managed; waiting for the configured endpoint."
 fi
 
-ALL_MEDIA_DIRS=("${MOVIE_DIR}" "${TV_DIR}")
+LLAMA_READY=0
+for LLAMA_ATTEMPT in $(seq 1 "${LLAMA_STARTUP_ATTEMPTS:-60}"); do
+    if curl -sS --fail --connect-timeout 3 --max-time 5 \
+        "${LLAMA_CPP_API_URL%/v1/chat/completions}/v1/models" >/dev/null 2>&1; then
+        LLAMA_READY=1
+        log "llama.cpp API ready after ${LLAMA_ATTEMPT} probe(s)."
+        break
+    fi
+    sleep "${LLAMA_STARTUP_INTERVAL_SECONDS:-2}"
+done
+if [ "$LLAMA_READY" -ne 1 ]; then
+    log "ERROR: llama.cpp did not become ready after ${LLAMA_STARTUP_ATTEMPTS:-60} probes."
+    exit 1
+fi
 calculate_pending_jobs
 
 while IFS= read -r -d '' SUB_FILE; do
@@ -332,4 +436,8 @@ if [ -f "${SCRIPT_DIR}/fix_srt_ordering.py" ]; then
     log "SRT ordering fix complete."
 fi
 
+if [ "$SKIPPED_FAILED" -gt 0 ] || [ "$FAILED_THIS_RUN" -gt 0 ]; then
+    log "COMPLETED_WITH_ERRORS: ${FAILED_THIS_RUN} new failure(s), ${SKIPPED_FAILED} deferred failure(s)."
+    exit 2
+fi
 exit 0

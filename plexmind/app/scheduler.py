@@ -12,6 +12,12 @@ import os
 import re
 import shutil
 import subprocess
+import fcntl
+import urllib.error
+import urllib.request
+import tempfile
+import threading
+import time
 from datetime import datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -36,6 +42,66 @@ log = logging.getLogger("plexmind.scheduler")
 
 scheduler = AsyncIOScheduler(timezone="UTC")
 _SCRIPT_LAST_WINDOW: dict[str, str] = {}
+SCHEDULE_STATE_PATH = DATA_DIR / "scheduler_state.json"
+_SCHEDULE_STATE_LOCK = threading.RLock()
+_SCRIPT_LAUNCHER = None
+_RECOMMENDATION_LAUNCHER = None
+
+
+def set_script_launcher(launcher) -> None:
+    """Install the authoritative script launcher supplied by the API control plane."""
+    global _SCRIPT_LAUNCHER
+    _SCRIPT_LAUNCHER = launcher
+
+
+def set_recommendation_launcher(launcher) -> None:
+    """Install the durable recommendation queue supplied by the API."""
+    global _RECOMMENDATION_LAUNCHER
+    _RECOMMENDATION_LAUNCHER = launcher
+
+
+def _load_schedule_state() -> dict:
+    with _SCHEDULE_STATE_LOCK:
+        try:
+            data = _json.loads(SCHEDULE_STATE_PATH.read_text())
+            if not isinstance(data, dict):
+                raise ValueError("scheduler state root is not an object")
+            return data
+        except FileNotFoundError:
+            return {}
+        except Exception as exc:
+            quarantine = SCHEDULE_STATE_PATH.with_name(
+                f"{SCHEDULE_STATE_PATH.name}.corrupt-{int(time.time())}"
+            )
+            try:
+                os.replace(SCHEDULE_STATE_PATH, quarantine)
+            except OSError:
+                pass
+            log.error("Scheduler state was quarantined as %s: %s", quarantine, exc)
+            return {"state_error": str(exc)}
+
+
+def _save_schedule_state(data: dict) -> None:
+    with _SCHEDULE_STATE_LOCK:
+        SCHEDULE_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile("w", dir=SCHEDULE_STATE_PATH.parent, delete=False) as handle:
+            tmp = handle.name
+            handle.write(_json.dumps(data, indent=2) + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, SCHEDULE_STATE_PATH)
+
+
+def configure_monthly(day: int, hour: int, minute: int) -> str | None:
+    scheduler.reschedule_job("monthly_recs", trigger=CronTrigger(
+        day=day, hour=hour, minute=minute, timezone="UTC"))
+    state = _load_schedule_state()
+    state["monthly"] = {"day": day, "hour": hour, "minute": minute}
+    state["window_receipts"] = dict(_SCRIPT_LAST_WINDOW)
+    _save_schedule_state(state)
+    job = scheduler.get_job("monthly_recs")
+    return job.next_run_time.isoformat() if job and job.next_run_time else None
 
 # Prevents simultaneous batch runs (from cron + API trigger racing each other)
 _run_lock = asyncio.Lock()
@@ -109,6 +175,8 @@ def recommendation_log_tail(lines: int = 200) -> str:
 
 
 def recommendation_log_status() -> dict:
+    from app import recommendation_jobs
+    queued = recommendation_jobs.active()
     try:
         stat = RECOMMENDATION_LOG_PATH.stat()
         log_meta = {"log_exists": True, "log_size": stat.st_size, "log_mtime": stat.st_mtime}
@@ -121,8 +189,10 @@ def recommendation_log_status() -> dict:
         "page": "recommendations",
         "description": "Generate and sync PlexMind recommendations for Plex users.",
         "destructive": False,
-        "running": _run_lock.locked(),
-        "pid": os.getpid() if _run_lock.locked() else None,
+        "running": bool(queued),
+        "pid": None,
+        "job_id": queued[0] if queued else None,
+        "queue_status": queued[1].get("status") if queued else None,
         "returncode": None,
         "log_file": str(RECOMMENDATION_LOG_PATH),
         "script_available": True,
@@ -154,9 +224,7 @@ def _script_window_key(now: datetime, start_hour: int, end_hour: int) -> str | N
     return None
 
 
-def _script_window_tick(job: str, title: str, start_hour: int, end_hour: int) -> None:
-    from app import script_runner
-
+async def _script_window_tick(job: str, title: str, start_hour: int, end_hour: int) -> None:
     now = datetime.now(_script_schedule_timezone())
     window_key = _script_window_key(now, start_hour, end_hour)
     if window_key is None:
@@ -172,19 +240,31 @@ def _script_window_tick(job: str, title: str, start_hour: int, end_hour: int) ->
 
     # Defer if GPU is already busy — retry on next tick rather than stacking load
     info = gpu_info()
-    if info["pct"] is not None and info["pct"] >= GPU_THRESHOLD_PCT:
+    if info["pct"] is None:
+        log.warning("%s scheduled launch deferred — GPU telemetry unavailable: %s", title, info.get("probe_error"))
+        return
+    if info["pct"] >= GPU_THRESHOLD_PCT:
         log.info(
             "%s scheduled launch deferred — GPU at %d%% (threshold %d%%).",
             title, info["pct"], GPU_THRESHOLD_PCT,
         )
         return
 
-    result = script_runner.start(job, {"run_now": True})
+    if _SCRIPT_LAUNCHER is None:
+        log.error("%s scheduled launch deferred — no authoritative script launcher is configured.", title)
+        return
+    try:
+        result = await _SCRIPT_LAUNCHER(job)
+    except Exception as exc:
+        log.error("%s scheduled launch failed through control plane: %s", title, exc)
+        return
     if result.get("status") == "started":
         _SCRIPT_LAST_WINDOW[job] = window_key
+        state = _load_schedule_state(); state["window_receipts"] = dict(_SCRIPT_LAST_WINDOW); _save_schedule_state(state)
         log.info("%s scheduled launch started for window %s.", title, window_key)
     elif result.get("status") == "already_running":
         _SCRIPT_LAST_WINDOW[job] = window_key
+        state = _load_schedule_state(); state["window_receipts"] = dict(_SCRIPT_LAST_WINDOW); _save_schedule_state(state)
         log.info("%s scheduled launch skipped because the job is already running.", title)
     else:
         log.warning("%s scheduled launch did not start: %s", title, result.get("detail", "unknown"))
@@ -198,97 +278,36 @@ def _parse_pct(value) -> int | None:
     return int(float(match.group(0))) if match else None
 
 
-def _docker_stream_text(raw: bytes) -> str:
-    """Decode Docker exec raw-stream frames into text."""
-    chunks: list[bytes] = []
-    pos = 0
-    while pos + 8 <= len(raw):
-        stream_type = raw[pos]
-        size = int.from_bytes(raw[pos + 4:pos + 8], "big")
-        next_pos = pos + 8 + size
-        if stream_type not in (1, 2) or raw[pos + 1:pos + 4] != b"\x00\x00\x00" or next_pos > len(raw):
-            break
-        chunks.append(raw[pos + 8:next_pos])
-        pos = next_pos
-    payload = b"".join(chunks) if chunks else raw
-    return payload.decode("utf-8", errors="replace")
-
-
 def _short_probe_error(message: str | None) -> str | None:
     if not message:
         return None
     return re.sub(r"\s+", " ", message).strip()[:220]
 
 
-def _docker_exec_probe(container: str, cmd: list[str]) -> tuple[str | None, str | None]:
-    """Run a short command in another container through the Docker socket."""
-    socket_path = os.getenv("DOCKER_SOCKET", "/var/run/docker.sock")
-    if not Path(socket_path).exists():
-        return None, f"Docker socket unavailable at {socket_path}"
-    if not shutil.which("curl"):
-        return None, "curl unavailable for Docker socket probe"
-
-    create_payload = _json.dumps({"AttachStdout": True, "AttachStderr": True, "Cmd": cmd})
-    try:
-        create = subprocess.run(
-            [
-                "curl", "-sS", "--max-time", "2", "--unix-socket", socket_path,
-                "-H", "Content-Type: application/json", "-X", "POST", "-d", create_payload,
-                f"http://docker/containers/{container}/exec",
-            ],
-            capture_output=True, text=True, timeout=3,
-        )
-        if create.returncode != 0:
-            return None, f"docker exec create failed for {container}: {create.stderr or create.stdout}"
-        exec_id = (_json.loads(create.stdout or "{}").get("Id") or "").strip()
-        if not exec_id:
-            return None, f"docker exec unavailable for {container}: {create.stdout}"
-
-        start_result = subprocess.run(
-            [
-                "curl", "-sS", "--max-time", "5", "--unix-socket", socket_path,
-                "-H", "Content-Type: application/json", "-X", "POST", "-d", "{\"Detach\":false,\"Tty\":false}",
-                f"http://docker/exec/{exec_id}/start",
-            ],
-            capture_output=True, timeout=6,
-        )
-        output = _docker_stream_text(start_result.stdout)
-        if start_result.returncode != 0:
-            return None, f"docker exec start failed for {container}: {output}"
-        return output, None
-    except Exception as exc:
-        return None, f"docker exec probe failed for {container}: {exc}"
-
-
-def _nvidia_info_from_docker() -> tuple[dict | None, str | None]:
+def _nvidia_info_from_broker() -> tuple[dict | None, str | None]:
+    broker = os.getenv("DOCKER_BROKER_URL", "").rstrip("/")
+    token = os.getenv("PLEXMIND_BROKER_TOKEN", "")
+    if not broker:
+        return None, "Docker broker is not configured"
     names = [os.getenv("LLAMA_CPP_CONTAINER_NAME", "llama-cpp")]
-    names.extend(os.getenv("GPU_PROBE_CONTAINERS", "llama-cpp,plexmind-llama-cpp").split(","))
-    seen: set[str] = set()
+    names.extend(os.getenv("GPU_PROBE_CONTAINERS", "llama-cpp").split(","))
     errors: list[str] = []
-    for raw_name in names:
-        name = raw_name.strip()
-        if not name or name in seen:
-            continue
-        seen.add(name)
-        output, error = _docker_exec_probe(
-            name,
-            ["nvidia-smi", "--query-gpu=utilization.gpu", "--format=csv,noheader,nounits"],
+    for name in dict.fromkeys(n.strip() for n in names if n.strip()):
+        request = urllib.request.Request(
+            f"{broker}/containers/{name}/gpu",
+            headers={"X-Broker-Token": token},
         )
-        if error:
-            errors.append(error)
-        if not output:
-            continue
-        lines = [line.strip() for line in output.splitlines() if line.strip()]
-        pcts = [_parse_pct(line) for line in lines]
-        valid = [pct for pct in pcts if pct is not None]
-        if valid:
-            return {
-                "vendor": "nvidia",
-                "pct": int(sum(valid) / len(valid)),
-                "source": f"docker:{name}",
-                "probe_error": None,
-            }, None
-        errors.append(f"docker:{name} returned no parseable nvidia-smi utilization")
+        try:
+            with urllib.request.urlopen(request, timeout=5) as response:
+                payload = _json.loads(response.read().decode("utf-8"))
+            pct = _parse_pct(payload.get("utilization_pct"))
+            if pct is not None:
+                return {"vendor": "nvidia", "pct": pct, "source": f"broker:{name}", "probe_error": None,
+                        "name": payload.get("name"), "memory_total_mb": payload.get("memory_total_mb"),
+                        "memory_free_mb": payload.get("memory_free_mb")}, None
+            errors.append(f"broker:{name} returned no utilization")
+        except (urllib.error.URLError, TimeoutError, OSError, ValueError) as exc:
+            errors.append(f"broker:{name} failed: {exc}")
     return None, _short_probe_error("; ".join(errors))
 
 
@@ -362,11 +381,11 @@ def gpu_info() -> dict:
     else:
         errors.append("local:rocm-smi unavailable")
 
-    docker_nvidia, docker_error = _nvidia_info_from_docker()
-    if docker_nvidia is not None:
-        return docker_nvidia
-    if docker_error:
-        errors.append(docker_error)
+    broker_nvidia, broker_error = _nvidia_info_from_broker()
+    if broker_nvidia is not None:
+        return broker_nvidia
+    if broker_error:
+        errors.append(broker_error)
 
     return {"vendor": None, "pct": None, "source": "none", "probe_error": _short_probe_error("; ".join(errors))}
 
@@ -383,8 +402,10 @@ async def _wait_for_idle_gpu() -> None:
         vendor = info["vendor"]
         label = vendor.upper() if vendor else "GPU"
         if util is None:
-            log.info("GPU utilization tools unavailable — assuming GPU is idle, proceeding.")
-            return
+            raise RuntimeError(
+                f"GPU telemetry unavailable; refusing to assume idle: "
+                f"{info.get('probe_error') or 'unknown probe failure'}"
+            )
         if util < GPU_THRESHOLD_PCT:
             log.info("%s at %d%% — below threshold (%d%%), starting run.", label, util, GPU_THRESHOLD_PCT)
             return
@@ -426,10 +447,22 @@ async def run_all_users(triggered_by: str = "scheduler", on_progress=None) -> di
         return result
 
     async with _run_lock:
-        return await _do_run_all_users(triggered_by, on_progress)
+        lock_path = DATA_DIR / "plexmind_gpu.lock"
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        with lock_path.open("w") as gpu_lock:
+            try:
+                fcntl.flock(gpu_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                result = {"triggered_by": triggered_by, "timestamp": datetime.utcnow().isoformat(),
+                          "summary": {"ok": 0, "skipped": 1, "errors": 0, "total": 0},
+                          "details": [], "skipped_reason": "gpu_resource_owned_by_media_job"}
+                if on_progress:
+                    await on_progress({"type": "already_running", "owner": "media_job"})
+                return result
+            return await _do_run_all_users(triggered_by, on_progress)
 
 
-SENTINEL_PATH = "/tmp/plexmind.running"
+SENTINEL_PATH = str(DATA_DIR / "plexmind.running")
 
 
 async def _do_run_all_users(triggered_by: str, on_progress=None) -> dict:
@@ -501,13 +534,16 @@ async def _do_run_all_users(triggered_by: str, on_progress=None) -> dict:
                     sync_result = plex_sync.sync_to_plex(uid, username, recs,
                                                           user_token=user_token)
                     mode = sync_result.get("mode", "?")
-                    if mode in ("playlist", "watchlist"):
+                    if mode in ("playlist", "watchlist", "playlist_partial", "watchlist_partial"):
                         detail = (f"matched={sync_result.get('matched', 0)} "
                                   f"unmatched={len(sync_result.get('unmatched', []))}")
                     else:
                         detail = sync_result.get("error", sync_result.get("reason", "noop"))
                     log.info("  %s → %d recs [%s] %s", username, len(recs), mode, detail)
-                    entry = {"user": username, "status": "ok", "recs": len(recs), "sync": sync_result}
+                    sync_status = "error" if mode.endswith("_error") or mode.endswith("_partial") else "ok"
+                    entry = {"user": username, "status": sync_status, "recs": len(recs), "sync": sync_result}
+                    if sync_status == "error":
+                        entry["error"] = f"Plex sync incomplete: {mode}"
                 else:
                     entry = {"user": username, "status": "ok", "recs": 0}
                 results.append(entry)
@@ -558,10 +594,15 @@ async def _do_run_all_users(triggered_by: str, on_progress=None) -> dict:
 
 def start(app=None) -> None:
     """Start the APScheduler. Call from FastAPI lifespan."""
+    global _SCRIPT_LAST_WINDOW
     script_tz = _script_schedule_timezone()
+    persisted = _load_schedule_state()
+    _SCRIPT_LAST_WINDOW = dict(persisted.get("window_receipts") or {})
+    monthly = persisted.get("monthly") or {"day": 1, "hour": 3, "minute": 0}
     scheduler.add_job(
         _scheduled_run,
-        CronTrigger(day=1, hour=3, minute=0, timezone="UTC"),
+        CronTrigger(day=int(monthly["day"]), hour=int(monthly["hour"]),
+                    minute=int(monthly["minute"]), timezone="UTC"),
         id="monthly_recs",
         replace_existing=True,
         misfire_grace_time=3600,  # allow up to 1h late start
@@ -605,4 +646,7 @@ def stop() -> None:
 
 
 async def _scheduled_run() -> None:
-    await run_all_users(triggered_by="monthly_cron")
+    if _RECOMMENDATION_LAUNCHER is None:
+        log.error("Monthly recommendation run was not queued: no durable launcher configured")
+        return
+    _RECOMMENDATION_LAUNCHER("monthly_cron")

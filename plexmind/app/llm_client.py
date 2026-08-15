@@ -18,7 +18,7 @@ LLAMA_CPP_URL = os.getenv("LLAMA_CPP_URL", "http://localhost:11435")
 LLAMA_CPP_MODEL = (
     os.getenv("LLAMA_CPP_MODEL")
     or os.getenv("LLAMA_CPP_MODEL_ALIAS")
-    or "qwen3-4b-q4_k_m"
+    or "qwen3.5-9b-q5_k_m"
 )
 REQUEST_TIMEOUT = 180  # seconds
 MAX_TOKENS = int(os.getenv("LLAMA_CPP_MAX_TOKENS", "768"))
