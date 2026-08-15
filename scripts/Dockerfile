@@ -11,7 +11,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 COPY lib.sh transcribe.sh translate.sh maintenance.sh watermark.sh stop-job.sh \
-     control_server.py fix_srt_ordering.py entrypoint.sh ./
+     control_server.py fix_srt_ordering.py repair_srt_timestamps.py entrypoint.sh ./
 
 RUN chmod +x *.sh
 

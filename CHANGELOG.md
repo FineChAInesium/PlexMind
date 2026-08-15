@@ -24,6 +24,9 @@
 
 ## Unreleased
 
+- Accept short invariant translations while rejecting substantial unchanged dialogue, and record cue-level rejection diagnostics without duplicate log lines.
+- Validate library SRT files with a strict timestamp parser, distinguish structural audits from generated-output quality policy, and add an atomic timestamp repair utility with original-file archives.
+- Preserve intentional job stops as interrupted runs and use durable absolute paths for recommendation-worker state.
 - Keep the PlexMind API card online during jobs by separating `/health/live` reachability from slower dependency health.
 - Populate the Whisper model dropdown from models actually present in the mounted local cache, and disable transcription when the configured model is unavailable.
 - Remove unwired language-detection and re-translate toggles, and clarify the destructive duplicate-subtitle action label.

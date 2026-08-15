@@ -15,6 +15,7 @@ import tempfile
 import uuid
 import fcntl
 from contextlib import contextmanager
+from pathlib import Path
 from threading import RLock
 
 from dotenv import load_dotenv
@@ -25,7 +26,10 @@ load_dotenv()
 
 PLEX_URL = os.getenv("PLEX_URL", "http://localhost:32400")
 PLEX_TOKEN = os.getenv("PLEX_TOKEN", "")
-WATCHLIST_TRACK_FILE = os.getenv("WATCHLIST_TRACK_FILE", "data/watchlist_track.json")
+WATCHLIST_TRACK_FILE = os.getenv(
+    "WATCHLIST_TRACK_FILE",
+    str(Path(os.getenv("DATA_DIR", "/app/data")) / "watchlist_track.json"),
+)
 PLAYLIST_MOVIES = "PlexMind Movies"
 PLAYLIST_TV = "PlexMind TV Pilot"
 

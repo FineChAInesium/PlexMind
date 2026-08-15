@@ -14,6 +14,42 @@ LOG_FILE=""
 source "$ROOT_DIR/scripts/lib.sh"
 validate_media_directories
 
+cat > "$TEMP_ROOT/arrow-dialogue.srt" <<'EOF'
+1
+00:00:01,000 --> 00:00:03,000
+Workflow: input --> output
+
+2
+00:00:04,000 --> 00:00:06,000
+Second cue
+
+3
+00:00:07,000 --> 00:00:09,000
+Third cue
+
+4
+00:00:10,000 --> 00:00:12,000
+Fourth cue
+
+5
+00:00:13,000 --> 00:00:15,000
+Fifth cue
+EOF
+validate_srt "$TEMP_ROOT/arrow-dialogue.srt"
+
+ASCII_MTIME=$(stat -c %Y "$TEMP_ROOT/arrow-dialogue.srt")
+verify_encoding "$TEMP_ROOT/arrow-dialogue.srt"
+[ "$(stat -c %Y "$TEMP_ROOT/arrow-dialogue.srt")" = "$ASCII_MTIME" ] || {
+    echo "ASCII subtitle was unnecessarily rewritten" >&2
+    exit 1
+}
+
+sed 's/00:00:15,000/00:00:12,000/' "$TEMP_ROOT/arrow-dialogue.srt" > "$TEMP_ROOT/non-positive.srt"
+if validate_srt "$TEMP_ROOT/non-positive.srt"; then
+    echo "non-positive timestamp was incorrectly accepted" >&2
+    exit 1
+fi
+
 MOVIE_DIR="$TEMP_ROOT/missing"
 if validate_media_directories; then
     echo "missing media root was incorrectly accepted" >&2

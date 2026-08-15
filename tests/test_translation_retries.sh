@@ -12,6 +12,17 @@ cat > "$FIXTURE/movies/Film/Film.en.srt" <<'EOF'
 Hello there.
 EOF
 
+mkdir -p "$FIXTURE/movies/Invariant"
+cat > "$FIXTURE/movies/Invariant/Invariant.en.srt" <<'EOF'
+1
+00:00:01,000 --> 00:00:03,000
+Frida Kahlo.
+
+2
+00:00:04,000 --> 00:00:06,000
+No, no.
+EOF
+
 cat > "$FIXTURE/bin/curl" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -27,7 +38,10 @@ if [ -z "$out" ]; then printf '{"data":[]}'; exit 0; fi
 count_file="${MOCK_COUNT_FILE}"
 count=$(( $(cat "$count_file" 2>/dev/null || echo 0) + 1 ))
 printf '%s\n' "$count" > "$count_file"
-if { [ "${MOCK_FAIL_AFTER:-0}" -gt 0 ] && [ "$count" -gt "$MOCK_FAIL_AFTER" ]; } || { [ "${MOCK_FAIL_AFTER:-0}" -eq 0 ] && [ "$count" -eq 1 ]; }; then
+if [ "${MOCK_INVARIANT:-0}" = 1 ]; then
+  case "$count" in 1) content='Frida Kahlo.' ;; *) content='No, no.' ;; esac
+  printf '%s' "{\"choices\":[{\"finish_reason\":\"stop\",\"message\":{\"content\":\"$content\"}}]}" > "$out"
+elif { [ "${MOCK_FAIL_AFTER:-0}" -gt 0 ] && [ "$count" -gt "$MOCK_FAIL_AFTER" ]; } || { [ "${MOCK_FAIL_AFTER:-0}" -eq 0 ] && [ "$count" -eq 1 ]; }; then
   printf '%s' '{"choices":[{"finish_reason":"stop","message":{"content":"2\nUntranslated."}}]}' > "$out"
 else
   printf '%s' '{"choices":[{"finish_reason":"stop","message":{"content":"Hola."}}]}' > "$out"
@@ -37,7 +51,7 @@ EOF
 chmod +x "$FIXTURE/bin/curl"
 
 env PATH="$FIXTURE/bin:$PATH" MOCK_COUNT_FILE="$FIXTURE/count" \
-  MOVIE_DIR="$FIXTURE/movies" TV_DIR="$FIXTURE/tv" DATA_DIR="$FIXTURE/data" \
+  MOVIE_DIR="$FIXTURE/movies/Film" TV_DIR="$FIXTURE/tv" DATA_DIR="$FIXTURE/data" \
   LOG_FILE="$FIXTURE/data/translation.log" LIFETIME_STATS_FILE="$FIXTURE/data/stats.env" \
   TARGET_LANGUAGES=es-MX RUN_NOW=1 MAX_RUNTIME_MINUTES=0 MANAGE_LLAMA_CPP_CONTAINER=0 \
   CHUNK_RETRY_ATTEMPTS=3 CHUNK_RETRY_DELAY_SECONDS=0 FAILED_RETRY_HOURS=24 \
@@ -52,6 +66,17 @@ grep -qF 'Hola.' "$output"
 ! find "$FIXTURE/movies" -name '*.failed' -print -quit | grep -q .
 ! find "$FIXTURE/movies" -name '*.checkpoint' -print -quit | grep -q .
 
+rm -f "$FIXTURE/count"
+env PATH="$FIXTURE/bin:$PATH" MOCK_COUNT_FILE="$FIXTURE/count" MOCK_INVARIANT=1 \
+  MOVIE_DIR="$FIXTURE/movies/Invariant" TV_DIR="$FIXTURE/tv" DATA_DIR="$FIXTURE/data" \
+  LOG_FILE="$FIXTURE/data/invariant.log" LIFETIME_STATS_FILE="$FIXTURE/data/invariant-stats.env" \
+  TARGET_LANGUAGES=es-MX RUN_NOW=1 MAX_RUNTIME_MINUTES=0 MANAGE_LLAMA_CPP_CONTAINER=0 \
+  CHUNK_RETRY_ATTEMPTS=3 CHUNK_RETRY_DELAY_SECONDS=0 FAILED_RETRY_HOURS=24 \
+  bash "$ROOT/scripts/translate.sh" >/dev/null
+[ "$(cat "$FIXTURE/count")" -eq 2 ]
+grep -qF 'Frida Kahlo.' "$FIXTURE/movies/Invariant/Invariant.es-MX.srt"
+grep -qF 'No, no.' "$FIXTURE/movies/Invariant/Invariant.es-MX.srt"
+
 mkdir -p "$FIXTURE/movies/Failure"
 cat > "$FIXTURE/movies/Failure/Failure.en.srt" <<'EOF'
 1
@@ -65,7 +90,7 @@ EOF
 rm -f "$FIXTURE/count"
 set +e
 env PATH="$FIXTURE/bin:$PATH" MOCK_COUNT_FILE="$FIXTURE/count" MOCK_FAIL_AFTER=1 \
-  MOVIE_DIR="$FIXTURE/movies" TV_DIR="$FIXTURE/tv" DATA_DIR="$FIXTURE/data" \
+  MOVIE_DIR="$FIXTURE/movies/Failure" TV_DIR="$FIXTURE/tv" DATA_DIR="$FIXTURE/data" \
   LOG_FILE="$FIXTURE/data/translation.log" LIFETIME_STATS_FILE="$FIXTURE/data/stats.env" \
   TARGET_LANGUAGES=es-MX RUN_NOW=1 MAX_RUNTIME_MINUTES=0 MANAGE_LLAMA_CPP_CONTAINER=0 \
   CHUNK_SIZE=1 CHUNK_RETRY_ATTEMPTS=3 CHUNK_RETRY_DELAY_SECONDS=0 FAILED_RETRY_HOURS=24 \
@@ -80,5 +105,6 @@ set -e
 diagnostic=$(find "$FIXTURE/data/translation-failures" -type f -name '*.json' -print -quit)
 [ -n "$diagnostic" ]
 [ "$(stat -c '%a' "$diagnostic")" = "600" ]
+jq -e '.source_file and .target_language and .cue_id and .cue_timestamp and .source_dialogue and .rejection_reason' "$diagnostic" >/dev/null
 
 echo "translation retry tests passed"

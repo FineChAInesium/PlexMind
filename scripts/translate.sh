@@ -182,8 +182,10 @@ translate_chunk() {
     [ -z "$_prev_chunk" ] || previous_dialogue=$(printf '%s\n' "$_prev_chunk" | sed '1,2d')
     local user_message="$source_dialogue"
 
-    local attempt HTTP_STATUS CURL_EXIT finish_reason translated_file="/tmp/llama_translated_$$.txt"
+    local attempt HTTP_STATUS CURL_EXIT finish_reason rejection_reason="unknown" translated_file="/tmp/llama_translated_$$.txt"
     for attempt in $(seq 1 "$CHUNK_RETRY_ATTEMPTS"); do
+        rm -f "$TEMP_RESPONSE_FILE" "$translated_file"
+        rejection_reason="unknown"
         local retry_instruction=""
         [ "$attempt" -gt 1 ] && retry_instruction=" Previous output was invalid or untranslated. Return only a non-empty translation of the supplied dialogue in the requested target language."
         local contextual_prompt="${sys_prompt}${retry_instruction}"
@@ -202,43 +204,63 @@ translate_chunk() {
             jq -r '.choices[0].message.content // empty' < "$TEMP_RESPONSE_FILE" \
                 | sed '/^```/d; /^\[TARGET TO TRANSLATE\]/d; /^\[PREVIOUS CONTEXT/d' > "$translated_file"
             finish_reason=$(jq -r '.choices[0].finish_reason // "unknown"' < "$TEMP_RESPONSE_FILE")
-            if python3 - "$source_dialogue" "$translated_file" "$target_lang" <<'PYEOF'
+            if rejection_reason=$(python3 - "$source_dialogue" "$translated_file" "$target_lang" <<'PYEOF'
 import re, sys
 source, output_path, lang = sys.argv[1], sys.argv[2], sys.argv[3]
 output = open(output_path, encoding="utf-8", errors="strict").read().strip()
-if not output or "-->" in output or re.search(r"(?im)^\s*```|</?think>|\[(?:target|previous context)", output):
+def reject(reason):
+    print(reason)
     raise SystemExit(1)
+if not output:
+    reject("empty_output")
+if "-->" in output or re.search(r"(?im)^\s*```|</?think>|\[(?:target|previous context)", output):
+    reject("unexpected_formatting")
 if re.search(r"(?m)^\s*\d+\s*$", output):
-    raise SystemExit(1)
+    reject("cue_number_in_output")
 letters = re.findall(r"[A-Za-z]", source)
-if lang == "zh" and letters and not re.search(r"[\u3400-\u9fff]", output):
-    raise SystemExit(1)
 src_words = re.findall(r"[A-Za-z]+", source.casefold())
 out_words = re.findall(r"[A-Za-z]+", output.casefold())
-if len(src_words) >= 2 and src_words == out_words:
-    raise SystemExit(1)
+# Short cues frequently consist only of names, acronyms, sound words, or
+# interjections that legitimately remain unchanged. Treat language heuristics
+# as a failure only for substantial dialogue; envelope validity is enforced
+# independently when the final SRT is assembled.
+substantial = len(src_words) >= 4 and sum(map(len, src_words)) >= 12
+if lang == "zh" and letters and substantial and not re.search(r"[\u3400-\u9fff]", output):
+    reject("missing_target_script")
+if substantial and src_words == out_words:
+    reject("substantial_dialogue_unchanged")
+print("ok")
 PYEOF
-            then
+            ); then
                 printf '%s\n%s\n' "$cue_id" "$cue_timestamp"
                 cat "$translated_file"
                 printf '\n\n'
                 rm -f "$translated_file"
                 return 0
             fi
-            log "WARNING: Invalid SRT structure on chunk attempt ${attempt}/${CHUNK_RETRY_ATTEMPTS} (finish=${finish_reason})." >&2
+            log "WARNING: Translation validation rejected cue on attempt ${attempt}/${CHUNK_RETRY_ATTEMPTS} (reason=${rejection_reason:-unknown}, finish=${finish_reason})."
         else
-            log "WARNING: llama.cpp request failed on chunk attempt ${attempt}/${CHUNK_RETRY_ATTEMPTS} (curl=${CURL_EXIT}, HTTP=${HTTP_STATUS:-none})." >&2
+            rejection_reason="request_failed_curl_${CURL_EXIT}_http_${HTTP_STATUS:-none}"
+            log "WARNING: llama.cpp request failed on chunk attempt ${attempt}/${CHUNK_RETRY_ATTEMPTS} (curl=${CURL_EXIT}, HTTP=${HTTP_STATUS:-none})."
         fi
         [ "$attempt" -lt "$CHUNK_RETRY_ATTEMPTS" ] && sleep "$CHUNK_RETRY_DELAY_SECONDS"
     done
 
     local diagnostic_dir="${DATA_DIR:-/app/data}/translation-failures"
     mkdir -p "$diagnostic_dir"
-    jq '{finish_reason: (.choices[0].finish_reason // null), content: (.choices[0].message.content // null), error: (.error // null)}' \
-        "$TEMP_RESPONSE_FILE" > "${diagnostic_dir}/${diagnostic_key}.json" 2>/dev/null || true
+    jq -n --arg source_file "${SOURCE_FILE:-unknown}" --arg target_language "$target_lang" \
+        --arg cue_id "$cue_id" --arg cue_timestamp "$cue_timestamp" --arg source_dialogue "$source_dialogue" \
+        --arg previous_context "$previous_dialogue" --arg rejection_reason "${rejection_reason:-unknown}" \
+        --argjson response "$(jq -c . "$TEMP_RESPONSE_FILE" 2>/dev/null || printf '{}')" \
+        '{source_file: $source_file, target_language: $target_language, cue_id: $cue_id,
+          cue_timestamp: $cue_timestamp, source_dialogue: $source_dialogue,
+          previous_context: $previous_context, rejection_reason: $rejection_reason,
+          finish_reason: ($response.choices[0].finish_reason // null),
+          content: ($response.choices[0].message.content // null), error: ($response.error // null)}' \
+        > "${diagnostic_dir}/${diagnostic_key}.json" 2>/dev/null || true
     chmod 600 "${diagnostic_dir}/${diagnostic_key}.json" 2>/dev/null || true
     rm -f "$translated_file"
-    log "ERROR: Chunk failed structural validation after ${CHUNK_RETRY_ATTEMPTS} attempts; diagnostic=${diagnostic_key}.json" >&2
+    log "ERROR: Cue translation failed validation after ${CHUNK_RETRY_ATTEMPTS} attempts (reason=${rejection_reason:-unknown}); diagnostic=${diagnostic_key}.json"
     return 1
 }
 

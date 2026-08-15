@@ -92,6 +92,7 @@ services:
       - ./data:/app/data
       - "${WHISPER_CACHE_DIR:-./data/whisper-cache}:/whisper-cache:ro"
     environment:
+      - DATA_DIR=/app/data
       - PLEX_URL=${PLEX_URL:-http://host.docker.internal:32400}
       - PLEX_TOKEN=${PLEX_TOKEN}
       - PLEXMIND_API_KEY=${PLEXMIND_API_KEY:-}
@@ -114,10 +115,10 @@ services:
       - CACHE_TTL_SECONDS=${CACHE_TTL_SECONDS:-3600}
       - GPU_THRESHOLD_PCT=${GPU_THRESHOLD_PCT:-30}
       - GPU_BACKOFF_MINUTES=${GPU_BACKOFF_MINUTES:-30}
-      - FEEDBACK_FILE=${FEEDBACK_FILE:-data/feedback.json}
-      - SHOWN_RECS_FILE=${SHOWN_RECS_FILE:-data/shown_recs.json}
-      - WATCHLIST_TRACK_FILE=${WATCHLIST_TRACK_FILE:-data/watchlist_track.json}
-      - REC_HISTORY_FILE=${REC_HISTORY_FILE:-data/recommendation_history.json}
+      - FEEDBACK_FILE=/app/data/feedback.json
+      - SHOWN_RECS_FILE=/app/data/shown_recs.json
+      - WATCHLIST_TRACK_FILE=/app/data/watchlist_track.json
+      - REC_HISTORY_FILE=/app/data/recommendation_history.json
       - PLEXMIND_SCRIPT_MODE=${PLEXMIND_SCRIPT_MODE:-remote}
       - SCRIPTS_API_URL=${SCRIPTS_API_URL:-http://scripts:9010}
       - SCRIPT_START_RATE_LIMIT=${SCRIPT_START_RATE_LIMIT:-60/hour}

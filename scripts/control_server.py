@@ -129,8 +129,10 @@ def _persist(job, **values):
 def _proc(job):
     proc = PROCS.get(job)
     if proc and proc.poll() is not None:
+        previous = _load_state().get(job) or {}
+        interrupted = previous.get("status") == "stopping" or proc.returncode < 0
         LAST_RESULTS[job] = {"returncode": proc.returncode, "finished_at": time.time()}
-        _persist(job, status="completed_with_errors" if proc.returncode == 2 else "completed" if proc.returncode == 0 else "failed",
+        _persist(job, status="interrupted" if interrupted else "completed_with_errors" if proc.returncode == 2 else "completed" if proc.returncode == 0 else "failed",
                  returncode=proc.returncode, finished_at=time.time(), pid=None)
         PROCS.pop(job, None)
         pid_file = Path(JOBS[job]["pid_file"])
@@ -380,6 +382,7 @@ class Handler(BaseHTTPRequestHandler):
             if not pid:
                 return self._json(200, {**_status(job), "status": "not_running"})
             try:
+                _persist(job, status="stopping")
                 os.killpg(pid, signal.SIGTERM)
             except ProcessLookupError:
                 pass

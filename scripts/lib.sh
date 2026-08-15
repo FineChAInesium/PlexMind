@@ -295,54 +295,62 @@ retry_failed() {
 
 validate_srt() {
     local SRT_FILE="$1"
-
-    local FILE_BYTES
-    FILE_BYTES=$(stat -c%s "$SRT_FILE" 2>/dev/null || echo 0)
-    if [ "$FILE_BYTES" -lt 100 ]; then
-        log "  VALIDATE: FAIL — file is suspiciously small (${FILE_BYTES} bytes)."
+    local VALIDATION_MODE="${2:-quality}"
+    local RESULT STATUS REASON CUE_COUNT AVG_DUR AVG_CHARS
+    RESULT=$(python3 - "$SRT_FILE" "$MIN_CUE_COUNT" "$MAX_AVG_CUE_DURATION" "$MAX_AVG_CUE_CHARS" "$VALIDATION_MODE" <<'PYEOF'
+import os, re, sys
+path, min_cues, max_avg_duration, max_avg_chars, mode = sys.argv[1], int(sys.argv[2]), float(sys.argv[3]), float(sys.argv[4]), sys.argv[5]
+try:
+    size = os.path.getsize(path)
+    text = open(path, encoding="utf-8", errors="replace").read().replace("\r\n", "\n").replace("\r", "\n")
+except OSError:
+    print("fail|unreadable|0|0|0"); raise SystemExit
+if size < 100:
+    print(f"fail|suspiciously_small:{size}|0|0|0"); raise SystemExit
+stamp = re.compile(r"^\s*(\d{2}):(\d{2}):(\d{2}),([0-9]{3})\s+-->\s+(\d{2}):(\d{2}):(\d{2}),([0-9]{3})(?:\s+.*)?\s*$")
+durations=[]
+for line in text.splitlines():
+    match=stamp.match(line)
+    if not match: continue
+    values=list(map(int, match.groups()))
+    start=values[0]*3600+values[1]*60+values[2]+values[3]/1000
+    end=values[4]*3600+values[5]*60+values[6]+values[7]/1000
+    if end <= start:
+        print(f"fail|non_positive_timestamp|{len(durations)+1}|0|0"); raise SystemExit
+    durations.append(end-start)
+cue_count=len(durations)
+if mode == "structure":
+    if cue_count == 0:
+        print("fail|no_valid_timestamps|0|0|0"); raise SystemExit
+    print(f"ok|ok|{cue_count}|{sum(durations)/cue_count:.1f}|0"); raise SystemExit
+if cue_count < min_cues:
+    print(f"fail|too_few_cues:{cue_count}:{min_cues}|{cue_count}|0|0"); raise SystemExit
+blocks=[block for block in re.split(r"\n{2,}", text.strip()) if any(stamp.match(line) for line in block.splitlines())]
+dialogue=[]
+for block in blocks:
+    lines=block.splitlines()
+    timestamp_index=next((i for i,line in enumerate(lines) if stamp.match(line)), None)
+    if timestamp_index is not None:
+        dialogue.extend(line for line in lines[timestamp_index+1:] if line.strip())
+avg_duration=sum(durations)/cue_count
+avg_chars=sum(map(len, dialogue))/len(dialogue) if dialogue else 0
+if avg_duration > max_avg_duration:
+    print(f"fail|avg_duration:{avg_duration:.1f}:{max_avg_duration:g}|{cue_count}|{avg_duration:.1f}|{avg_chars:.0f}"); raise SystemExit
+if avg_chars > max_avg_chars:
+    print(f"fail|avg_text:{avg_chars:.0f}:{max_avg_chars:g}|{cue_count}|{avg_duration:.1f}|{avg_chars:.0f}"); raise SystemExit
+print(f"ok|ok|{cue_count}|{avg_duration:.1f}|{avg_chars:.0f}")
+PYEOF
+    )
+    IFS='|' read -r STATUS REASON CUE_COUNT AVG_DUR AVG_CHARS <<< "$RESULT"
+    SRT_VALIDATION_REASON="${REASON:-unknown}"
+    SRT_VALIDATION_CUES="${CUE_COUNT:-0}"
+    SRT_VALIDATION_AVG_DURATION="${AVG_DUR:-0}"
+    SRT_VALIDATION_AVG_CHARS="${AVG_CHARS:-0}"
+    if [ "$STATUS" != "ok" ]; then
+        log "  VALIDATE: FAIL — ${REASON:-unknown} (cues ${CUE_COUNT:-0}, avg duration ${AVG_DUR:-0}s, avg text ${AVG_CHARS:-0} chars)."
         return 1
     fi
-
-    local CUE_COUNT
-    CUE_COUNT=$(grep -c ' --> ' "$SRT_FILE" 2>/dev/null || echo 0)
-    if [ "$CUE_COUNT" -lt "$MIN_CUE_COUNT" ]; then
-        log "  VALIDATE: FAIL — only ${CUE_COUNT} cues (minimum: ${MIN_CUE_COUNT})."
-        return 1
-    fi
-
-    local AVG_DUR
-    AVG_DUR=$(grep ' --> ' "$SRT_FILE" | awk '
-        function ts_to_sec(ts) {
-            gsub(",", ".", ts)
-            split(ts, p, ":")
-            return p[1]*3600 + p[2]*60 + p[3]
-        }
-        {
-            split($0, parts, " --> ")
-            dur = ts_to_sec(parts[2]) - ts_to_sec(parts[1])
-            if (dur > 0) { total += dur; count++ }
-        }
-        END { if (count > 0) printf "%.1f", total/count; else print "0" }
-    ')
-    AVG_DUR="${AVG_DUR:-0}"
-
-    if [ "$(awk -v a="$AVG_DUR" -v m="$MAX_AVG_CUE_DURATION" 'BEGIN{print(a>m)?"1":"0"}')" = "1" ]; then
-        log "  VALIDATE: FAIL — avg cue duration ${AVG_DUR}s exceeds ${MAX_AVG_CUE_DURATION}s."
-        return 1
-    fi
-
-    local AVG_CHARS
-    AVG_CHARS=$(grep -v ' --> ' "$SRT_FILE" | grep -v '^[0-9]*$' | grep -v '^$' | \
-        awk '{ t+=length; c++ } END { if(c>0) printf "%.0f",t/c; else print "0" }')
-    AVG_CHARS="${AVG_CHARS:-0}"
-
-    if [ "$(awk -v a="$AVG_CHARS" -v m="$MAX_AVG_CUE_CHARS" 'BEGIN{print(a>m)?"1":"0"}')" = "1" ]; then
-        log "  VALIDATE: FAIL — avg cue text ${AVG_CHARS} chars exceeds ${MAX_AVG_CUE_CHARS}."
-        return 1
-    fi
-
     log "  VALIDATE: OK — ${CUE_COUNT} cues, avg duration ${AVG_DUR}s, avg text ${AVG_CHARS} chars."
-    return 0
 }
 
 # ==============================================================================
@@ -1076,7 +1084,8 @@ verify_encoding() {
         HAS_BOM=true
     fi
 
-    if [ "$DETECTED" = "utf-8" ] && [ "$HAS_BOM" = false ]; then
+    # US-ASCII is a strict subset of UTF-8 and needs no conversion.
+    if { [ "$DETECTED" = "utf-8" ] || [ "$DETECTED" = "us-ascii" ]; } && [ "$HAS_BOM" = false ]; then
         return 0
     fi
 
@@ -1344,16 +1353,40 @@ audit_library() {
 
         echo "## INVALID SRT FILES"
         echo ""
-        while IFS= read -r -d '' SRT; do
-            if ! validate_srt "$SRT" >/dev/null 2>&1; then
-                local CUES
-                CUES=$(grep -c ' --> ' "$SRT" 2>/dev/null || echo 0)
-                local SIZE
-                SIZE=$(stat -c%s "$SRT" 2>/dev/null || echo 0)
-                echo "  [INVALID cues:${CUES} size:${SIZE}b] ${SRT}"
-                INVALID_SRTS=$((INVALID_SRTS + 1))
-            fi
-        done < <(find "${DIRS[@]}" -type f -iname "*.srt" -print0 2>/dev/null)
+        while IFS='|' read -r -d '' REASON CUES SIZE SRT; do
+            echo "  [INVALID reason:${REASON} cues:${CUES} size:${SIZE}b] ${SRT}"
+            INVALID_SRTS=$((INVALID_SRTS + 1))
+        done < <(find "${DIRS[@]}" -type f -iname "*.srt" -print0 2>/dev/null | python3 -c '
+import os, re, sys
+stamp = re.compile(rb"^\s*(\d{2}):(\d{2}):(\d{2}),([0-9]{3})\s+-->\s+(\d{2}):(\d{2}):(\d{2}),([0-9]{3})(?:\s+.*)?\s*$")
+for raw_path in sys.stdin.buffer.read().split(b"\0"):
+    if not raw_path:
+        continue
+    path = os.fsdecode(raw_path)
+    reason = None
+    cues = 0
+    try:
+        size = os.path.getsize(path)
+        data = open(path, "rb").read().replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+        for line in data.splitlines():
+            match = stamp.match(line)
+            if not match:
+                continue
+            values = list(map(int, match.groups()))
+            start = values[0]*3600 + values[1]*60 + values[2] + values[3]/1000
+            end = values[4]*3600 + values[5]*60 + values[6] + values[7]/1000
+            cues += 1
+            if end <= start:
+                reason = "non_positive_timestamp"
+                break
+        if cues == 0 and reason is None:
+            reason = "no_valid_timestamps"
+    except OSError:
+        size, reason = 0, "unreadable"
+    if reason:
+        record = f"{reason}|{cues}|{size}|{path}".encode("utf-8", "replace") + b"\0"
+        sys.stdout.buffer.write(record)
+')
         echo ""
         echo "  Total: ${INVALID_SRTS} invalid SRT files"
         echo ""
@@ -1396,7 +1429,7 @@ audit_library() {
             if [ "$(xxd -l 3 -p "$SRT" 2>/dev/null)" = "efbbbf" ]; then
                 BOM=" +BOM"
             fi
-            if [ "$ENC" != "utf-8" ] || [ -n "$BOM" ]; then
+            if { [ "$ENC" != "utf-8" ] && [ "$ENC" != "us-ascii" ]; } || [ -n "$BOM" ]; then
                 echo "  [${ENC}${BOM}] ${SRT}"
                 ENCODING_ISSUES=$((ENCODING_ISSUES + 1))
             fi
