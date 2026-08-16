@@ -66,13 +66,15 @@ else
   llm_ready="$(json_get llm_ready "$health" 2>/dev/null || true)"
   [ "$status" = "ok" ] && pass "/health status ok" || fail "/health status is ${status:-missing}"
   [ "$llm_ready" = "true" ] && pass "LLM ready (${llm:-unknown})" || fail "LLM not ready (${llm:-unknown})"
-  case "$llm" in
-    qwen3-4b-q4_k_m) pass "expected llama.cpp model label" ;;
-    *) fail "unexpected LLM label: ${llm:-missing}" ;;
-  esac
+  expected_model="${LLAMA_CPP_MODEL_ALIAS:-qwen3.5-9b-q5_k_m}"
+  [ "$llm" = "$expected_model" ] && pass "expected llama.cpp model label" || fail "unexpected LLM label: ${llm:-missing} (expected ${expected_model})"
 fi
 
-scheduler="$(http_get "${API_BASE}/api/scheduler/status" 2>/dev/null || true)"
+key="$(api_key)"
+scheduler=""
+if [ -n "$key" ]; then
+  scheduler="$(http_get -H "X-API-Key: ${key}" "${API_BASE}/api/scheduler/status" 2>/dev/null || true)"
+fi
 if [ -z "$scheduler" ]; then
   fail "/api/scheduler/status returned no response"
 else
@@ -81,7 +83,6 @@ else
   [ -n "$vendor" ] && pass "GPU detected (${vendor}, ${util:-unknown}% utilization)" || fail "GPU vendor missing from scheduler status"
 fi
 
-key="$(api_key)"
 if [ -n "$key" ]; then
   translate_status="$(curl -sS --max-time 20 -H "X-API-Key: ${key}" "${API_BASE}/api/scripts/translate/status" 2>/dev/null || true)"
   if [ -n "$translate_status" ]; then
@@ -118,16 +119,17 @@ else
 fi
 
 page="$(http_get "${API_BASE}/" 2>/dev/null || true)"
-if printf '%s' "$page" | grep -q 'LLM (llama.cpp)' && printf '%s' "$page" | grep -q 'qwen3-4b-q4_k_m'; then
-  pass "dashboard labels show llama.cpp/qwen3-4b"
+if printf '%s' "$page" | grep -q 'LLM (llama.cpp)' && printf '%s' "$page" | grep -q 'qwen3.5-9b-q5_k_m'; then
+  pass "dashboard labels show llama.cpp/qwen3.5-9b"
 else
-  fail "dashboard labels do not show expected llama.cpp/qwen3-4b text"
+  fail "dashboard labels do not show expected llama.cpp/qwen3.5-9b text"
 fi
-if printf '%s' "$page" | grep -qE 'Ollama|qwen3\.5'; then
-  fail "dashboard still contains stale Ollama/qwen3.5 text"
+if printf '%s' "$page" | grep -q 'Ollama'; then
+  fail "dashboard still contains stale Ollama text"
 else
-  pass "dashboard has no stale Ollama/qwen3.5 text"
+  pass "dashboard has no stale Ollama text"
 fi
+printf '%s' "$page" | grep -q 'Model Advisor' && pass "dashboard exposes Model Advisor" || fail "dashboard Model Advisor missing"
 
 if [ "$FAILURES" -eq 0 ]; then
   log "PASS: live verification succeeded"

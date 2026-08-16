@@ -1,7 +1,7 @@
 #!/bin/bash
 # ==============================================================================
 # watermark.sh — SRT Mass Watermark Injector
-# Version: 0.8.18 — PlexMind release line
+# Version: 0.8.20 — PlexMind release line
 #
 # Recursively scans for .srt files and safely prepends a 5-second
 # watermark block to the beginning of the file.
@@ -9,7 +9,7 @@
 # Requires: lib.sh
 # ==============================================================================
 
-set -u
+set -uo pipefail
 
 # --- CONFIGURATION ---
 LOG_FILE="${LOG_FILE:-/app/data/watermark_injector.log}"
@@ -32,6 +32,8 @@ log "Starting Mass SRT Watermark Injection"
 log "========================================================="
 
 ALL_MEDIA_DIRS=("${MOVIE_DIR}" "${TV_DIR}")
+validate_media_directories || exit 1
+acquire_lock "/app/data/plexmind_media_mutation.lock"
 
 for DIR in "${ALL_MEDIA_DIRS[@]}"; do
     if [ ! -d "$DIR" ]; then
@@ -47,8 +49,19 @@ for DIR in "${ALL_MEDIA_DIRS[@]}"; do
         if ! head -n 15 "$SUB_FILE" | grep -qF "$WATERMARK_SEARCH"; then
             WATERMARK_BLOCK="0\n00:00:00,000 --> 00:00:05,000\n${WATERMARK_TEXT}\n\n"
 
-            echo -e "$WATERMARK_BLOCK" | cat - "$SUB_FILE" > "${SUB_FILE}.tmp"
-            mv -f "${SUB_FILE}.tmp" "$SUB_FILE"
+            if ! { printf '%b' "$WATERMARK_BLOCK"; cat "$SUB_FILE"; } > "${SUB_FILE}.tmp"; then
+                rm -f "${SUB_FILE}.tmp"
+                log "ERROR: Failed to prepare watermark for ${SUB_FILE}."
+                exit 2
+            fi
+            if ! grep -qF "$WATERMARK_SEARCH" "${SUB_FILE}.tmp" || ! grep -qF -- '-->' "${SUB_FILE}.tmp"; then
+                rm -f "${SUB_FILE}.tmp"
+                log "ERROR: Refusing invalid watermarked output for ${SUB_FILE}."
+                exit 2
+            fi
+            chmod --reference="$SUB_FILE" "${SUB_FILE}.tmp" || { rm -f "${SUB_FILE}.tmp"; log "ERROR: Could not preserve mode for ${SUB_FILE}."; exit 2; }
+            chown --reference="$SUB_FILE" "${SUB_FILE}.tmp" 2>/dev/null || true
+            mv -f "${SUB_FILE}.tmp" "$SUB_FILE" || { rm -f "${SUB_FILE}.tmp"; log "ERROR: Atomic watermark replacement failed for ${SUB_FILE}."; exit 2; }
 
             log "INJECTED: $(basename "$SUB_FILE")"
             WATERMARKS_ADDED=$((WATERMARKS_ADDED + 1))

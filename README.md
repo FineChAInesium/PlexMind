@@ -49,9 +49,9 @@ Fill missing subtitles with local speech-to-text.
 Translate existing or newly generated SRTs with the same local LLM stack.
 
 - Uses llama.cpp OpenAI-compatible chat API through `LLAMA_CPP_API_URL`.
-- Defaults to `qwen3-4b-q4_k_m` in Docker Compose.
+- Defaults to `qwen3.5-9b-q5_k_m` in Docker Compose.
 - Targets `TARGET_LANGUAGES`, default `zh,es-MX`.
-- Starts the configured llama.cpp sidecar container for translation jobs when Docker socket access is enabled.
+- Uses the authenticated, allowlisted Docker broker when a dedicated sidecar must be started or stopped.
 
 ### 🧹 Library Maintenance
 
@@ -86,11 +86,11 @@ PlexMind is a coordinator. The best results come from giving it the right local 
 | Component | Used For | Default / Recommended |
 |---|---|---|
 | Plex Media Server | Library metadata, users, watch history, Watchlist/playlists | `PLEX_URL` + admin `PLEX_TOKEN` |
-| llama.cpp | Recommendations and subtitle translation | Compose default: `qwen3-4b-q4_k_m` |
-| Whisper ASR webservice | Speech-to-text subtitle generation | `onerahmet/openai-whisper-asr-webservice:latest-gpu` |
+| llama.cpp | Recommendations and subtitle translation | Compose default: `qwen3.5-9b-q5_k_m` |
+| Whisper ASR webservice | Speech-to-text subtitle generation | Digest-pinned in Compose and `.env.example` |
 | Whisper model | Transcription model loaded by the ASR service | `WHISPER_MODEL=turbo` |
 | FFmpeg / ffprobe | Audio extraction and media inspection | included in the PlexMind script images |
-| Docker socket | Start/stop Whisper and llama.cpp sidecars for script jobs | mounted at `/var/run/docker.sock` |
+| Docker broker | Allowlisted inspect/start/stop and fixed GPU telemetry | only the broker mounts `/var/run/docker.sock` |
 | Optional metadata APIs | TMDB/TVDB/OMDB enrichment | leave blank if you want Plex-only metadata |
 
 ### llama.cpp Models
@@ -98,7 +98,7 @@ PlexMind is a coordinator. The best results come from giving it the right local 
 Docker Compose wires PlexMind to `http://llama-cpp:8080` and sets:
 
 ```bash
-LLAMA_CPP_MODEL_ALIAS=qwen3-4b-q4_k_m
+LLAMA_CPP_MODEL_ALIAS=qwen3.5-9b-q5_k_m
 ```
 
 Place the configured GGUF model before expecting recommendation or translation work to succeed:
@@ -112,7 +112,7 @@ Suggested model sizing:
 | Hardware | Suggested GGUF model |
 |---|---|
 | 16GB+ VRAM | a larger Qwen GGUF |
-| 8-15GB VRAM | `qwen3-4b-q4_k_m` or another GGUF alias |
+| 12GB+ VRAM | `qwen3.5-9b-q5_k_m` or another compatible GGUF alias |
 | 4-7GB VRAM | a 4B-class GGUF |
 | Low VRAM / CPU-only | a 1B-4B GGUF, depending on RAM |
 
@@ -123,7 +123,7 @@ Set `LLAMA_CPP_MODEL_PATH` to a GGUF file and keep `LLAMA_CPP_MODEL_ALIAS` align
 Docker Compose includes an optional Whisper service:
 
 ```yaml
-image: ${WHISPER_IMAGE:-onerahmet/openai-whisper-asr-webservice:latest-gpu}
+image: ${WHISPER_IMAGE:-onerahmet/openai-whisper-asr-webservice@sha256:3deb30cfd3d5614fd3885e6dfbef7dfcf95fe897300ecc703f7f3b3682b717ae}
 environment:
   - ASR_MODEL=${WHISPER_MODEL:-turbo}
   - ASR_DEVICE=${WHISPER_DEVICE:-cuda}
@@ -132,7 +132,7 @@ environment:
 For CPU-only hosts, use:
 
 ```bash
-WHISPER_IMAGE=onerahmet/openai-whisper-asr-webservice:latest
+WHISPER_IMAGE=onerahmet/openai-whisper-asr-webservice@sha256:3deb30cfd3d5614fd3885e6dfbef7dfcf95fe897300ecc703f7f3b3682b717ae
 WHISPER_DEVICE=cpu
 WHISPER_MODEL=small
 ```
@@ -143,7 +143,7 @@ Transcription jobs call:
 http://whisper:9000/asr
 ```
 
-The dashboard-owned script runner can start `plexmind-whisper` before transcription and stop it when the job exits. The same lifecycle is available for `llama-cpp` during translation.
+The dashboard-owned script runner can start `whisper-asr-webservice` before transcription and stops it only when that job started it. The shared llama.cpp recommendation service stays externally managed by default.
 
 ---
 
@@ -161,9 +161,9 @@ Edit `.env` with your Plex and media paths:
 PLEX_URL=http://192.168.1.10:32400
 PLEX_TOKEN=your_plex_token
 PLEXMIND_API_KEY=$(openssl rand -hex 32)
-MOVIES_DIR=/mnt/media/Movies
-TV_DIR=/mnt/media/TV
-LLAMA_CPP_MODEL_ALIAS=qwen3-4b-q4_k_m
+MOVIES_HOST_PATH=/mnt/media/Movies
+TV_HOST_PATH=/mnt/media/TV
+LLAMA_CPP_MODEL_ALIAS=qwen3.5-9b-q5_k_m
 WHISPER_MODEL=turbo
 TARGET_LANGUAGES=zh,es-MX
 ```
@@ -177,13 +177,13 @@ Start the stack:
 Or use Compose directly:
 
 ```bash
-docker compose up -d --build
+docker compose up -d --build plexmind
 ```
 
 If you plan to use transcription, create the profiled Whisper sidecar at least once so PlexMind can start and stop it by container name:
 
 ```bash
-docker compose --profile whisper up -d whisper
+docker compose --profile whisper create whisper
 ```
 
 Place the configured GGUF model before starting recommendations or translation:
@@ -211,12 +211,12 @@ https://raw.githubusercontent.com/FineChAInesium/PlexMind/main/templates/PlexMin
 1. Open Community Applications.
 2. Use the template URL/folder option.
 3. Paste the template URL above.
-4. Set `PLEX_URL`, `PLEX_TOKEN`, and `LLAMA_CPP_URL`.
-5. Set `LLAMA_CPP_MODEL_PATH` to a GGUF file and keep `LLAMA_CPP_MODEL_ALIAS` aligned with the llama.cpp alias.
-6. Set `PLEXMIND_API_KEY` before exposing the dashboard outside a trusted LAN.
-7. Start the container and open `http://[unraid-ip]:8000`.
+4. Deploy the repository Compose stack first; the safe API template intentionally does not recreate the worker and broker services.
+5. Set `PLEX_URL`, `PLEX_TOKEN`, and `LLAMA_CPP_URL`.
+6. Generate four distinct `PLEXMIND_API_KEY`, `PLEXMIND_CONTROL_TOKEN`, `PLEXMIND_BROKER_TOKEN`, and `PLEXMIND_WEBHOOK_SECRET` values.
+7. Start the stack and open `http://[unraid-ip]:8000`.
 
-The template includes `--gpus all --group-add 281` for NVIDIA GPU access and Unraid Docker socket group access. If your Docker socket group differs, update `DOCKER_SOCKET_GID`.
+The API template mounts neither media nor the Docker socket. Media is writable only in the scripts worker; the raw Docker socket is mounted only in the narrow broker.
 
 ---
 
@@ -226,9 +226,22 @@ The template includes `--gpus all --group-add 281` for NVIDIA GPU access and Unr
 Browser Dashboard
   -> FastAPI app (:8000)
       -> Plex API for users, history, Watchlist, and playlists
-      -> llama.cpp for recommendations and subtitle translation
-      -> Scheduler, GPU checks, storage checks, and SSE progress
-      -> Local script runner for transcription, translation, maintenance
+      -> Durable recommendation queue and SSE status
+      -> Authenticated scripts worker for media jobs
+      -> Authenticated Docker broker for sidecar state and GPU telemetry
+
+Recommendation Worker
+  -> Claims durable jobs from /app/data
+  -> llama.cpp for recommendation generation
+  -> Plex API for one explicit transactional sync per user
+
+Scripts Worker
+  -> Owns writable /media/movies and /media/tv mounts
+  -> Serializes media/GPU writers with shared locks
+
+Docker Broker
+  -> Owns the only raw Docker socket mount
+  -> Allows only named llama.cpp/Whisper inspect, start, stop, and fixed GPU probe
 
 AI Sidecars
   -> llama.cpp (:8080 internal, :11435 host)
@@ -260,6 +273,10 @@ PlexMind uses pilot episodes for TV recommendations so a user can try a show wit
 
 ## ⚙️ Configuration
 
+The dashboard reads its Whisper model inventory from the cache mounted read-only at
+`/whisper-cache`. Only downloaded models are displayed; transcription is disabled
+when `WHISPER_MODEL` does not match a cached model artifact.
+
 | Variable | Description | Default |
 |---|---|---|
 | `PLEX_URL` | Plex server URL. Use a LAN address reachable from Docker. | `http://host.docker.internal:32400` |
@@ -270,11 +287,13 @@ PlexMind uses pilot episodes for TV recommendations so a user can try a show wit
 | `TVDB_API_KEY` | Optional TV metadata fallback. | unset |
 | `OMDB_API_KEY` | Optional IMDb/OMDB enrichment. | unset |
 | `LLAMA_CPP_URL` | llama.cpp base URL for recommendations. | `http://llama-cpp:8080` |
-| `LLAMA_CPP_API_URL` | llama.cpp OpenAI-compatible chat API URL for scripts. | `http://llama-cpp:8080/v1/chat/completions` |
-| `LLAMA_CPP_MODEL_ALIAS` | Recommendation and translation model alias. Must match llama.cpp `--alias`. | `qwen3-4b-q4_k_m` in Compose |
+| `LLAMA_CPP_API_URL` | Optional explicit script endpoint; otherwise derived from `LLAMA_CPP_URL`. | derived |
+| `MOVIES_HOST_PATH` / `TV_HOST_PATH` | Host directories bind-mounted into the containers. | platform-specific |
+| `MOVIE_DIR` / `TV_DIR` | Internal scan roots; normally `/media/movies` and `/media/tv`. | fixed in Compose/template |
+| `LLAMA_CPP_MODEL_ALIAS` | Recommendation and translation model alias. Must match llama.cpp `--alias`. | `qwen3.5-9b-q5_k_m` in Compose |
 | `LLAMA_CPP_HOST_PORT` | Host port for the bundled llama.cpp sidecar. Keep `8080` free for Chip Hedge Bot. | `11435` |
 | `WHISPER_API_URL` | Whisper ASR endpoint used by scripts. | `http://whisper:9000/asr` |
-| `WHISPER_IMAGE` | Whisper ASR Docker image. | `onerahmet/openai-whisper-asr-webservice:latest-gpu` |
+| `WHISPER_IMAGE` | Whisper ASR Docker image. | Digest-pinned; see `.env.example` |
 | `WHISPER_MODEL` | Whisper model: `tiny`, `base`, `small`, `medium`, `large`, `turbo`. | `turbo` |
 | `WHISPER_DEVICE` | Whisper device. Use `cuda` or `cpu`. | `cuda` |
 | `WHISPER_HOST_PORT` | Host port for the bundled Whisper sidecar. | `9001` |
@@ -285,13 +304,17 @@ PlexMind uses pilot episodes for TV recommendations so a user can try a show wit
 | `SUPPRESSION_DAYS` | Days before a shown recommendation can return. | `60` |
 | `GPU_THRESHOLD_PCT` | Pause batch work at or above this GPU utilization. | `30` |
 | `GPU_BACKOFF_MINUTES` | Wait time before checking a busy GPU again. | `30` in Compose, `5` in `.env.example` |
-| `PLEXMIND_SCRIPT_MODE` | `local` runs scripts in the API container; `sidecar` proxies to scripts API. | `local` |
+| `PLEXMIND_SCRIPT_MODE` | `remote` routes scripts through the authenticated worker. | `remote` |
+| `PLEXMIND_CONTROL_TOKEN` | Distinct API-to-scripts-worker secret. | required |
+| `PLEXMIND_BROKER_TOKEN` | Distinct client-to-Docker-broker secret. | required |
+| `PLEXMIND_WEBHOOK_SECRET` | Distinct Plex webhook secret. | required |
 | `SCRIPT_START_RATE_LIMIT` | Rate limit for script Start buttons. | `60/hour` |
-| `WHISPER_CONTAINER_NAME` | Container to start before transcription and stop on exit. | `plexmind-whisper` |
-| `LLAMA_CPP_CONTAINER_NAME` | Container to start before translation and stop on exit. | `llama-cpp` |
+| `WHISPER_CONTAINER_NAME` | Exact dedicated Whisper container to manage. | `whisper-asr-webservice` in Compose |
+| `LLAMA_CPP_CONTAINER_NAME` | Exact llama.cpp container identity when lifecycle management is enabled. | `llama-cpp` |
+| `MANAGE_LLAMA_CPP_CONTAINER` | Manage llama.cpp per translation job. Keep `0` for the shared recommendation service. | `0` |
 | `START_SIDECAR_CONTAINERS` | Start AI sidecars before script jobs. | `1` |
 | `STOP_SIDECAR_CONTAINERS` | Stop AI sidecars when script jobs exit. | `1` |
-| `DOCKER_SOCKET_GID` | Group id for Docker socket access. On Unraid this is often `281`. | `281` |
+| `ALLOW_EMPTY_MEDIA_ROOTS` | Permit intentionally empty media roots. Leave disabled in production. | `0` |
 | `LOG_RETENTION_DAYS` | Retain dated script logs under `/app/data/logs`. | `7` |
 | `MAX_RUNTIME_MINUTES` | Optional per-run cap for scripts. `0` means no cap. | `0` |
 | `TRANSCRIBE_START_HOUR` / `TRANSCRIBE_END_HOUR` | PlexMind launch window for transcription jobs. | `5` / `12` |
@@ -322,20 +345,17 @@ For production image changes:
 
 ```bash
 docker compose build plexmind
-docker compose up -d plexmind
+docker compose up -d plexmind recommendation-worker scripts docker-broker
 ```
 
-For rapid local iteration without rebuilding the image, bind-mount the app and scripts and run uvicorn with reload:
+For rapid local API iteration without rebuilding the image, bind-mount the app and run uvicorn with reload. Do not add media or Docker-socket mounts to the API:
 
 ```yaml
 services:
   plexmind:
     volumes:
       - ./plexmind/app:/app/app
-      - ./scripts:/app/scripts
       - ./data:/app/data
-      - "${MOVIES_DIR}:/media/movies"
-      - "${TV_DIR}:/media/tv"
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 ```
 
@@ -440,9 +460,9 @@ Important details:
 - API key comparison uses constant-time comparison.
 - `/api/run-all`, recommendation generation, script starts, and webhooks are rate-limited.
 - `/webhook` rejects non-LAN clients, but reverse proxies can make internet traffic appear local. Use `PLEXMIND_API_KEY` if proxied.
-- Script jobs mount `/var/run/docker.sock` so PlexMind can start and stop configured Whisper and llama.cpp sidecar containers.
+- Only the allowlisted Docker broker mounts `/var/run/docker.sock`; script jobs use its authenticated start/stop API.
 - Subtitle maintenance modes can delete `.sup`, `.sub/.idx`, and duplicate `.srt` files from mounted media folders. Run audits first and keep backups if your media library is not disposable.
-- The dashboard stores its API key in browser localStorage. Use HTTPS when accessing it through a reverse proxy.
+- The dashboard exchanges the API key for a same-origin HttpOnly session cookie and never persists the raw key in browser storage. Use HTTPS when accessing it through a reverse proxy.
 
 See [SECURITY.md](SECURITY.md) for the full security model and audit notes.
 

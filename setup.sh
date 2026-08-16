@@ -9,8 +9,10 @@
 #   curl -sSL https://raw.githubusercontent.com/.../setup.sh | bash
 #   — or —
 #   git clone ... && cd plexmind-suite && ./setup.sh
+#   ./setup.sh --check   # read-only dependency/hardware/model preflight
 # ==============================================================================
 set -euo pipefail
+umask 077
 
 BOLD='\033[1m'
 DIM='\033[2m'
@@ -46,7 +48,7 @@ EOF
 
 check_dependencies() {
     local missing=()
-    for cmd in docker curl jq; do
+    for cmd in docker curl jq openssl; do
         command -v "$cmd" &>/dev/null || missing+=("$cmd")
     done
 
@@ -115,8 +117,8 @@ select_models() {
     echo ""
 
     # --- llama.cpp model (recommendations + translation) ---
-    LLAMA_CPP_MODEL_ALIAS="qwen3-4b-q4_k_m"
-    LLAMA_CPP_MODEL_PATH="${LLAMA_CPP_MODEL_PATH:-/mnt/cache/appdata/llama-cpp/models/Qwen3-4B-Q4_K_M.gguf}"
+    LLAMA_CPP_MODEL_ALIAS="qwen3.5-9b-q5_k_m"
+    LLAMA_CPP_MODEL_PATH="${LLAMA_CPP_MODEL_PATH:-/mnt/cache/appdata/llama-cpp/models/Qwen3.5-9B-Q5_K_M.gguf}"
     LLM_TIER="Local GGUF"
 
     # --- Whisper Model (transcription) ---
@@ -139,10 +141,10 @@ select_models() {
 
     # Whisper Docker image tag
     if [[ "$HAS_NVIDIA" == true ]]; then
-        WHISPER_IMAGE="onerahmet/openai-whisper-asr-webservice:latest-gpu"
+        WHISPER_IMAGE="onerahmet/openai-whisper-asr-webservice@sha256:3deb30cfd3d5614fd3885e6dfbef7dfcf95fe897300ecc703f7f3b3682b717ae"
         WHISPER_DEVICE="cuda"
     else
-        WHISPER_IMAGE="onerahmet/openai-whisper-asr-webservice:latest"
+        WHISPER_IMAGE="onerahmet/openai-whisper-asr-webservice@sha256:3deb30cfd3d5614fd3885e6dfbef7dfcf95fe897300ecc703f7f3b3682b717ae"
         WHISPER_DEVICE="cpu"
     fi
 
@@ -167,23 +169,25 @@ prompt_config() {
     read -rp "  Plex URL [${default_plex_url}]: " PLEX_URL
     PLEX_URL="${PLEX_URL:-$default_plex_url}"
 
-    read -rp "  Plex Token (find at plex.tv/claim): " PLEX_TOKEN
+    read -rsp "  Plex Token (input hidden): " PLEX_TOKEN
+    echo
     if [[ -z "$PLEX_TOKEN" ]]; then
         warn "No Plex token provided. You can set PLEX_TOKEN in .env later."
         PLEX_TOKEN="YOUR_PLEX_TOKEN_HERE"
     fi
 
     # TMDB
-    read -rp "  TMDB API Key (free at themoviedb.org): " TMDB_API_KEY
+    read -rsp "  TMDB API Key (input hidden, optional): " TMDB_API_KEY
+    echo
     TMDB_API_KEY="${TMDB_API_KEY:-}"
 
     # Media paths
     local default_movies="/mnt/data/media/Movies"
     local default_tv="/mnt/data/media/TV Shows"
-    read -rp "  Movies directory [${default_movies}]: " MOVIES_DIR
-    MOVIES_DIR="${MOVIES_DIR:-$default_movies}"
-    read -rp "  TV Shows directory [${default_tv}]: " TV_DIR
-    TV_DIR="${TV_DIR:-$default_tv}"
+    read -rp "  Movies host directory [${default_movies}]: " MOVIES_HOST_PATH
+    MOVIES_HOST_PATH="${MOVIES_HOST_PATH:-$default_movies}"
+    read -rp "  TV Shows host directory [${default_tv}]: " TV_HOST_PATH
+    TV_HOST_PATH="${TV_HOST_PATH:-$default_tv}"
 
     # Translation languages
     echo ""
@@ -202,6 +206,14 @@ prompt_config() {
 generate_env() {
     info "Generating .env configuration..."
 
+    PLEXMIND_API_KEY="$(openssl rand -hex 32)"
+    PLEXMIND_CONTROL_TOKEN="$(openssl rand -hex 32)"
+    PLEXMIND_BROKER_TOKEN="$(openssl rand -hex 32)"
+    PLEXMIND_WEBHOOK_SECRET="$(openssl rand -hex 32)"
+    local subtitle_uid subtitle_gid
+    subtitle_uid="$(stat -c '%u' "$MOVIES_HOST_PATH" 2>/dev/null || id -u)"
+    subtitle_gid="$(stat -c '%g' "$MOVIES_HOST_PATH" 2>/dev/null || id -g)"
+
     cat > .env << ENVEOF
 # ==============================================================================
 # PlexMind Suite Configuration
@@ -212,14 +224,18 @@ generate_env() {
 # --- Plex ---
 PLEX_URL=${PLEX_URL}
 PLEX_TOKEN=${PLEX_TOKEN}
+PLEXMIND_API_KEY=${PLEXMIND_API_KEY}
+PLEXMIND_CONTROL_TOKEN=${PLEXMIND_CONTROL_TOKEN}
+PLEXMIND_BROKER_TOKEN=${PLEXMIND_BROKER_TOKEN}
+PLEXMIND_WEBHOOK_SECRET=${PLEXMIND_WEBHOOK_SECRET}
+PLEXMIND_SCRIPT_MODE=remote
 
 # --- Media Paths ---
-MOVIES_DIR=${MOVIES_DIR}
-TV_DIR=${TV_DIR}
+MOVIES_HOST_PATH=${MOVIES_HOST_PATH}
+TV_HOST_PATH=${TV_HOST_PATH}
 
 # --- LLM (llama.cpp) ---
 LLAMA_CPP_URL=http://llama-cpp:8080
-LLAMA_CPP_API_URL=http://llama-cpp:8080/v1/chat/completions
 LLAMA_CPP_MODEL_ALIAS=${LLAMA_CPP_MODEL_ALIAS}
 LLAMA_CPP_MODEL_PATH=${LLAMA_CPP_MODEL_PATH}
 LLAMA_CPP_HOST_PORT=11435
@@ -231,6 +247,10 @@ WHISPER_MODEL=${WHISPER_MODEL}
 WHISPER_DEVICE=${WHISPER_DEVICE}
 WHISPER_MEM_LIMIT=12g
 WHISPER_HOST_PORT=9001
+WHISPER_CONTAINER_NAME=whisper-asr-webservice
+START_SIDECAR_CONTAINERS=1
+STOP_SIDECAR_CONTAINERS=1
+MANAGE_LLAMA_CPP_CONTAINER=0
 TRANSCRIBE_AUDIO_EXT=mp3
 TRANSCRIBE_AUDIO_CODEC=libmp3lame
 TRANSCRIBE_AUDIO_BITRATE=64k
@@ -244,7 +264,13 @@ OMDB_API_KEY=
 
 # --- Translation ---
 TARGET_LANGUAGES=${TARGET_LANGS}
+ENABLE_WATERMARK=true
 WATERMARK_TEXT=${WATERMARK_TEXT}
+WATERMARK_SEARCH=PlexMind
+SUBTITLE_FILE_MODE=0644
+SUBTITLE_UID=${subtitle_uid}
+SUBTITLE_GID=${subtitle_gid}
+PGS_CLEANUP_ALLOW_UNKNOWN=0
 
 # --- PlexMind Recommendations ---
 MAX_RECOMMENDATIONS=10
@@ -279,6 +305,11 @@ SHOWN_RECS_FILE=data/shown_recs.json
 WATCHLIST_TRACK_FILE=data/watchlist_track.json
 ENVEOF
 
+    chmod 600 .env
+    mkdir -p data
+    chown -R 1000:1000 data 2>/dev/null || warn "Could not set data ownership; ensure UID 1000 can write ./data before startup."
+    chmod 750 data
+
     ok "Configuration written to .env"
 }
 
@@ -301,7 +332,9 @@ prepare_models() {
 
 start_services() {
     info "Starting all services..."
-    ${COMPOSE_CMD} up -d 2>&1
+    ${COMPOSE_CMD} up -d plexmind 2>&1
+    # Create, but do not run, the on-demand Whisper container.
+    ${COMPOSE_CMD} --profile whisper create whisper 2>&1
     echo ""
 
     # Wait for services to be healthy
@@ -350,6 +383,11 @@ print_summary() {
 # ==============================================================================
 
 main() {
+    local mode="${1:-install}"
+    if [[ "$mode" != "install" && "$mode" != "--check" ]]; then
+        error "Usage: $0 [--check]"
+        return 2
+    fi
     banner
     check_dependencies
     echo ""
@@ -361,6 +399,11 @@ main() {
     echo ""
 
     select_models
+
+    if [[ "$mode" == "--check" ]]; then
+        ok "Read-only setup preflight passed. No configuration or services were changed."
+        return 0
+    fi
 
     prompt_config
     generate_env

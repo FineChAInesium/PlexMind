@@ -2,6 +2,7 @@
 Plex client — per-user watch history, token management, in-progress detection.
 """
 import json
+import logging
 import os
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
@@ -18,6 +19,7 @@ MIN_WATCH_PCT = float(os.getenv("MIN_WATCH_PCT", "0.70"))
 ADMIN_USERNAME_OVERRIDE = os.getenv("PLEXMIND_ADMIN_USERNAME", "").strip()
 USER_CACHE_FILE = os.getenv("PLEXMIND_USERS_CACHE_FILE", "data/plex_users_cache.json")
 HISTORY_LIMIT = int(os.getenv("HISTORY_LIMIT", "2000"))
+log = logging.getLogger("plexmind.plex_client")
 
 
 @dataclass
@@ -163,8 +165,8 @@ def get_user_token(user_id: str) -> str | None:
         managed = {str(u.id): u for u in account.users()}
         if user_id in managed:
             return account.user(managed[user_id].title).get_token(server.machineIdentifier)
-    except Exception:
-        pass
+    except Exception as exc:
+        log.warning("Could not obtain Plex token for managed user %s: %s", user_id, exc)
     return None
 
 
@@ -271,11 +273,14 @@ def get_in_progress_titles(user_id: str) -> set[str]:
     server = _get_server()
     if user_id != "admin":
         token = get_user_token(user_id)
-        if token:
-            try:
-                server = PlexServer(PLEX_URL, token)
-            except Exception:
-                pass
+        if not token:
+            log.warning("Skipping in-progress lookup for managed user %s because no Plex token is available", user_id)
+            return set()
+        try:
+            server = PlexServer(PLEX_URL, token)
+        except Exception as exc:
+            log.warning("Skipping in-progress lookup for managed user %s: %s", user_id, exc)
+            return set()
     try:
         on_deck = server.library.onDeck()
         return {getattr(i, "title", "").lower() for i in on_deck}

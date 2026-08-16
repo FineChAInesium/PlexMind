@@ -1,7 +1,7 @@
 <?xml version="1.0"?>
 <Container version="2">
   <Name>PlexMind</Name>
-  <Repository>ghcr.io/finechainesium/plexmind:latest</Repository>
+  <Repository>ghcr.io/finechainesium/plexmind:0.8.20</Repository>
   <Registry>https://github.com/FineChAInesium/PlexMind/pkgs/container/plexmind</Registry>
   <Network>bridge</Network>
   <Shell>bash</Shell>
@@ -9,15 +9,15 @@
   <Support>https://github.com/FineChAInesium/PlexMind/issues</Support>
   <Project>https://github.com/FineChAInesium/PlexMind</Project>
   <Overview>
-    AI-powered Plex recommendations using a fully local llama.cpp LLM. Analyzes each user&apos;s watch history and generates personalized movie/TV picks with no cloud, no API costs, and no data leaving your server.&#xD;&#xA;&#xD;&#xA;Also includes: Whisper ASR subtitle generation, llama.cpp-powered subtitle translation, and library maintenance tools.&#xD;&#xA;&#xD;&#xA;Requires a llama.cpp server with the configured GGUF model (default alias: qwen3-4b-q4_k_m).&#xD;&#xA;&#xD;&#xA;Web dashboard at http://[IP]:[PORT:8000]/
+    AI-powered Plex recommendations using a fully local llama.cpp LLM. Analyzes each user&apos;s watch history and generates personalized movie/TV picks with no cloud, no API costs, and no data leaving your server.&#xD;&#xA;&#xD;&#xA;Also includes: Whisper ASR subtitle generation, llama.cpp-powered subtitle translation, and library maintenance tools.&#xD;&#xA;&#xD;&#xA;Requires a llama.cpp server with the configured GGUF model (default alias: qwen3.5-9b-q5_k_m).&#xD;&#xA;&#xD;&#xA;Web dashboard at http://[IP]:[PORT:8000]/
   </Overview>
   <Category>MediaApp:Other Tools:</Category>
   <WebUI>http://[IP]:[PORT:8000]/</WebUI>
   <TemplateURL>https://raw.githubusercontent.com/FineChAInesium/PlexMind/main/templates/PlexMind.xml</TemplateURL>
   <Icon>https://raw.githubusercontent.com/FineChAInesium/PlexMind/main/templates/icon.png</Icon>
-  <ExtraParams>--gpus all --group-add 281</ExtraParams>
+  <ExtraParams/>
   <Description>
-    PlexMind generates personalized Plex recommendations using a local LLM. No cloud. No subscriptions.&#xD;&#xA;&#xD;&#xA;Version line: v0.8.18. See the full README at https://github.com/FineChAInesium/PlexMind for setup instructions and configuration options.
+    PlexMind API/dashboard component. Version line: v0.8.20. This safe template does not mount media or the Docker socket. Deploy the authenticated PlexMind scripts worker, recommendation worker, and Docker broker from the repository Compose stack before using jobs or schedules.
   </Description>
 
   <Networking>
@@ -38,9 +38,9 @@
       <Mode>rw</Mode>
     </Volume>
     <Volume>
-      <HostDir>/var/run/docker.sock</HostDir>
-      <ContainerDir>/var/run/docker.sock</ContainerDir>
-      <Mode>rw</Mode>
+      <HostDir>/mnt/cache/appdata/whisper-asr-webservice/cache</HostDir>
+      <ContainerDir>/whisper-cache</ContainerDir>
+      <Mode>ro</Mode>
     </Volume>
   </Data>
 
@@ -64,7 +64,13 @@
       <Description>llama.cpp API URL — use LAN IP of the host running llama.cpp, not localhost</Description>
     </Variable>
     <Variable>
-      <Value>qwen3-4b-q4_k_m</Value>
+      <Value>http://192.168.1.10:9001/asr</Value>
+      <Name>WHISPER_API_URL</Name>
+      <Mode/>
+      <Description>Whisper ASR endpoint reachable from the PlexMind container</Description>
+    </Variable>
+    <Variable>
+      <Value>qwen3.5-9b-q5_k_m</Value>
       <Name>LLAMA_CPP_MODEL_ALIAS</Name>
       <Mode/>
       <Description>llama.cpp model alias configured on the server</Description>
@@ -79,7 +85,43 @@
       <Value/>
       <Name>PLEXMIND_API_KEY</Name>
       <Mode/>
-      <Description>STRONGLY RECOMMENDED — Protects all API endpoints. Generate a key with: openssl rand -hex 32 and paste it here. If left blank, all endpoints are open to anyone on your network (a WARNING is logged at every startup). If set, add ?api_key=YOUR_KEY to your Plex webhook URL.</Description>
+      <Description>Required API secret. Generate a distinct value with openssl rand -hex 32.</Description>
+    </Variable>
+    <Variable>
+      <Value/>
+      <Name>PLEXMIND_CONTROL_TOKEN</Name>
+      <Mode/>
+      <Description>Required scripts-worker token; must differ from every other PlexMind secret.</Description>
+    </Variable>
+    <Variable>
+      <Value/>
+      <Name>PLEXMIND_BROKER_TOKEN</Name>
+      <Mode/>
+      <Description>Required Docker-broker token; must differ from every other PlexMind secret.</Description>
+    </Variable>
+    <Variable>
+      <Value/>
+      <Name>PLEXMIND_WEBHOOK_SECRET</Name>
+      <Mode/>
+      <Description>Required scoped Plex webhook secret; must differ from every other PlexMind secret.</Description>
+    </Variable>
+    <Variable>
+      <Value>remote</Value>
+      <Name>PLEXMIND_SCRIPT_MODE</Name>
+      <Mode/>
+      <Description>Must remain remote for the least-privilege worker topology.</Description>
+    </Variable>
+    <Variable>
+      <Value>http://plexmind-scripts:9010</Value>
+      <Name>SCRIPTS_API_URL</Name>
+      <Mode/>
+      <Description>Authenticated scripts-worker control URL.</Description>
+    </Variable>
+    <Variable>
+      <Value>http://plexmind-docker-broker:9020</Value>
+      <Name>DOCKER_BROKER_URL</Name>
+      <Mode/>
+      <Description>Authenticated narrow Docker-broker URL.</Description>
     </Variable>
     <Variable>
       <Value>10</Value>
@@ -100,10 +142,22 @@
       <Description>Timezone for the scheduled monthly batch run</Description>
     </Variable>
     <Variable>
-      <Value>plexmind-whisper</Value>
+      <Value>whisper-asr-webservice</Value>
       <Name>WHISPER_CONTAINER_NAME</Name>
       <Mode/>
       <Description>Docker container to start before transcription and stop when transcription exits</Description>
+    </Variable>
+    <Variable>
+      <Value>turbo</Value>
+      <Name>WHISPER_MODEL</Name>
+      <Mode/>
+      <Description>Configured sidecar model; the dashboard enables transcription only when this model exists in /whisper-cache</Description>
+    </Variable>
+    <Variable>
+      <Value>/whisper-cache</Value>
+      <Name>WHISPER_MODEL_CACHE_DIR</Name>
+      <Mode/>
+      <Description>Read-only container path used to inventory locally downloaded Whisper models</Description>
     </Variable>
     <Variable>
       <Value>llama-cpp</Value>
@@ -116,6 +170,12 @@
       <Name>START_SIDECAR_CONTAINERS</Name>
       <Mode/>
       <Description>Set to 1 to start Whisper/llama.cpp sidecars before script jobs</Description>
+    </Variable>
+    <Variable>
+      <Value>0</Value>
+      <Name>MANAGE_LLAMA_CPP_CONTAINER</Name>
+      <Mode/>
+      <Description>Keep 0 when llama.cpp is shared/always-on; set 1 only for a dedicated on-demand container</Description>
     </Variable>
     <Variable>
       <Value>1</Value>

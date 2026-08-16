@@ -17,10 +17,11 @@ import logging
 import os
 import re
 import secrets
-import socket
+import time
 from pathlib import Path
-from urllib.parse import urlparse, urlunparse
 import httpx
+
+os.umask(0o077)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -30,24 +31,18 @@ logging.basicConfig(
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
 
-from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Query, Request
+from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import APIKeyHeader
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse, StreamingResponse
-from pydantic import BaseModel
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from pydantic import BaseModel, Field, field_validator
+from typing import Literal
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 
-from app import cache, llm_client, plex_client, plex_sync, recommender, scheduler, tmdb_client, script_runner
-
-# ---------------------------------------------------------------------------
-# In-memory job store for /api/run-all SSE progress
-# ---------------------------------------------------------------------------
-_jobs: dict[str, dict] = {}
-_job_conditions: dict[str, asyncio.Condition] = {}
-
+from app import cache, llm_client, model_advisor, plex_client, plex_sync, recommender, scheduler, tmdb_client, whisper_models, recommendation_jobs
 
 # ---------------------------------------------------------------------------
 # Startup
@@ -55,6 +50,38 @@ _job_conditions: dict[str, asyncio.Condition] = {}
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    required_secrets = {
+        "PLEXMIND_API_KEY": _API_KEY,
+        "PLEXMIND_CONTROL_TOKEN": os.getenv("PLEXMIND_CONTROL_TOKEN", ""),
+        "PLEXMIND_BROKER_TOKEN": os.getenv("PLEXMIND_BROKER_TOKEN", ""),
+        "PLEXMIND_WEBHOOK_SECRET": os.getenv("PLEXMIND_WEBHOOK_SECRET", ""),
+    }
+    missing_secrets = [name for name, value in required_secrets.items() if not value]
+    if missing_secrets:
+        raise RuntimeError(f"Required PlexMind secrets are missing: {', '.join(missing_secrets)}")
+    if len(set(required_secrets.values())) != len(required_secrets):
+        raise RuntimeError("PlexMind API, control, broker, and webhook secrets must be distinct")
+    if _SCRIPT_MODE != "remote":
+        raise RuntimeError("PLEXMIND_SCRIPT_MODE must be remote in the least-privilege topology")
+    if not os.getenv("DOCKER_BROKER_URL", "") or not _SCRIPTS_API_URL:
+        raise RuntimeError("DOCKER_BROKER_URL and SCRIPTS_API_URL are required")
+    data_dir = Path(os.getenv("DATA_DIR", "/app/data"))
+    required_writes = [
+        Path(os.getenv("FEEDBACK_FILE", data_dir / "feedback.json")),
+        Path(os.getenv("SHOWN_RECS_FILE", data_dir / "shown_recs.json")),
+        Path(os.getenv("WATCHLIST_TRACK_FILE", data_dir / "watchlist_track.json")),
+        Path(os.getenv("REC_HISTORY_FILE", data_dir / "recommendation_history.json")),
+        data_dir / "recommendation_jobs.json",
+        data_dir / "scheduler_state.json",
+    ]
+    unwritable = [
+        str(path) for path in required_writes
+        if (path.exists() and not os.access(path, os.W_OK))
+        or (not path.exists() and not os.access(path.parent, os.W_OK))
+    ]
+    if unwritable:
+        raise RuntimeError(f"PlexMind persistent files are not writable: {', '.join(unwritable)}")
+
     ok = await llm_client.health_check()
     if not ok:
         print(
@@ -64,15 +91,13 @@ async def lifespan(app: FastAPI):
     else:
         print(f"LLM ready: {llm_client.LLAMA_CPP_MODEL} @ {llm_client.LLAMA_CPP_URL}")
 
-    # Remove legacy PlexMind *collections* only (not playlists — those are active).
-    async def _cleanup():
-        try:
-            await asyncio.to_thread(plex_sync.purge_all_plexmind_collections)
-            print("PlexMind: legacy collections purged.")
-        except Exception as exc:
-            print(f"PlexMind: legacy cleanup error ({exc})")
-    asyncio.create_task(_cleanup())
+    async def _launch_scheduled_script(job: str) -> dict:
+        return await _scripts_request("POST", f"/jobs/{job}/start", json={"run_now": True})
 
+    scheduler.set_script_launcher(_launch_scheduled_script)
+    scheduler.set_recommendation_launcher(
+        lambda triggered_by: recommendation_jobs.create(triggered_by)
+    )
     scheduler.start()
     yield
     scheduler.stop()
@@ -83,7 +108,7 @@ limiter = Limiter(key_func=get_remote_address)
 app = FastAPI(
     title="PlexMind",
     description="llama.cpp powered movie/TV recommendation engine for Plex",
-    version="0.8.18",
+    version="0.8.20",
     lifespan=lifespan,
 )
 app.state.limiter = limiter
@@ -101,33 +126,83 @@ app.add_middleware(
 )
 
 # ---------------------------------------------------------------------------
-# Optional API key auth
-# Protect mutation / expensive endpoints when PLEXMIND_API_KEY is set in .env.
-# Leave unset to run open on a trusted LAN (default).
+# Required API key auth. Startup refuses an unset key.
 # ---------------------------------------------------------------------------
 _API_KEY = os.getenv("PLEXMIND_API_KEY", "")
-if not _API_KEY:
-    logging.getLogger("plexmind").warning(
-        "SECURITY: PLEXMIND_API_KEY is not set — all endpoints are open to the network. "
-        "Set it in your .env: PLEXMIND_API_KEY=$(openssl rand -hex 32)"
-    )
 
 _api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
 
 _API_KEY_COOKIE = "plexmind_api_key"
+_SESSIONS: dict[str, float] = {}
+
+
+def _prune_sessions(now: float | None = None) -> None:
+    now = time.time() if now is None else now
+    for token, expires in list(_SESSIONS.items()):
+        if expires <= now:
+            _SESSIONS.pop(token, None)
+    if len(_SESSIONS) >= 1024:
+        for token, _expires in sorted(_SESSIONS.items(), key=lambda item: item[1])[:len(_SESSIONS) - 1023]:
+            _SESSIONS.pop(token, None)
 
 
 async def _require_key(
     request: Request,
     key: str | None = Depends(_api_key_header),
 ) -> None:
-    """Accept key via X-API-Key, same-origin dashboard cookie, or ?api_key=.
+    """Accept key via X-API-Key or an authenticated same-origin session cookie.
     Uses secrets.compare_digest for timing-safe comparison."""
     if not _API_KEY:
         return
-    provided = key or request.cookies.get(_API_KEY_COOKIE, "") or request.query_params.get("api_key", "")
-    if not provided or not secrets.compare_digest(provided.encode(), _API_KEY.encode()):
+    cookie = request.cookies.get(_API_KEY_COOKIE, "")
+    header_ok = bool(key and secrets.compare_digest(key.encode(), _API_KEY.encode()))
+    now = time.time()
+    _prune_sessions(now)
+    session_ok = bool(cookie and _SESSIONS.get(cookie, 0) > now)
+    if not header_ok and not session_ok:
         raise HTTPException(status_code=403, detail="Invalid or missing API key")
+
+
+async def _require_header_key(key: str | None = Depends(_api_key_header)) -> None:
+    """Authenticate a new browser session without trusting an existing cookie."""
+    if _API_KEY and (not key or not secrets.compare_digest(key.encode(), _API_KEY.encode())):
+        raise HTTPException(status_code=403, detail="Invalid or missing API key")
+
+
+async def _require_webhook_key(request: Request) -> None:
+    expected = os.getenv("PLEXMIND_WEBHOOK_SECRET", "")
+    if not expected:
+        raise HTTPException(status_code=503, detail="Webhook secret is not configured")
+    provided = request.query_params.get("webhook_secret", "")
+    if not provided or not secrets.compare_digest(provided, expected):
+        raise HTTPException(status_code=403, detail="Invalid webhook secret")
+
+
+@app.post("/api/session", include_in_schema=False)
+@limiter.limit("10/minute")
+async def create_session(request: Request, _: None = Depends(_require_header_key)):
+    response = JSONResponse({"status": "ok"})
+    if _API_KEY:
+        _prune_sessions()
+        session_token = secrets.token_urlsafe(32)
+        _SESSIONS[session_token] = time.time() + 60 * 60 * 12
+        response.set_cookie(
+            _API_KEY_COOKIE, session_token, httponly=True,
+            samesite="strict",
+            secure=os.getenv("PLEXMIND_SECURE_COOKIE", "").lower() in ("1", "true", "yes"),
+            max_age=60 * 60 * 12,
+        )
+    return response
+
+
+@app.delete("/api/session", include_in_schema=False)
+async def delete_session(request: Request):
+    token = request.cookies.get(_API_KEY_COOKIE, "")
+    if token:
+        _SESSIONS.pop(token, None)
+    response = JSONResponse({"status": "signed_out"})
+    response.delete_cookie(_API_KEY_COOKIE, samesite="strict")
+    return response
 
 # ---------------------------------------------------------------------------
 # LAN allowlist (used as defence-in-depth on webhook)
@@ -161,9 +236,9 @@ def _validate_user_id(user_id: str) -> str:
 # ---------------------------------------------------------------------------
 
 class FeedbackRequest(BaseModel):
-    title: str
-    rating: str          # "like" | "dislike" | "watched"
-    note: str = ""
+    title: str = Field(min_length=1, max_length=300)
+    rating: Literal["like", "dislike", "watched"]
+    note: str = Field(default="", max_length=2000)
 
 
 class RecommendationItem(BaseModel):
@@ -179,10 +254,22 @@ class ScriptJobRequest(BaseModel):
     max_runtime_minutes: int = 0
     target_languages: str | None = None
 
+    @field_validator("target_languages")
+    @classmethod
+    def validate_target_languages(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        languages = [item.strip() for item in value.split(",") if item.strip()]
+        if not languages or len(languages) > 10 or any(
+            not re.fullmatch(r"[a-z]{2,3}(?:-[A-Za-z]{2,8})?", item) for item in languages
+        ):
+            raise ValueError("target_languages must be 1-10 comma-separated BCP-47 language tags")
+        return ",".join(languages)
+
 
 _SCRIPT_JOB_NAMES = {"transcribe", "translate", "maintenance-audit", "maintenance-dupes", "maintenance-pgs", "maintenance-all"}
 _SCRIPTS_API_URL = os.getenv("SCRIPTS_API_URL", "http://scripts:9010").rstrip("/")
-_SCRIPT_MODE = os.getenv("PLEXMIND_SCRIPT_MODE", "local").lower()
+_SCRIPT_MODE = os.getenv("PLEXMIND_SCRIPT_MODE", "remote").lower()
 
 
 def _validate_script_job(job: str) -> str:
@@ -191,40 +278,23 @@ def _validate_script_job(job: str) -> str:
     return job
 
 
-async def _local_scripts_request(method: str, path: str, **kwargs):
-    parts = [p for p in path.strip("/").split("/") if p]
-    if method == "GET" and parts == ["health"]:
-        return script_runner.health()
-    if method == "GET" and parts == ["jobs"]:
-        return script_runner.jobs()
-    if len(parts) >= 2 and parts[0] == "jobs":
-        job = _validate_script_job(parts[1])
-        if method == "GET" and len(parts) == 2:
-            return script_runner.status(job)
-        if method == "GET" and len(parts) == 3 and parts[2] == "log":
-            params = kwargs.get("params") or {}
-            return script_runner.log(job, int(params.get("lines", 200)))
-        if method == "POST" and len(parts) == 3 and parts[2] == "start":
-            result = script_runner.start(job, kwargs.get("json") or {})
-            if result.get("status") == "unavailable":
-                raise HTTPException(status_code=503, detail=result)
-            if result.get("status") == "already_running":
-                raise HTTPException(status_code=409, detail=result)
-            return result
-        if method == "POST" and len(parts) == 3 and parts[2] == "stop":
-            return script_runner.stop(job)
-    raise HTTPException(status_code=404, detail="Scripts endpoint not found")
-
-
 async def _scripts_request(method: str, path: str, **kwargs):
-    if _SCRIPT_MODE == "local":
-        return await _local_scripts_request(method, path, **kwargs)
-
+    headers = dict(kwargs.pop("headers", {}) or {})
+    control_token = os.getenv("PLEXMIND_CONTROL_TOKEN", "")
+    if control_token:
+        headers["X-Control-Token"] = control_token
+    if method not in ("GET", "HEAD"):
+        headers["Idempotency-Key"] = secrets.token_urlsafe(24)
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
-            res = await client.request(method, f"{_SCRIPTS_API_URL}{path}", **kwargs)
+            res = await client.request(method, f"{_SCRIPTS_API_URL}{path}", headers=headers, **kwargs)
     except httpx.RequestError:
-        return await _local_scripts_request(method, path, **kwargs)
+        detail = (
+            "Scripts controller is unavailable"
+            if method in ("GET", "HEAD")
+            else "Scripts controller outcome is unknown; mutation was not retried"
+        )
+        raise HTTPException(status_code=503, detail=detail)
     try:
         payload = res.json()
     except ValueError:
@@ -238,25 +308,30 @@ async def _scripts_request(method: str, path: str, **kwargs):
 # Routes
 # ---------------------------------------------------------------------------
 
-def _bridge_fallback_url(url: str) -> str:
-    parsed = urlparse(url)
-    if parsed.hostname not in {"whisper", "whisper-asr-webservice"}:
-        return url
-    try:
-        socket.gethostbyname(parsed.hostname)
-        return url
-    except OSError:
-        port = f":{parsed.port}" if parsed.port else ""
-        return urlunparse(parsed._replace(netloc=f"172.17.0.1{port}"))
-
-
 async def _whisper_health() -> dict:
-    url = _bridge_fallback_url(os.getenv("WHISPER_API_URL", "http://whisper-asr-webservice:9000/asr"))
-    try:
-        if script_runner.status("transcribe").get("running"):
-            return {"ready": True, "url": url, "busy": True, "status": "transcribing"}
-    except Exception:
-        pass
+    url = os.getenv("WHISPER_API_URL", "http://whisper:9000/asr")
+
+    container_name = os.getenv("WHISPER_CONTAINER_NAME", "whisper-asr-webservice")
+    container_state = "unknown"
+    actual_model = None
+    broker_url = os.getenv("DOCKER_BROKER_URL", "")
+    broker_token = os.getenv("PLEXMIND_BROKER_TOKEN", "")
+    if broker_url:
+        try:
+            async with httpx.AsyncClient(timeout=3) as client:
+                inspect = await client.get(f"{broker_url.rstrip('/')}/containers/{container_name}/json", headers={"X-Broker-Token": broker_token})
+                if inspect.status_code == 200:
+                    payload = inspect.json()
+                    state = payload.get("State") or {}
+                    container_state = "running" if state.get("Running") else "standby" if state.get("Status") in ("created", "exited") else "fault"
+                    for item in (payload.get("Config") or {}).get("Env", []):
+                        if item.startswith("ASR_MODEL="):
+                            actual_model = item.split("=", 1)[1]
+                            break
+        except Exception:
+            pass
+    if container_state == "standby":
+        return {"ready": False, "state": "standby", "url": url, "actual_model": actual_model}
 
     base_url = url[:-4] if url.endswith("/asr") else url.rstrip("/")
     probes = [base_url or url, url]
@@ -269,10 +344,12 @@ async def _whisper_health() -> dict:
                 "ready": res.status_code < 500,
                 "url": url,
                 "status_code": res.status_code,
+                "state": "ready" if res.status_code < 500 else "fault",
+                "actual_model": actual_model,
             }
         except Exception as exc:
             last_error = str(exc)
-    return {"ready": False, "url": url, "error": last_error or "unreachable"}
+    return {"ready": False, "state": "starting" if container_state == "running" else "fault", "url": url, "actual_model": actual_model, "error": last_error or "unreachable"}
 
 
 @app.get("/health/live")
@@ -287,11 +364,22 @@ async def health():
         llm_client.health_check(),
         _whisper_health(),
     )
+    try:
+        scripts = await _scripts_request("GET", "/health")
+    except HTTPException as exc:
+        scripts = {"status": "unavailable", "detail": exc.detail}
+    heartbeat_path = Path(os.getenv("DATA_DIR", "/app/data")) / "recommendation_worker_heartbeat"
+    try:
+        recommendation_worker_ready = time.time() - float(heartbeat_path.read_text()) < 10
+    except (OSError, ValueError):
+        recommendation_worker_ready = False
     return {
-        "status": "ok",
+        "status": "ok" if llm_ok and scripts["status"] == "ok" and recommendation_worker_ready else "degraded",
         "llm": llm_client.LLAMA_CPP_MODEL,
         "llm_ready": llm_ok,
         "whisper": whisper,
+        "scripts": scripts,
+        "recommendation_worker_ready": recommendation_worker_ready,
     }
 
 
@@ -380,8 +468,6 @@ def user_feedback(user_id: str, body: FeedbackRequest, _: None = Depends(_requir
     Automatically invalidates the user's recommendation cache.
     """
     _validate_user_id(user_id)
-    if body.rating not in ("like", "dislike", "watched"):
-        raise HTTPException(status_code=422, detail="rating must be 'like', 'dislike', or 'watched'")
     cache.add_feedback(user_id, body.title, body.rating, body.note)
     return {"status": "ok", "user_id": user_id, "title": body.title, "rating": body.rating}
 
@@ -433,8 +519,6 @@ def remove_plex_sync(user_id: str, _: None = Depends(_require_key)):
 @limiter.limit("3/hour")
 async def run_all(
     request: Request,
-    background_tasks: BackgroundTasks,
-    force: bool = Query(True),
     _: None = Depends(_require_key),
 ):
     """
@@ -442,39 +526,7 @@ async def run_all(
     Returns immediately with a job_id. Poll /api/jobs/{job_id}/status or
     stream /api/jobs/{job_id}/events (SSE) to track progress.
     """
-    import uuid
-    job_id = str(uuid.uuid4())[:8]
-
-    _jobs[job_id] = {"status": "pending", "details": [], "summary": None}
-    _job_conditions[job_id] = asyncio.Condition()
-
-    async def _run():
-        _jobs[job_id]["status"] = "running"
-        async def on_progress(event: dict):
-            _jobs[job_id]["details"].append(event)
-            if event.get("type") == "done":
-                _jobs[job_id]["status"] = "completed"
-                _jobs[job_id]["summary"] = event.get("summary")
-            async with _job_conditions[job_id]:
-                _job_conditions[job_id].notify_all()
-
-        try:
-            result = await scheduler.run_all_users(triggered_by=f"api/{job_id}", on_progress=on_progress)
-            if result.get("skipped_reason") == "already_running":
-                _jobs[job_id]["status"] = "skipped"
-            else:
-                _jobs[job_id]["status"] = "completed"
-            _jobs[job_id]["summary"] = result.get("summary")
-            print("[run-all/%s] done: %s" % (job_id, result.get("summary")))
-        except Exception as exc:
-            event = {"type": "error", "error": str(exc)}
-            _jobs[job_id]["status"] = "failed"
-            _jobs[job_id]["error"] = str(exc)
-            _jobs[job_id]["details"].append(event)
-            async with _job_conditions[job_id]:
-                _job_conditions[job_id].notify_all()
-
-    background_tasks.add_task(_run)
+    job_id = recommendation_jobs.create("api")
     return {
         "status": "started",
         "job_id": job_id,
@@ -485,7 +537,7 @@ async def run_all(
 @app.get("/api/jobs/{job_id}/status")
 def job_status(job_id: str, _: None = Depends(_require_key)):
     """Return the current status of a run-all job."""
-    job = _jobs.get(job_id)
+    job = recommendation_jobs.get(job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
     return {"job_id": job_id, **job}
@@ -498,13 +550,13 @@ async def job_events(job_id: str, _: None = Depends(_require_key)):
     Connect immediately after POST /api/run-all and receive progress events.
     Stream ends with a 'done' or 'error' event.
     """
-    if job_id not in _job_conditions:
+    if recommendation_jobs.get(job_id) is None:
         raise HTTPException(status_code=404, detail="Job not found")
 
     async def generate():
         index = 0
         while True:
-            job = _jobs.get(job_id)
+            job = recommendation_jobs.get(job_id)
             if not job:
                 break
 
@@ -516,17 +568,11 @@ async def job_events(job_id: str, _: None = Depends(_require_key)):
                 if event.get("type") in ("done", "error", "already_running"):
                     return
 
-            if job.get("status") in ("completed", "failed", "skipped"):
+            if job.get("status") in ("completed", "failed", "skipped", "interrupted"):
                 return
 
-            try:
-                async with _job_conditions[job_id]:
-                    job = _jobs.get(job_id)
-                    if job and (index < len(job.get("details", [])) or job.get("status") in ("completed", "failed", "skipped")):
-                        continue
-                    await asyncio.wait_for(_job_conditions[job_id].wait(), timeout=10)
-            except asyncio.TimeoutError:
-                yield ": keepalive\n\n"  # SSE comment — keeps proxy/browser alive
+            await asyncio.sleep(1)
+            yield ": keepalive\n\n"
 
     return StreamingResponse(generate(), media_type="text/event-stream",
                               headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
@@ -536,6 +582,26 @@ async def job_events(job_id: str, _: None = Depends(_require_key)):
 async def scripts_health():
     """Return scripts control-service health."""
     return await _scripts_request("GET", "/health")
+
+
+@app.get("/api/whisper/models", dependencies=[Depends(_require_key)])
+async def available_whisper_models():
+    """Return only Whisper models already present in the mounted local cache."""
+    inventory = whisper_models.discover()
+    sidecar = await _whisper_health()
+    inventory["actual_sidecar_model"] = sidecar.get("actual_model")
+    inventory["sidecar_state"] = sidecar.get("state")
+    inventory["ready_for_start"] = bool(
+        inventory.get("configured_model")
+        and sidecar.get("actual_model") == inventory.get("configured_model")
+    )
+    return inventory
+
+
+@app.get("/api/model-advisor", dependencies=[Depends(_require_key)])
+def advise_models(context_tokens: int = Query(8192, ge=2048, le=32768)):
+    """Recommend compatible quantizations without downloading or switching models."""
+    return model_advisor.recommendations(scheduler.gpu_info(), context_tokens)
 
 
 @app.get("/api/scripts/jobs", dependencies=[Depends(_require_key)])
@@ -576,7 +642,7 @@ async def script_job_stop(job: str):
     return await _scripts_request("POST", f"/jobs/{job}/stop")
 
 
-@app.get("/api/scheduler/status")
+@app.get("/api/scheduler/status", dependencies=[Depends(_require_key)])
 def scheduler_status():
     """Return next scheduled run time and GPU state."""
     from app.scheduler import gpu_info
@@ -601,11 +667,24 @@ def scheduler_status():
         "next_run_utc": next_run,
         "gpu_utilization_pct": util,
         "gpu_vendor": vendor,
+        "gpu_detection_source": info.get("source"),
+        "gpu_probe_error": info.get("probe_error"),
         "gpu_threshold_pct": threshold,
         "gpu_busy": (util or 0) >= threshold,
         "cron_day": cron_day,
         "cron_hour": cron_hour,
         "cron_minute": cron_minute,
+        "script_timezone": os.getenv("TZ", "UTC"),
+        "script_windows": {
+            "transcribe": {
+                "start_hour": int(os.getenv("TRANSCRIBE_START_HOUR", "5")),
+                "end_hour": int(os.getenv("TRANSCRIBE_END_HOUR", "12")),
+            },
+            "translate": {
+                "start_hour": int(os.getenv("TRANSLATE_START_HOUR", "23")),
+                "end_hour": int(os.getenv("TRANSLATE_END_HOUR", "3")),
+            },
+        },
     }
 
 
@@ -616,31 +695,14 @@ def scheduler_configure(
     minute: int = Query(0, ge=0, le=59, description="Minute (0–59)"),
 ):
     """Reschedule the monthly recommendation batch run."""
-    from apscheduler.triggers.cron import CronTrigger
-    scheduler.scheduler.reschedule_job(
-        "monthly_recs",
-        trigger=CronTrigger(day=day, hour=hour, minute=minute, timezone="UTC"),
-    )
-    job = scheduler.scheduler.get_job("monthly_recs")
-    next_run = job.next_run_time.isoformat() if job and job.next_run_time else None
+    next_run = scheduler.configure_monthly(day, hour, minute)
     return {"status": "ok", "day": day, "hour": hour, "minute": minute, "next_run_utc": next_run}
 
 
-@app.get("/api/storage")
-def storage_info():
-    """Return disk usage for the data volume."""
-    import shutil
-    data_dir = os.getenv("DATA_DIR", "/app/data")
-    try:
-        usage = shutil.disk_usage(data_dir)
-        return {
-            "total_bytes": usage.total,
-            "used_bytes": usage.used,
-            "free_bytes": usage.free,
-            "used_pct": round(usage.used / usage.total * 100, 1),
-        }
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc))
+@app.get("/api/storage", dependencies=[Depends(_require_key)])
+async def storage_info():
+    """Return media-library capacity from the least-privilege scripts worker."""
+    return await _scripts_request("GET", "/storage")
 
 
 def _read_env_stats(path: Path) -> dict[str, int]:
@@ -660,7 +722,7 @@ def _read_env_stats(path: Path) -> dict[str, int]:
     return stats
 
 
-@app.get("/api/script-stats")
+@app.get("/api/script-stats", dependencies=[Depends(_require_key)])
 def script_stats():
     """Return lifetime transcription and translation counters."""
     data_dir = Path(os.getenv("DATA_DIR", "/app/data"))
@@ -696,15 +758,14 @@ def script_stats():
 
 @app.post("/webhook")
 @limiter.limit("30/minute")
-async def plex_webhook(request: Request, _: None = Depends(_require_key)):
+async def plex_webhook(request: Request, _: None = Depends(_require_webhook_key)):
     """
     Plex media server webhook receiver.
     On library.new: invalidate all recommendation caches so the next request
     regenerates with the freshly added content included in the candidate pool.
 
     Configure in Plex: Settings → Webhooks → Add Webhook → http://<host>:8000/webhook
-    If PLEXMIND_API_KEY is set, add ?api_key=<key> to the webhook URL since Plex
-    cannot send custom headers.
+    Add ?webhook_secret=<PLEXMIND_WEBHOOK_SECRET> to the Plex webhook URL.
     """
     # Defence-in-depth: Plex is always on the LAN; reject internet sources
     if request.client and not _is_lan(request.client.host):
@@ -755,7 +816,7 @@ async def migrate_playlists():
     return result
 
 
-@app.get("/api/trending")
+@app.get("/api/trending", dependencies=[Depends(_require_key)])
 async def trending(
     media_type: str = Query("all", description="all | movie | tv"),
     time_window: str = Query("week", description="day | week"),
@@ -799,17 +860,7 @@ if not _no_gui and _os.path.isdir(_static_dir):
 
     @app.get("/", include_in_schema=False)
     async def dashboard():
-        response = FileResponse(_os.path.join(_static_dir, "index.html"))
-        if _API_KEY:
-            response.set_cookie(
-                _API_KEY_COOKIE,
-                _API_KEY,
-                httponly=True,
-                samesite="lax",
-                secure=os.getenv("PLEXMIND_SECURE_COOKIE", "").lower() in ("1", "true", "yes"),
-                max_age=60 * 60 * 24 * 30,
-            )
-        return response
+        return FileResponse(_os.path.join(_static_dir, "index.html"))
 
     @app.get("/favicon.ico", include_in_schema=False)
     async def favicon():

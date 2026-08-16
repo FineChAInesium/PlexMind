@@ -1,7 +1,9 @@
 #!/bin/bash
 # ==============================================================================
+
+umask 077
 # common_lib.sh — Shared Infrastructure for Transcription/Translation Pipeline
-# Version: 0.8.18 — PlexMind release line
+# Version: 0.8.20 — PlexMind release line
 #
 # Source this file from any pipeline script:
 #   source /app/lib.sh || { echo "FATAL: Cannot load lib.sh"; exit 1; }
@@ -34,6 +36,9 @@ RUN_NOW="${RUN_NOW:-0}"
 MAX_RUNTIME_MINUTES="${MAX_RUNTIME_MINUTES:-0}"
 SCRIPT_STARTED_AT="${SCRIPT_STARTED_AT:-$(date +%s)}"
 LOG_RETENTION_DAYS="${LOG_RETENTION_DAYS:-7}"
+SUBTITLE_FILE_MODE="${SUBTITLE_FILE_MODE:-0644}"
+SUBTITLE_UID="${SUBTITLE_UID:-}"
+SUBTITLE_GID="${SUBTITLE_GID:-}"
 
 QUARANTINE_DIR="${QUARANTINE_DIR:-/app/data/quarantine}"
 REPORT_DIR="${REPORT_DIR:-/app/data/reports}"
@@ -41,6 +46,7 @@ REPORT_DIR="${REPORT_DIR:-/app/data/reports}"
 # Media directories (container paths)
 MOVIE_DIR="${MOVIE_DIR:-/media/movies}"
 TV_DIR="${TV_DIR:-/media/tv}"
+SIDECAR_OWNED_CONTAINERS="${SIDECAR_OWNED_CONTAINERS:-}"
 
 # Failure reason codes
 FAIL_CURL_TIMEOUT="CURL_TIMEOUT"
@@ -58,6 +64,45 @@ log() {
     echo "$MSG"
     if [ -n "${LOG_FILE:-}" ] && [ -n "$LOG_FILE" ]; then
         echo "$MSG" >> "$LOG_FILE"
+    fi
+}
+
+# Read the numeric lifetime-stat files as data. Never source files from the
+# shared data volume: the API and worker containers can also write there.
+load_numeric_stats() {
+    local stats_file="$1" raw key value
+    [ -f "$stats_file" ] || return 0
+    while IFS= read -r raw || [ -n "$raw" ]; do
+        raw="${raw%$'\r'}"
+        [[ "$raw" =~ ^[[:space:]]*(#|$) ]] && continue
+        if [[ "$raw" =~ ^(LIFETIME_[A-Z0-9_]+)=([0-9]+)$ ]]; then
+            key="${BASH_REMATCH[1]}"
+            value="${BASH_REMATCH[2]}"
+            printf -v "$key" '%s' "$value"
+        else
+            log "WARNING: Ignoring invalid stats record in ${stats_file##*/}."
+        fi
+    done < "$stats_file"
+}
+
+finalize_subtitle_permissions() {
+    local subtitle_file="$1"
+    chmod "$SUBTITLE_FILE_MODE" "$subtitle_file" || {
+        log "ERROR: Could not set subtitle mode ${SUBTITLE_FILE_MODE}: $subtitle_file"
+        return 1
+    }
+    if [ -n "$SUBTITLE_UID" ] || [ -n "$SUBTITLE_GID" ]; then
+        if { [ -n "$SUBTITLE_UID" ] && ! [[ "$SUBTITLE_UID" =~ ^[0-9]+$ ]]; } || \
+           { [ -n "$SUBTITLE_GID" ] && ! [[ "$SUBTITLE_GID" =~ ^[0-9]+$ ]]; }; then
+            log "ERROR: SUBTITLE_UID and SUBTITLE_GID must be numeric when configured."
+            return 1
+        fi
+        local owner="$SUBTITLE_UID"
+        [ -n "$SUBTITLE_GID" ] && owner="${owner}:${SUBTITLE_GID}"
+        chown "$owner" "$subtitle_file" || {
+            log "ERROR: Could not set configured subtitle ownership: $subtitle_file"
+            return 1
+        }
     fi
 }
 
@@ -88,11 +133,14 @@ prepare_log_file() {
 # Usage: acquire_lock "/tmp/my_script.lock"
 acquire_lock() {
     local LOCK="$1"
-    exec 200>"$LOCK"
-    if ! flock -n 200; then
+    local lock_fd
+    mkdir -p "$(dirname "$LOCK")"
+    exec {lock_fd}>"$LOCK"
+    if ! flock -n "$lock_fd"; then
         log "Another instance is already running (lock: $LOCK). Exiting."
         exit 1
     fi
+    PLEXMIND_LOCK_FDS="${PLEXMIND_LOCK_FDS:-} ${lock_fd}"
     echo "$$" > "${LOCK%.lock}.pid"
 }
 
@@ -116,9 +164,9 @@ stop_docker_container() {
 
     [ "${STOP_SIDECAR_CONTAINERS:-1}" = "1" ] || return 0
 
-    local socket="${DOCKER_SOCKET:-/var/run/docker.sock}"
-    if [ ! -S "$socket" ]; then
-        log "${service_name}: Docker socket not available at ${socket}; leaving sidecar container running."
+    local broker="${DOCKER_BROKER_URL:-}"
+    if [ -z "$broker" ] || [ -z "${PLEXMIND_BROKER_TOKEN:-}" ]; then
+        log "${service_name}: authenticated Docker broker is not configured; leaving sidecar container running."
         return 0
     fi
     if ! command -v curl >/dev/null 2>&1; then
@@ -130,8 +178,11 @@ stop_docker_container() {
     local name status
     for name in "$@"; do
         [ -n "${name:-}" ] || continue
-        status=$(curl -sS -o /dev/null -w "%{http_code}" --unix-socket "$socket" \
-            -X POST "http://docker/containers/${name}/stop?t=${timeout}" 2>/dev/null || true)
+        case " ${SIDECAR_OWNED_CONTAINERS} " in
+            *" ${name} "*) ;;
+            *) continue ;;
+        esac
+        status=$(curl -sS -o /dev/null -w "%{http_code}" -H "X-Broker-Token: ${PLEXMIND_BROKER_TOKEN}" -X POST "${broker%/}/containers/${name}/stop?t=${timeout}" 2>/dev/null || true)
         case "$status" in
             204) log "${service_name}: stopped container ${name}."; return 0 ;;
             304) log "${service_name}: container ${name} already stopped."; return 0 ;;
@@ -140,7 +191,7 @@ stop_docker_container() {
         esac
     done
 
-    log "${service_name}: no matching sidecar container found to stop."
+    log "${service_name}: no job-owned sidecar container to stop; leaving shared service unchanged."
 }
 
 
@@ -150,9 +201,9 @@ start_docker_container() {
 
     [ "${START_SIDECAR_CONTAINERS:-1}" = "1" ] || return 0
 
-    local socket="${DOCKER_SOCKET:-/var/run/docker.sock}"
-    if [ ! -S "$socket" ]; then
-        log "${service_name}: Docker socket not available at ${socket}; cannot start sidecar container."
+    local broker="${DOCKER_BROKER_URL:-}"
+    if [ -z "$broker" ] || [ -z "${PLEXMIND_BROKER_TOKEN:-}" ]; then
+        log "${service_name}: authenticated Docker broker is not configured; cannot start sidecar container."
         return 0
     fi
     if ! command -v curl >/dev/null 2>&1; then
@@ -163,17 +214,48 @@ start_docker_container() {
     local name status
     for name in "$@"; do
         [ -n "${name:-}" ] || continue
-        status=$(curl -sS -o /dev/null -w "%{http_code}" --unix-socket "$socket" \
-            -X POST "http://docker/containers/${name}/start" 2>/dev/null || true)
+        status=$(curl -sS -o /dev/null -w "%{http_code}" -H "X-Broker-Token: ${PLEXMIND_BROKER_TOKEN}" -X POST "${broker%/}/containers/${name}/start" 2>/dev/null || true)
         case "$status" in
-            204) log "${service_name}: started container ${name}."; return 0 ;;
+            204)
+                SIDECAR_OWNED_CONTAINERS="${SIDECAR_OWNED_CONTAINERS:+${SIDECAR_OWNED_CONTAINERS} }${name}"
+                log "${service_name}: started container ${name}; this job owns the transition."
+                return 0
+                ;;
             304) log "${service_name}: container ${name} already running."; return 0 ;;
             404) ;;
             *) log "${service_name}: Docker start request for ${name} returned HTTP ${status:-unknown}." ;;
         esac
     done
 
-    log "${service_name}: no matching sidecar container found to start."
+    log "ERROR: ${service_name}: no configured sidecar container could be started."
+    return 1
+}
+
+
+validate_media_directories() {
+    local root entries total=0
+    if [ "$MOVIE_DIR" = "$TV_DIR" ]; then
+        log "ERROR: MOVIE_DIR and TV_DIR resolve to the same container path: ${MOVIE_DIR}"
+        return 1
+    fi
+    for root in "$MOVIE_DIR" "$TV_DIR"; do
+        if [ ! -d "$root" ]; then
+            log "ERROR: configured media root is not a directory inside this container: ${root}"
+            return 1
+        fi
+        if [ ! -r "$root" ] || [ ! -x "$root" ]; then
+            log "ERROR: configured media root is not readable/searchable: ${root}"
+            return 1
+        fi
+        entries=$(find "$root" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null | wc -l)
+        total=$((total + entries))
+        log "MEDIA ROOT: ${root} is accessible; nonempty=${entries}."
+    done
+    if [ "$total" -eq 0 ] && [ "${ALLOW_EMPTY_MEDIA_ROOTS:-0}" != "1" ]; then
+        log "ERROR: all configured media roots are empty; set ALLOW_EMPTY_MEDIA_ROOTS=1 only for an intentional empty library."
+        return 1
+    fi
+    return 0
 }
 
 wait_for_whisper_api() {
@@ -255,54 +337,62 @@ retry_failed() {
 
 validate_srt() {
     local SRT_FILE="$1"
-
-    local FILE_BYTES
-    FILE_BYTES=$(stat -c%s "$SRT_FILE" 2>/dev/null || echo 0)
-    if [ "$FILE_BYTES" -lt 100 ]; then
-        log "  VALIDATE: FAIL — file is suspiciously small (${FILE_BYTES} bytes)."
+    local VALIDATION_MODE="${2:-quality}"
+    local RESULT STATUS REASON CUE_COUNT AVG_DUR AVG_CHARS
+    RESULT=$(python3 - "$SRT_FILE" "$MIN_CUE_COUNT" "$MAX_AVG_CUE_DURATION" "$MAX_AVG_CUE_CHARS" "$VALIDATION_MODE" <<'PYEOF'
+import os, re, sys
+path, min_cues, max_avg_duration, max_avg_chars, mode = sys.argv[1], int(sys.argv[2]), float(sys.argv[3]), float(sys.argv[4]), sys.argv[5]
+try:
+    size = os.path.getsize(path)
+    text = open(path, encoding="utf-8", errors="replace").read().replace("\r\n", "\n").replace("\r", "\n")
+except OSError:
+    print("fail|unreadable|0|0|0"); raise SystemExit
+if size < 100:
+    print(f"fail|suspiciously_small:{size}|0|0|0"); raise SystemExit
+stamp = re.compile(r"^\s*(\d{2}):(\d{2}):(\d{2}),([0-9]{3})\s+-->\s+(\d{2}):(\d{2}):(\d{2}),([0-9]{3})(?:\s+.*)?\s*$")
+durations=[]
+for line in text.splitlines():
+    match=stamp.match(line)
+    if not match: continue
+    values=list(map(int, match.groups()))
+    start=values[0]*3600+values[1]*60+values[2]+values[3]/1000
+    end=values[4]*3600+values[5]*60+values[6]+values[7]/1000
+    if end <= start:
+        print(f"fail|non_positive_timestamp|{len(durations)+1}|0|0"); raise SystemExit
+    durations.append(end-start)
+cue_count=len(durations)
+if mode == "structure":
+    if cue_count == 0:
+        print("fail|no_valid_timestamps|0|0|0"); raise SystemExit
+    print(f"ok|ok|{cue_count}|{sum(durations)/cue_count:.1f}|0"); raise SystemExit
+if cue_count < min_cues:
+    print(f"fail|too_few_cues:{cue_count}:{min_cues}|{cue_count}|0|0"); raise SystemExit
+blocks=[block for block in re.split(r"\n{2,}", text.strip()) if any(stamp.match(line) for line in block.splitlines())]
+dialogue=[]
+for block in blocks:
+    lines=block.splitlines()
+    timestamp_index=next((i for i,line in enumerate(lines) if stamp.match(line)), None)
+    if timestamp_index is not None:
+        dialogue.extend(line for line in lines[timestamp_index+1:] if line.strip())
+avg_duration=sum(durations)/cue_count
+avg_chars=sum(map(len, dialogue))/len(dialogue) if dialogue else 0
+if avg_duration > max_avg_duration:
+    print(f"fail|avg_duration:{avg_duration:.1f}:{max_avg_duration:g}|{cue_count}|{avg_duration:.1f}|{avg_chars:.0f}"); raise SystemExit
+if avg_chars > max_avg_chars:
+    print(f"fail|avg_text:{avg_chars:.0f}:{max_avg_chars:g}|{cue_count}|{avg_duration:.1f}|{avg_chars:.0f}"); raise SystemExit
+print(f"ok|ok|{cue_count}|{avg_duration:.1f}|{avg_chars:.0f}")
+PYEOF
+    )
+    IFS='|' read -r STATUS REASON CUE_COUNT AVG_DUR AVG_CHARS <<< "$RESULT"
+    SRT_VALIDATION_REASON="${REASON:-unknown}"
+    SRT_VALIDATION_CUES="${CUE_COUNT:-0}"
+    SRT_VALIDATION_AVG_DURATION="${AVG_DUR:-0}"
+    SRT_VALIDATION_AVG_CHARS="${AVG_CHARS:-0}"
+    if [ "$STATUS" != "ok" ]; then
+        log "  VALIDATE: FAIL — ${REASON:-unknown} (cues ${CUE_COUNT:-0}, avg duration ${AVG_DUR:-0}s, avg text ${AVG_CHARS:-0} chars)."
         return 1
     fi
-
-    local CUE_COUNT
-    CUE_COUNT=$(grep -c ' --> ' "$SRT_FILE" 2>/dev/null || echo 0)
-    if [ "$CUE_COUNT" -lt "$MIN_CUE_COUNT" ]; then
-        log "  VALIDATE: FAIL — only ${CUE_COUNT} cues (minimum: ${MIN_CUE_COUNT})."
-        return 1
-    fi
-
-    local AVG_DUR
-    AVG_DUR=$(grep ' --> ' "$SRT_FILE" | awk '
-        function ts_to_sec(ts) {
-            gsub(",", ".", ts)
-            split(ts, p, ":")
-            return p[1]*3600 + p[2]*60 + p[3]
-        }
-        {
-            split($0, parts, " --> ")
-            dur = ts_to_sec(parts[2]) - ts_to_sec(parts[1])
-            if (dur > 0) { total += dur; count++ }
-        }
-        END { if (count > 0) printf "%.1f", total/count; else print "0" }
-    ')
-    AVG_DUR="${AVG_DUR:-0}"
-
-    if [ "$(awk -v a="$AVG_DUR" -v m="$MAX_AVG_CUE_DURATION" 'BEGIN{print(a>m)?"1":"0"}')" = "1" ]; then
-        log "  VALIDATE: FAIL — avg cue duration ${AVG_DUR}s exceeds ${MAX_AVG_CUE_DURATION}s."
-        return 1
-    fi
-
-    local AVG_CHARS
-    AVG_CHARS=$(grep -v ' --> ' "$SRT_FILE" | grep -v '^[0-9]*$' | grep -v '^$' | \
-        awk '{ t+=length; c++ } END { if(c>0) printf "%.0f",t/c; else print "0" }')
-    AVG_CHARS="${AVG_CHARS:-0}"
-
-    if [ "$(awk -v a="$AVG_CHARS" -v m="$MAX_AVG_CUE_CHARS" 'BEGIN{print(a>m)?"1":"0"}')" = "1" ]; then
-        log "  VALIDATE: FAIL — avg cue text ${AVG_CHARS} chars exceeds ${MAX_AVG_CUE_CHARS}."
-        return 1
-    fi
-
     log "  VALIDATE: OK — ${CUE_COUNT} cues, avg duration ${AVG_DUR}s, avg text ${AVG_CHARS} chars."
-    return 0
 }
 
 # ==============================================================================
@@ -552,6 +642,8 @@ apply_watermark() {
         if ! head -n 15 "$SUB_FILE" | grep -qF "$WATERMARK_SEARCH"; then
             printf '0\n00:00:00,000 --> 00:00:05,000\n%s\n\n' "${WATERMARK_TEXT}" \
                 | cat - "$SUB_FILE" > "${SUB_FILE}.tmp"
+            chmod --reference="$SUB_FILE" "${SUB_FILE}.tmp" || return 1
+            chown --reference="$SUB_FILE" "${SUB_FILE}.tmp" 2>/dev/null || true
             mv "${SUB_FILE}.tmp" "$SUB_FILE"
         fi
     fi
@@ -870,41 +962,66 @@ score_confidence() {
     local CHECK_LANGUAGE="${3:-en}"
     local OFFSET="${4:-300}"
     local SAMPLE_DURATION=30
-
-    local TEMP_SAMPLE="/tmp/confidence_sample_$$.wav"
-    local TEMP_SRT="/tmp/confidence_check_$$.srt"
-
-    # Direct ffmpeg call (container has ffmpeg installed)
-    ffmpeg -nostdin -ss "$OFFSET" -i "$VIDEO_FILE" \
-        -map 0:a:0 -t "$SAMPLE_DURATION" -vn -acodec pcm_s16le -ar 16000 -ac 1 \
-        -y "$TEMP_SAMPLE" -loglevel quiet 2>/dev/null
-
-    if [ ! -s "$TEMP_SAMPLE" ]; then
-        log "  CONFIDENCE: Could not extract audio sample."
-        echo "50"
-        return
-    fi
+    local THRESHOLD="${CONFIDENCE_THRESHOLD:-30}"
 
     local API_URL="${WHISPER_API_URL}?task=transcribe&output=srt"
     if [ -n "$CHECK_LANGUAGE" ] && [ "$CHECK_LANGUAGE" != "auto" ]; then
         API_URL="${API_URL}&language=${CHECK_LANGUAGE}"
     fi
-    curl -s --fail --connect-timeout 30 --max-time 300 \
-        -X POST -F "audio_file=@${TEMP_SAMPLE}" \
-        "$API_URL" -o "$TEMP_SRT" 2>/dev/null
 
-    rm -f "$TEMP_SAMPLE"
+    run_confidence_sample() {
+        local SAMPLE_OFFSET="$1"
+        local TEMP_SAMPLE="/tmp/confidence_sample_$$_${SAMPLE_OFFSET}.wav"
+        local TEMP_SRT="/tmp/confidence_check_$$_${SAMPLE_OFFSET}.srt"
 
-    if [ ! -s "$TEMP_SRT" ] || ! grep -qF -- '-->' "$TEMP_SRT"; then
-        log "  CONFIDENCE: Verification pass failed."
-        rm -f "$TEMP_SRT"
-        echo "50"
-        return
-    fi
+        ffmpeg -nostdin -ss "$SAMPLE_OFFSET" -i "$VIDEO_FILE" \
+            -map 0:a:0 -t "$SAMPLE_DURATION" -vn -acodec pcm_s16le -ar 16000 -ac 1 \
+            -y "$TEMP_SAMPLE" -loglevel quiet 2>/dev/null
 
-    local SCORE
-    SCORE=$(python3 - "$SRT_FILE" "$TEMP_SRT" "$OFFSET" "$SAMPLE_DURATION" <<'PYEOF'
+        if [ ! -s "$TEMP_SAMPLE" ]; then
+            rm -f "$TEMP_SAMPLE" "$TEMP_SRT"
+            echo "50"
+            return
+        fi
+
+        curl -s --fail --connect-timeout 30 --max-time 300 \
+            -X POST -F "audio_file=@${TEMP_SAMPLE}" \
+            "$API_URL" -o "$TEMP_SRT" 2>/dev/null
+
+        rm -f "$TEMP_SAMPLE"
+
+        if [ ! -s "$TEMP_SRT" ] || ! grep -qF -- '-->' "$TEMP_SRT"; then
+            rm -f "$TEMP_SRT"
+            echo "50"
+            return
+        fi
+
+        local SAMPLE_SCORE
+        SAMPLE_SCORE=$(python3 - "$SRT_FILE" "$TEMP_SRT" "$SAMPLE_OFFSET" "$SAMPLE_DURATION" <<'PYEOF'
 import sys, re
+
+CJK_RE = re.compile(r'[\u3040-\u30ff\u3400-\u9fff]')
+
+
+def normalize_text(text):
+    text = re.sub(r'\{\\an8[^}]*\}', ' ', text)
+    text = re.sub(r'<[^>]+>', ' ', text)
+    text = text.lower()
+    text = re.sub(r'[^\w\s\u3040-\u30ff\u3400-\u9fff]', '', text)
+    return re.sub(r'\s+', ' ', text).strip()
+
+
+def text_units(text):
+    text = normalize_text(text)
+    compact = re.sub(r'\s+', '', text)
+    cjk = ''.join(ch for ch in compact if CJK_RE.match(ch))
+    if len(cjk) >= 8:
+        units = set(cjk)
+        for n in (2, 3):
+            units.update(cjk[i:i+n] for i in range(0, max(0, len(cjk) - n + 1)))
+        return units
+    return set(text.split())
+
 
 def extract_text(path):
     with open(path, 'r', encoding='utf-8', errors='replace') as f:
@@ -913,16 +1030,19 @@ def extract_text(path):
     for block in re.split(r'\n{2,}', content.strip()):
         lines = block.strip().splitlines()
         ts_i = next((i for i, l in enumerate(lines) if ' --> ' in l), None)
-        if ts_i is None: continue
-        text = ' '.join(lines[ts_i+1:]).strip().lower()
-        text = re.sub(r'[^\w\s]', '', text)
-        if text: texts.append(text)
-    return ' '.join(texts).split()
+        if ts_i is None:
+            continue
+        text = ' '.join(lines[ts_i+1:]).strip()
+        if text:
+            texts.append(text)
+    return text_units(' '.join(texts))
+
 
 def ts_to_sec(ts):
     ts = ts.strip().replace(',', '.')
     h, m, s = ts.split(':')
     return float(h)*3600 + float(m)*60 + float(s)
+
 
 def extract_text_in_range(path, start_sec, duration):
     end_sec = start_sec + duration
@@ -932,38 +1052,60 @@ def extract_text_in_range(path, start_sec, duration):
     for block in re.split(r'\n{2,}', content.strip()):
         lines = block.strip().splitlines()
         ts_i = next((i for i, l in enumerate(lines) if ' --> ' in l), None)
-        if ts_i is None: continue
+        if ts_i is None:
+            continue
         try:
             parts = lines[ts_i].split(' --> ')
             cue_start = ts_to_sec(parts[0])
-        except: continue
+        except Exception:
+            continue
         if start_sec <= cue_start <= end_sec:
-            text = ' '.join(lines[ts_i+1:]).strip().lower()
-            text = re.sub(r'[^\w\s]', '', text)
-            if text: texts.append(text)
-    return ' '.join(texts).split()
+            text = ' '.join(lines[ts_i+1:]).strip()
+            if text:
+                texts.append(text)
+    return text_units(' '.join(texts))
+
 
 offset = float(sys.argv[3])
 duration = float(sys.argv[4])
 
-original_words = set(extract_text_in_range(sys.argv[1], offset, duration))
-verify_words = set(extract_text(sys.argv[2]))
+original_units = extract_text_in_range(sys.argv[1], offset, duration)
+verify_units = extract_text(sys.argv[2])
 
-if not original_words or not verify_words:
+if not original_units or not verify_units:
     print(50)
     sys.exit(0)
 
-union = original_words | verify_words
-intersection = original_words & verify_words
+union = original_units | verify_units
+intersection = original_units & verify_units
 score = int((len(intersection) / len(union)) * 100) if union else 50
 print(score)
 PYEOF
-    )
+        )
 
-    rm -f "$TEMP_SRT"
-    SCORE="${SCORE:-50}"
-    log "  CONFIDENCE: Score ${SCORE}/100"
-    echo "$SCORE"
+        rm -f "$TEMP_SRT"
+        echo "${SAMPLE_SCORE:-50}"
+    }
+
+    local BEST_SCORE
+    BEST_SCORE=$(run_confidence_sample "$OFFSET")
+    BEST_SCORE="${BEST_SCORE:-50}"
+
+    if [ "$BEST_SCORE" -lt "$THRESHOLD" ] 2>/dev/null; then
+        local SAMPLE_OFFSET SAMPLE_SCORE
+        for SAMPLE_OFFSET in 60 180 900 1200; do
+            [ "$SAMPLE_OFFSET" = "$OFFSET" ] && continue
+            SAMPLE_SCORE=$(run_confidence_sample "$SAMPLE_OFFSET")
+            SAMPLE_SCORE="${SAMPLE_SCORE:-50}"
+            if [ "$SAMPLE_SCORE" -gt "$BEST_SCORE" ] 2>/dev/null; then
+                BEST_SCORE="$SAMPLE_SCORE"
+            fi
+            [ "$BEST_SCORE" -ge "$THRESHOLD" ] 2>/dev/null && break
+        done
+    fi
+
+    log "  CONFIDENCE: Score ${BEST_SCORE}/100"
+    echo "$BEST_SCORE"
 }
 
 # ==============================================================================
@@ -986,7 +1128,8 @@ verify_encoding() {
         HAS_BOM=true
     fi
 
-    if [ "$DETECTED" = "utf-8" ] && [ "$HAS_BOM" = false ]; then
+    # US-ASCII is a strict subset of UTF-8 and needs no conversion.
+    if { [ "$DETECTED" = "utf-8" ] || [ "$DETECTED" = "us-ascii" ]; } && [ "$HAS_BOM" = false ]; then
         return 0
     fi
 
@@ -1015,8 +1158,32 @@ verify_encoding() {
     fi
 }
 
+matching_text_subtitles() {
+    local subtitle_dir="$1" base_no_ext="$2" normalized="$2" language=""
+    PGS_MATCHING_SRTS=()
+    while [[ "$normalized" =~ ^(.+)\.(forced|hi|sdh|cc)$ ]]; do
+        normalized="${BASH_REMATCH[1]}"
+    done
+    if [[ "$normalized" =~ ^(.+)\.([a-zA-Z]{2,3}(-[a-zA-Z]{2,4})?)$ ]]; then
+        normalized="${BASH_REMATCH[1]}"
+        language="${BASH_REMATCH[2]}"
+    elif [ "${PGS_CLEANUP_ALLOW_UNKNOWN:-0}" != "1" ]; then
+        return 0
+    fi
+    shopt -s nullglob nocaseglob
+    if [ -n "$language" ]; then
+        local exact_srt="${subtitle_dir}/${normalized}.${language}.srt"
+        [ -f "$exact_srt" ] && PGS_MATCHING_SRTS+=( "$exact_srt" )
+        PGS_MATCHING_SRTS+=( "${subtitle_dir}/${normalized}.${language}."*.srt )
+    else
+        PGS_MATCHING_SRTS+=( "${subtitle_dir}/${normalized}."*.srt )
+    fi
+    shopt -u nullglob nocaseglob
+}
+
 cleanup_pgs() {
     local DELETED=0
+    PGS_DELETED_COUNT=0
 
     for DIR in "$@"; do
         while IFS= read -r -d '' PGS_FILE; do
@@ -1026,14 +1193,8 @@ cleanup_pgs() {
             PGS_BASE=$(basename "$PGS_FILE")
             local BASE_NO_EXT="${PGS_BASE%.sup}"
 
-            local VIDEO_STEM="$BASE_NO_EXT"
-            if [[ "$BASE_NO_EXT" =~ ^(.+)\.([a-z]{2,3}(-[a-z]{2,4})?)$ ]]; then
-                VIDEO_STEM="${BASH_REMATCH[1]}"
-            fi
-
-            shopt -s nullglob nocaseglob
-            local SRT_FILES=( "${PGS_DIR}/${VIDEO_STEM}".*.srt )
-            shopt -u nullglob nocaseglob
+            matching_text_subtitles "$PGS_DIR" "$BASE_NO_EXT"
+            local SRT_FILES=( "${PGS_MATCHING_SRTS[@]}" )
 
             if [ ${#SRT_FILES[@]} -gt 0 ]; then
                 log "PGS CLEANUP: Deleting ${PGS_BASE} (${#SRT_FILES[@]} SRT file(s) exist)"
@@ -1052,14 +1213,8 @@ cleanup_pgs() {
             if [ ! -f "$IDX_FILE" ]; then continue; fi
 
             local BASE_NO_EXT="${SUB_BASE%.sub}"
-            local VIDEO_STEM="$BASE_NO_EXT"
-            if [[ "$BASE_NO_EXT" =~ ^(.+)\.([a-z]{2,3}(-[a-z]{2,4})?)$ ]]; then
-                VIDEO_STEM="${BASH_REMATCH[1]}"
-            fi
-
-            shopt -s nullglob nocaseglob
-            local SRT_FILES=( "${SUB_DIR}/${VIDEO_STEM}".*.srt )
-            shopt -u nullglob nocaseglob
+            matching_text_subtitles "$SUB_DIR" "$BASE_NO_EXT"
+            local SRT_FILES=( "${PGS_MATCHING_SRTS[@]}" )
 
             if [ ${#SRT_FILES[@]} -gt 0 ]; then
                 log "PGS CLEANUP: Deleting ${SUB_BASE} + .idx (${#SRT_FILES[@]} SRT file(s) exist)"
@@ -1070,7 +1225,7 @@ cleanup_pgs() {
     done
 
     log "PGS CLEANUP: Deleted ${DELETED} image-based subtitle file(s)."
-    echo "$DELETED"
+    PGS_DELETED_COUNT=$DELETED
 }
 
 # ---------------------------------------------------------------------------
@@ -1254,16 +1409,40 @@ audit_library() {
 
         echo "## INVALID SRT FILES"
         echo ""
-        while IFS= read -r -d '' SRT; do
-            if ! validate_srt "$SRT" >/dev/null 2>&1; then
-                local CUES
-                CUES=$(grep -c ' --> ' "$SRT" 2>/dev/null || echo 0)
-                local SIZE
-                SIZE=$(stat -c%s "$SRT" 2>/dev/null || echo 0)
-                echo "  [INVALID cues:${CUES} size:${SIZE}b] ${SRT}"
-                INVALID_SRTS=$((INVALID_SRTS + 1))
-            fi
-        done < <(find "${DIRS[@]}" -type f -iname "*.srt" -print0 2>/dev/null)
+        while IFS='|' read -r -d '' REASON CUES SIZE SRT; do
+            echo "  [INVALID reason:${REASON} cues:${CUES} size:${SIZE}b] ${SRT}"
+            INVALID_SRTS=$((INVALID_SRTS + 1))
+        done < <(find "${DIRS[@]}" -type f -iname "*.srt" -print0 2>/dev/null | python3 -c '
+import os, re, sys
+stamp = re.compile(rb"^\s*(\d{2}):(\d{2}):(\d{2}),([0-9]{3})\s+-->\s+(\d{2}):(\d{2}):(\d{2}),([0-9]{3})(?:\s+.*)?\s*$")
+for raw_path in sys.stdin.buffer.read().split(b"\0"):
+    if not raw_path:
+        continue
+    path = os.fsdecode(raw_path)
+    reason = None
+    cues = 0
+    try:
+        size = os.path.getsize(path)
+        data = open(path, "rb").read().replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+        for line in data.splitlines():
+            match = stamp.match(line)
+            if not match:
+                continue
+            values = list(map(int, match.groups()))
+            start = values[0]*3600 + values[1]*60 + values[2] + values[3]/1000
+            end = values[4]*3600 + values[5]*60 + values[6] + values[7]/1000
+            cues += 1
+            if end <= start:
+                reason = "non_positive_timestamp"
+                break
+        if cues == 0 and reason is None:
+            reason = "no_valid_timestamps"
+    except OSError:
+        size, reason = 0, "unreadable"
+    if reason:
+        record = f"{reason}|{cues}|{size}|{path}".encode("utf-8", "replace") + b"\0"
+        sys.stdout.buffer.write(record)
+')
         echo ""
         echo "  Total: ${INVALID_SRTS} invalid SRT files"
         echo ""
@@ -1277,13 +1456,8 @@ audit_library() {
                 local PBASE
                 PBASE=$(basename "$PGS")
                 local PNAME="${PBASE%.sup}"
-                local VSTEM="$PNAME"
-                if [[ "$PNAME" =~ ^(.+)\.([a-z]{2,3}(-[a-z]{2,4})?)$ ]]; then
-                    VSTEM="${BASH_REMATCH[1]}"
-                fi
-                shopt -s nullglob nocaseglob
-                local SRTS=( "${PDIR}/${VSTEM}".*.srt )
-                shopt -u nullglob nocaseglob
+                matching_text_subtitles "$PDIR" "$PNAME"
+                local SRTS=( "${PGS_MATCHING_SRTS[@]}" )
                 if [ ${#SRTS[@]} -gt 0 ]; then
                     echo "  [CLEANABLE] ${PGS}"
                     PGS_CLEANABLE=$((PGS_CLEANABLE + 1))
@@ -1306,7 +1480,7 @@ audit_library() {
             if [ "$(xxd -l 3 -p "$SRT" 2>/dev/null)" = "efbbbf" ]; then
                 BOM=" +BOM"
             fi
-            if [ "$ENC" != "utf-8" ] || [ -n "$BOM" ]; then
+            if { [ "$ENC" != "utf-8" ] && [ "$ENC" != "us-ascii" ]; } || [ -n "$BOM" ]; then
                 echo "  [${ENC}${BOM}] ${SRT}"
                 ENCODING_ISSUES=$((ENCODING_ISSUES + 1))
             fi
@@ -1350,7 +1524,10 @@ generate_report() {
         echo "## Transcription Lifetime Stats"
         echo ""
         if [ -f "$TRANS_STATS" ]; then
-            source "$TRANS_STATS"
+            LIFETIME_SCANNED=0 LIFETIME_ENGLISH_PROCESSED=0 LIFETIME_BILINGUAL_PROCESSED=0
+            LIFETIME_FOREIGN_PROCESSED=0 LIFETIME_SKIPPED_EXISTING=0 LIFETIME_SKIPPED_FAILED=0
+            LIFETIME_SKIPPED_SIZE=0 LIFETIME_HALLUCINATIONS_CLEANED=0 LIFETIME_PROCESSING_SECONDS=0
+            load_numeric_stats "$TRANS_STATS"
             local TOTAL_PROC=$(( ${LIFETIME_ENGLISH_PROCESSED:-0} + ${LIFETIME_BILINGUAL_PROCESSED:-0} + ${LIFETIME_FOREIGN_PROCESSED:-0} ))
             local HOURS=$(( ${LIFETIME_PROCESSING_SECONDS:-0} / 3600 ))
             local MINS=$(( (${LIFETIME_PROCESSING_SECONDS:-0} % 3600) / 60 ))
@@ -1378,7 +1555,9 @@ generate_report() {
         echo "## Translation Lifetime Stats"
         echo ""
         if [ -f "$TRANSL_STATS" ]; then
-            source "$TRANSL_STATS"
+            LIFETIME_SCANNED=0 LIFETIME_PROCESSED=0 LIFETIME_SKIPPED_EXISTING=0
+            LIFETIME_SKIPPED_FAILED=0 LIFETIME_PROCESSING_SECONDS=0
+            load_numeric_stats "$TRANSL_STATS"
             local TL_HOURS=$(( ${LIFETIME_PROCESSING_SECONDS:-0} / 3600 ))
             local TL_MINS=$(( (${LIFETIME_PROCESSING_SECONDS:-0} % 3600) / 60 ))
             local TL_AVG=0

@@ -1,21 +1,11 @@
-FROM python:3.12-slim
-
-ENV TZ=UTC
+FROM python:3.12-slim@sha256:dd29372629eeba2dd003fd9e9d35a5b8236c44727875a0364254b5127af88e65
 
 WORKDIR /app
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    bash curl file jq ffmpeg tzdata \
-    && ln -snf /usr/share/zoneinfo/$TZ /etc/localtime \
-    && echo $TZ > /etc/timezone \
-    && rm -rf /var/lib/apt/lists/*
-
-COPY requirements.txt ./requirements.txt
+COPY plexmind/requirements.txt ./requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY app/ ./app/
-COPY scripts/ ./scripts/
-RUN chmod +x /app/scripts/*.sh
+COPY plexmind/app/ ./app/
 
 RUN useradd -u 1000 -m plexmind && chown -R plexmind:plexmind /app
 USER plexmind

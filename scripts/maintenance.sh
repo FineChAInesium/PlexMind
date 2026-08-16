@@ -1,7 +1,7 @@
 #!/bin/bash
 # ==============================================================================
 # maintenance.sh — Library Maintenance Utility
-# Version: 0.8.18 — PlexMind release line
+# Version: 0.8.20 — PlexMind release line
 #
 # Usage:
 #   ./maintenance.sh audit       — Full library audit report
@@ -14,7 +14,7 @@
 # Requires: lib.sh, python3
 # ==============================================================================
 
-set -u
+set -uo pipefail
 
 # --- CONFIGURATION ---
 LOG_FILE="${LOG_FILE:-/app/data/maintenance.log}"
@@ -28,27 +28,38 @@ mkdir -p "$(dirname "$LOG_FILE")"
 prepare_log_file
 
 ALL_DIRS=("${MOVIE_DIR}" "${TV_DIR}")
+validate_media_directories || exit 1
 MODE="${1:-help}"
+
+case "$MODE" in
+    audit|report|help) ;;
+    *) acquire_lock "/app/data/plexmind_media_mutation.lock" ;;
+esac
 
 case "$MODE" in
     audit)
         REPORT_FILE="${REPORT_DIR}/audit_$(date '+%Y-%m-%d_%H%M%S').txt"
         log "Running full library audit..."
-        audit_library "$REPORT_FILE" "${ALL_DIRS[@]}"
+        audit_library "$REPORT_FILE" "${ALL_DIRS[@]}" || { log "ERROR: Library audit failed."; exit 2; }
+        if [ -s "${DATA_DIR:-/app/data}/gui-settings-audit.txt" ]; then
+            printf '\n\n' >> "$REPORT_FILE"
+            cat "${DATA_DIR:-/app/data}/gui-settings-audit.txt" >> "$REPORT_FILE"
+        fi
         log "Audit complete. Report: ${REPORT_FILE}"
         cat "$REPORT_FILE"
         ;;
 
     report)
         log "Generating dashboard report..."
-        generate_report
+        generate_report || { log "ERROR: Report generation failed."; exit 2; }
         REPORT_FILE="${REPORT_DIR}/report_$(date '+%Y-%m-%d').md"
         [ -f "$REPORT_FILE" ] && cat "$REPORT_FILE"
         ;;
 
     pgs-cleanup)
         log "Scanning for PGS subtitle files to clean up..."
-        DELETED=$(cleanup_pgs "${ALL_DIRS[@]}")
+        cleanup_pgs "${ALL_DIRS[@]}" || { log "ERROR: PGS cleanup failed."; exit 2; }
+        DELETED=${PGS_DELETED_COUNT:-0}
         log "PGS cleanup complete. Deleted: ${DELETED} files."
         ;;
 
@@ -67,8 +78,8 @@ case "$MODE" in
 
     dedup)
         log "Scanning for duplicate subtitle files..."
-        deduplicate_subs "${MOVIE_DIR}"
-        deduplicate_subs "${TV_DIR}"
+        deduplicate_subs "${MOVIE_DIR}" || { log "ERROR: Movie deduplication failed."; exit 2; }
+        deduplicate_subs "${TV_DIR}" || { log "ERROR: TV deduplication failed."; exit 2; }
         log "Dedup complete."
         ;;
 
@@ -85,18 +96,22 @@ case "$MODE" in
         log "Encoding: fixed ${FIXED} files."
 
         log "--- Phase 2: Dedup ---"
-        deduplicate_subs "${MOVIE_DIR}"
-        deduplicate_subs "${TV_DIR}"
+        deduplicate_subs "${MOVIE_DIR}" || { log "ERROR: Movie deduplication failed."; exit 2; }
+        deduplicate_subs "${TV_DIR}" || { log "ERROR: TV deduplication failed."; exit 2; }
 
         log "--- Phase 3: PGS Cleanup ---"
-        cleanup_pgs "${ALL_DIRS[@]}" >/dev/null
+        cleanup_pgs "${ALL_DIRS[@]}" || { log "ERROR: PGS cleanup failed."; exit 2; }
 
         log "--- Phase 4: Audit ---"
         REPORT_FILE="${REPORT_DIR}/audit_$(date '+%Y-%m-%d_%H%M%S').txt"
-        audit_library "$REPORT_FILE" "${ALL_DIRS[@]}"
+        audit_library "$REPORT_FILE" "${ALL_DIRS[@]}" || { log "ERROR: Library audit failed."; exit 2; }
+        if [ -s "${DATA_DIR:-/app/data}/gui-settings-audit.txt" ]; then
+            printf '\n\n' >> "$REPORT_FILE"
+            cat "${DATA_DIR:-/app/data}/gui-settings-audit.txt" >> "$REPORT_FILE"
+        fi
 
         log "--- Phase 5: Dashboard ---"
-        generate_report
+        generate_report || { log "ERROR: Report generation failed."; exit 2; }
 
         log "========================================================="
         log "Maintenance complete."

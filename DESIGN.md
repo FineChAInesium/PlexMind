@@ -37,7 +37,7 @@ PlexMind Suite is a self-hosted AI control plane for Plex. It runs entirely on l
 
 **Stack:** Python 3.12 / FastAPI / APScheduler / Bash / Tailwind CSS (vanilla JS)  
 **Deployment:** Docker Compose (5 services) on Unraid  
-**LLM:** llama.cpp OpenAI-compatible server running qwen3-4b-q4_k_m (local, no cloud)  
+**LLM:** llama.cpp OpenAI-compatible server running qwen3.5-9b-q5_k_m (local, no cloud)
 **ASR:** Whisper (onerahmet webservice, GPU-accelerated)
 
 ---
@@ -65,7 +65,7 @@ Storage  [persistent volumes]
   └─ /media/tv             — mounted TV library
 
 Infrastructure
-  ├─ /var/run/docker.sock  — container lifecycle for sidecars
+  ├─ authenticated scripts API — media-job control
   └─ nginx-proxy-manager   — TLS termination / LAN reverse proxy
 ```
 
@@ -174,10 +174,10 @@ Active symlinks: `transcription.log`, `translation.log`, `maintenance.log`
 | TMDB | Genres, keywords, posters, trending | Optional (strongly recommended) |
 | TVDB | TV show status, networks | Optional |
 | OMDB / IMDb | IMDb ratings, Metascore | Optional |
-| Docker socket | Start/stop Whisper and llama.cpp sidecars; probe GPU utilization through GPU-backed containers | For sidecar lifecycle and GPU status fallback |
+| Docker broker | Allowlisted sidecar lifecycle, inspect, and fixed NVIDIA telemetry; it alone mounts the raw Docker socket | For sidecar lifecycle and GPU status |
 
 **Current config:**
-- Model: `qwen3-4b-q4_k_m`; generation defaults are capped for 8192-token context
+- Model: `qwen3.5-9b-q5_k_m`; generation defaults are capped for 8192-token context
 - TVDB + OMDB keys: **not set** — metadata enrichment is partial
 - Plex token in `.env` (plaintext — keep `chmod 600`)
 
@@ -283,10 +283,10 @@ Video file
 
 ### Weaknesses
 
-- **API key is optional by default** — all endpoints are open if `PLEXMIND_API_KEY` is unset
+- **Secrets are mandatory** — API, control, broker, and webhook secrets must all be configured and distinct
 - Plex token and TMDB key are plaintext in `.env` on disk
-- `PLEXMIND_API_KEY` can be passed as query param (`?api_key=...`) — appears in proxy access logs
-- Dashboard stores API key in browser `localStorage` (XSS risk if ever internet-exposed)
+- The scoped webhook secret is carried in the Plex webhook URL and can appear in proxy access logs
+- Browser sessions are process-local and require sign-in again after an API restart
 - Webhook LAN check is bypassable via reverse proxy
 - Destructive maintenance ops (`pgs-cleanup`, `dedup`) delete files without per-file confirmation
 
@@ -306,10 +306,10 @@ Video file
 
 | Item | State |
 |---|---|
-| LLM model | qwen3-4b-q4_k_m via llama.cpp OpenAI-compatible API |
+| LLM model | qwen3.5-9b-q5_k_m via llama.cpp OpenAI-compatible API |
 | LLM health | `/health` returns `llm_ready: true` |
 | LLM endpoint | `http://192.168.2.10:11435` externally, `http://llama-cpp:8080` in Docker network |
-| GPU status | NVIDIA detected through Docker-socket fallback against `llama-cpp`; `/api/scheduler/status` returns `gpu_vendor: nvidia` |
+| GPU status | NVIDIA detected; `/api/scheduler/status` returns `gpu_vendor`, `gpu_detection_source`, and `gpu_probe_error` diagnostics |
 | GPU utilization | 0% at verification time, threshold 30% |
 | Recommendations | Live `GET /api/users/admin/recommendations?force=true` returns HTTP 200 with recommendation JSON |
 | Translation | Script status returns HTTP 200; direct `/no_think` llama.cpp SRT smoke returns valid translated SRT |
@@ -322,11 +322,11 @@ Video file
 
 ### Current Fix State
 
-The previous port 8000 UI and API failures were caused by stale Ollama/qwen3.5 references, oversized llama.cpp prompts, and Qwen reasoning output leaking into translation chunks. The live app now serves llama.cpp/qwen3-4b labels, caps recommendation prompt inputs, lowers max generation tokens to fit the 8192-token model context, preserves `/no_think` for every translation chunk, and reports NVIDIA GPU utilization even when the PlexMind app image does not include `nvidia-smi`. The 2026-06-07 release also fixes the Whisper large-audio crash path by extracting compressed 16 kHz mono MP3, segmenting uploads over 50 MB, adding a 12 GB Whisper sidecar memory limit, and moving bundled sidecar host ports to `11435` for llama.cpp and `9001` for Whisper so PlexMind does not contend with services using host `8080` or `9000`.
+The previous port 8000 UI and API failures were caused by stale model references, oversized llama.cpp prompts, and Qwen reasoning output leaking into translation chunks. The live app now serves llama.cpp/qwen3.5-9b labels, caps recommendation prompt inputs, preserves `/no_think` for translation chunks, and reports NVIDIA GPU utilization through the narrow broker. The 2026-06-07 release also fixed the Whisper large-audio crash path by extracting compressed 16 kHz mono MP3, segmenting uploads over 50 MB, adding a 12 GB Whisper sidecar memory limit, and moving bundled sidecar host ports to `11435` for llama.cpp and `9001` for Whisper.
 
 ### Current Live Verification
 
-The promoted 2026-06-07 containers expose PlexMind on host `8000`, llama.cpp on host `11435` mapped to container `8080`, and Whisper on host `9001` mapped to container `9000`. `bin/verify-live.sh` passed against `http://127.0.0.1:8000`, including `/health`, LLM readiness, GPU detection, translation script availability, recommendation smoke, and dashboard stale-label checks.
+The promoted 2026-06-07 containers expose PlexMind on host `8000`, llama.cpp on host `11435` mapped to container `8080`, and Whisper on host `9001` mapped to container `9000`. `bin/verify-live.sh` passed against `http://127.0.0.1:8000`, including `/health`, LLM readiness, GPU detection, translation script availability, recommendation smoke, and dashboard stale-label checks. `/api/scheduler/status` also returns GPU diagnostics (`gpu_detection_source`, `gpu_probe_error`); live verification showed NVIDIA at 0% via `local:nvidia-smi`.
 
 ---
 
@@ -336,26 +336,27 @@ The promoted 2026-06-07 containers expose PlexMind on host `8000`, llama.cpp on 
 
 | # | Location | Description |
 |---|---|---|
-| B1 | `transcribe.sh:449` | Bilingual VIP second-pass audio file may be deleted before translate pass if first extraction fails silently — results in missing one of the two language SRTs |
+| B1 | `transcribe.sh` | Fixed 2026-06-07: bilingual audio extraction is centralized, failed language-track probes remove empty temp files, and the translate pass re-extracts audio if the first-pass temp file is missing. |
 | B2 | Whisper HTTP 500 (live) | Fixed 2026-06-07: transcription now uploads compressed 16 kHz mono MP3 and segments payloads above 50 MB before calling Whisper; the sidecar also has a 12 GB memory cap. |
+| B2a | `scripts/lib.sh:score_confidence` | Fixed 2026-06-07: confidence scoring now uses CJK character n-grams for Japanese/CJK subtitles instead of whitespace word overlap, preventing false low-confidence quarantine on valid non-space-language transcripts. |
 
 ### Medium Priority
 
 | # | Location | Description |
 |---|---|---|
-| B3 | dashboard GPU card | Detection source and probe errors are not surfaced in the UI; failures currently collapse to generic unavailable text |
-| B4 | `recommender.py:105–127` | TMDB/TVDB/OMDB enrichment runs concurrently per candidate but has no circuit-breaker — API throttle on one service stalls the whole batch |
-| B5 | `cache.py:35–52` | `_save_json_atomic()` fails silently if `/app/data` is read-only — no error logging to stderr |
-| B6 | `llm_client.py:59–76` | JSON truncation repair assumes array; open objects like `{"title":..., "reason":...}` may be silently discarded |
-| B7 | `plex_client.py:177–186` | Managed user token failure is silent — no fallback |
+| B3 | dashboard GPU card | Fixed 2026-06-07: scheduler GPU status now returns `gpu_detection_source` and `gpu_probe_error`, and the dashboard surfaces the source or failure reason in the GPU card. |
+| B4 | `recommender.py` | Fixed 2026-06-07: TMDB, TVDB, and OMDB provider batches are independently bounded by `ENRICH_PROVIDER_TIMEOUT_SECONDS` (default 45s) and fall back to empty metadata on timeout/error. |
+| B5 | `cache.py:35-52` | Fixed 2026-06-07: `_save_json_atomic()` logs persistence failures to stderr and removes abandoned temp files. |
+| B6 | `llm_client.py`, `recommender.py` | Fixed 2026-06-07: truncated single-object JSON can be repaired, and a valid single recommendation object is preserved as a one-item list. |
+| B7 | `plex_client.py` | Fixed 2026-06-07: managed-user token failures now log warnings, and in-progress lookup returns empty instead of falling back to admin on-deck state. |
 
 ### Low Priority
 
 | # | Location | Description |
 |---|---|---|
-| B8 | `main.py:526` | SSE keepalive fires every 30s — can cause buffering on slow proxy connections |
-| B9 | `plex_client.py:192` | Watch history `maxresults=500` hardcoded — libraries >500 watched items are silently truncated |
-| B10 | `recommender.py:85–98` | Full library scan on every rec generation — no caching of library structure between calls |
+| B8 | `main.py` | Fixed 2026-05-07: SSE keepalive timeout is 10s and the stream sends `X-Accel-Buffering: no` for proxy friendliness. |
+| B9 | `plex_client.py:192` | Fixed 2026-06-07: watch history uses configurable `HISTORY_LIMIT` with default 2000 instead of the old 500-item cap. |
+| B10 | `recommender.py:85-98` | Fixed 2026-06-07: full Plex library scan is cached with a 5-minute TTL and invalidated by `library.new` webhook. |
 
 ---
 
@@ -373,7 +374,7 @@ Episodes that previously produced 80-90 MB uploads now go through compressed 16 
 
 ### R2 — Set PLEXMIND_API_KEY *(High / Security)*
 
-The dashboard is currently protected in the live `.env`, but the application default remains open if `PLEXMIND_API_KEY` is omitted. Given Docker socket access, every deployment should set a strong key.
+Startup fails closed unless the API, control, broker, and webhook secrets are all present and distinct. Keep strong generated values in the protected `.env`.
 
 Keep set in `.env`:
 ```
@@ -382,11 +383,9 @@ PLEXMIND_API_KEY=<random 32-char hex>
 
 ---
 
-### R3 — Cache Library Structure Between Rec Calls *(Medium / Performance)*
+### R3 — Cache Library Structure Between Rec Calls *(Completed 2026-06-07)*
 
-`recommender.py` performs a full Plex library scan on every `GET /api/users/{id}/recommendations` request, even for cached responses. The library scan should be memoized with invalidation on `library.new` webhook (which already fires cache clears — extend it to invalidate the library cache too).
-
-**Expected impact:** Faster rec generation for subsequent users in a batch run. No disk I/O change.
+`recommender.py` now caches the full Plex library at module level with a 5-minute TTL. The `library.new` webhook clears both recommendation caches and the library cache so new media enters the candidate pool without forcing every request to rescan Plex.
 
 ---
 
@@ -400,11 +399,9 @@ Both keys are free tier on their respective sites.
 
 ---
 
-### R5 — Use TMDB Cast/Director Data in Scoring *(Medium / Recommendation Quality)*
+### R5 — Use TMDB Cast/Director Data in Scoring *(Completed 2026-06-07)*
 
-`tmdb_client.py` fetches cast and director data but `recommender.py` never uses it. Adding director affinity (recurring director boost) and top-3-cast overlap scoring would significantly improve recs for users with auteur-heavy watch histories.
-
-**Suggested implementation:** In the genre fingerprint builder, also accumulate director and top cast member counters (same recency weighting). In the candidate scoring function, add a `director_score` and `cast_score` alongside genre score.
+`recommender.py` now accumulates recency-weighted director and top-cast counters from watch history. Candidate scoring applies capped director and cast affinity boosts alongside genre, keyword, language, trending, and rating signals.
 
 ---
 
@@ -422,9 +419,9 @@ Change to paginate or increase the cap to 1000–2000 with a warning log if the 
 
 ---
 
-### R8 — Emit media.rate Webhook Events as Feedback *(Low / Automation)*
+### R8 — Emit media.rate Webhook Events as Feedback *(Completed 2026-06-07)*
 
-Plex fires `media.rate` events when a user rates something. `main.py:726–728` receives the event but takes no action. Automatically recording a Plex rating as PlexMind feedback would close the loop without requiring users to interact with the PlexMind dashboard.
+`main.py` now records Plex `media.rate` webhook events as PlexMind feedback. Ratings `>= 7/10` become `like`; lower ratings become `dislike`; each event invalidates that user’s recommendation cache.
 
 ---
 
@@ -443,9 +440,9 @@ The 2026-05-25 recommendation failure was a llama.cpp HTTP 400 caused by a 9,411
 
 Qwen can return reasoning-only output unless `/no_think` is preserved in every chunk. Add a lightweight `/api/scripts/translate/smoke` endpoint or script mode that sends a two-cue SRT and validates that the response contains timestamps and non-empty content. Run it after deployment and before long translation windows.
 
-### R12 - Harden GPU Detection *(Medium / Operations)*
+### R12 - Harden GPU Detection *(Completed 2026-06-07)*
 
-The app image does not include `nvidia-smi`, while the GPU-backed `llama-cpp` container does. The scheduler now falls back to Docker-socket exec against `LLAMA_CPP_CONTAINER_NAME`. Keep this behavior, but add visible diagnostics to the dashboard: detection source (`local`, `docker:llama-cpp`, or `none`) and the probe error if all methods fail.
+`/api/scheduler/status` now exposes `gpu_detection_source` (`local:nvidia-smi`, `local:xpu-smi`, `local:rocm-smi`, `docker:<container>`, or `none`) and `gpu_probe_error`. The dashboard GPU card shows the source when utilization is available and the probe failure reason when no GPU can be detected.
 
 ### R13 - Add Build/Deploy Parity Checks *(Medium / Operations)*
 
@@ -511,6 +508,13 @@ These are worth considering but not blocking anything current.
 
 | Date | Change |
 |---|---|
+| 2026-06-07 | Added GPU probe diagnostics to scheduler status and dashboard GPU card, closing B3; corrected the stale B8 known-bug row because SSE keepalive is already 10s with proxy buffering disabled. |
+| 2026-06-07 | Hardened Bilingual VIP transcription so the English translate pass can re-extract audio if the first-pass temp audio is missing, preventing one-language-only outputs from temp-file loss. |
+| 2026-06-07 | Fixed Japanese/CJK transcription confidence scoring by switching verification overlap from whitespace words to CJK character n-grams and stripping watermark/formatting noise before scoring. |
+| 2026-06-07 | Added independent metadata-provider timeout guards so TMDB, TVDB, or OMDB stalls no longer block the whole recommendation enrichment batch. |
+| 2026-06-07 | Added managed-user Plex token diagnostics and prevented managed-user in-progress exclusion from falling back to admin on-deck state when a user token is unavailable. |
+| 2026-06-07 | Hardened recommendation JSON handling: truncated single-object LLM responses can now be repaired, and valid single recommendation objects are preserved instead of discarded. Updated stale DESIGN.md bug and recommendation status rows. |
+| 2026-06-07 | Fixed Whisper startup regression in local script-runner mode by mapping Whisper sidecar hostnames to the configured host bridge port (`WHISPER_HOST_PORT`, default 9001) for API health checks and transcription launches; updated compose to pass the host port into app containers. |
 | 2026-06-07 | Fixed the dashboard transcribe/translate API-key regression by issuing a same-origin HttpOnly auth cookie from the runtime API key; rebuilt the live `plexmind` container and verified cookie auth plus `bin/verify-live.sh`. |
 | 2026-06-07 | Fixed Whisper large-audio OOM/crash mitigation, moved PlexMind sidecar host ports to avoid conflicts, added conservative subtitle readability formatting, rebuilt/promoted live containers, pushed `main` and `v0.8.18` to GitHub, and verified the suite with `bin/verify-live.sh`. |
 | 2026-05-25 | Migrated design state to llama.cpp/qwen3-4b, documented live translation and recommendation fixes, added GPU detection fallback, and added R10-R19 hardening/UI recommendations. |
@@ -520,7 +524,7 @@ These are worth considering but not blocking anything current.
 ### 2026-06-07 - Changes Applied
 
 **Bug fixes:**
-- Dashboard requests now authenticate with a same-origin HttpOnly cookie set when the root page is served, so transcribe/translate controls work after removing the committed static API-key seed. X-API-Key and query-string API keys remain supported for API clients and webhooks.
+- Dashboard requests now authenticate with a same-origin HttpOnly session cookie created after explicit API-key exchange. API clients use `X-API-Key`; Plex webhooks use a distinct scoped webhook secret.
 - Large Whisper uploads now use compressed 16 kHz mono MP3 instead of uncompressed WAV.
 - Uploads over 50 MB are split into 10-minute chunks and stitched back into one SRT.
 - Whisper sidecar memory is capped at 12 GB to reduce crash risk during large ASR jobs.
@@ -542,13 +546,13 @@ These are worth considering but not blocking anything current.
 ### 2026-05-25 - Changes Applied
 
 **Bug fixes:**
-- Port 8000 dashboard no longer presents Ollama/qwen3.5 as the active LLM; live labels and health defaults now show llama.cpp and `qwen3-4b-q4_k_m`.
+- Port 8000 dashboard and health responses show the configured llama.cpp `qwen3.5-9b-q5_k_m` alias.
 - Recommendations no longer overflow llama.cpp context. Prompt inputs are capped with `MAX_HISTORY_PROMPT_ITEMS`, `MAX_CANDIDATE_PROMPT_ITEMS`, and `MAX_FEEDBACK_PROMPT_ITEMS`; `LLAMA_CPP_MAX_TOKENS` defaults to 768.
 - Translation chunks preserve `/no_think` even when previous-context text is included, preventing Qwen reasoning-only responses from producing empty subtitle output.
-- GPU status on the dashboard now falls back to probing the GPU-backed `llama-cpp` container through the Docker socket when the `plexmind` app container lacks `nvidia-smi`.
+- GPU status uses the authenticated narrow broker to run a fixed telemetry probe in the GPU-backed `llama-cpp` container.
 
 **Verified live:**
-- `/health` returns `llm_ready: true` for `qwen3-4b-q4_k_m`.
+- `/health` returns `llm_ready: true` for `qwen3.5-9b-q5_k_m`.
 - `/api/scheduler/status` returns `gpu_vendor: nvidia` and a utilization percentage.
 - `/api/scripts/translate/status` returns HTTP 200.
 - `GET /api/users/admin/recommendations?force=true` returns HTTP 200 with recommendation JSON.

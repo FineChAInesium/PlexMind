@@ -1,0 +1,11 @@
+.git
+.github
+.env
+data
+**/__pycache__
+**/*.pyc
+plexmind/node_modules
+plexmind/app/static/*.bak-*
+tests
+docs
+*.md

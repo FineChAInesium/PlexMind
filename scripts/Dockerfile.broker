@@ -1,0 +1,5 @@
+FROM python:3.12-alpine@sha256:78098ea6a3a9c6a7727a5d4674e4a44e57e01fac878ee9cb4d24a86bd93916ff
+WORKDIR /app
+COPY docker_broker.py /app/docker_broker.py
+HEALTHCHECK --interval=30s --timeout=5s --retries=3 CMD ["python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:9020/health', timeout=3)"]
+ENTRYPOINT ["python", "/app/docker_broker.py"]

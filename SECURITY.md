@@ -28,31 +28,32 @@ The following values are read from environment variables and are not returned by
 
 ### Authentication
 
-`PLEXMIND_API_KEY` is optional for LAN-only installs, but strongly recommended.
+`PLEXMIND_API_KEY` is required. Startup also requires distinct control, broker,
+and webhook secrets.
 
-When set, non-health endpoints require either:
+Non-health endpoints require either:
 
 - `X-API-Key: <key>` header, or
-- `?api_key=<key>` query param for clients that cannot set headers, such as Plex webhooks and browser `EventSource`.
+- a same-origin HttpOnly session cookie created by `POST /api/session`.
 
 Key comparison uses `secrets.compare_digest`.
 
-If `PLEXMIND_API_KEY` is not set, PlexMind logs a startup warning and all non-health endpoints are open to clients that can reach the service.
-
 ### Browser dashboard
 
-The dashboard stores the API key in browser `localStorage` and sends it as `X-API-Key` for normal requests. The SSE job stream uses `?api_key=` because native `EventSource` cannot set custom headers.
+The dashboard exchanges the API key for a 12-hour, same-origin HttpOnly session
+cookie. It stores only the API base URL in `localStorage`; the raw key is cleared
+from the form and is not persisted by browser JavaScript. SSE uses the same cookie.
 
 Security implications:
 
 - Use HTTPS when accessing the dashboard through a reverse proxy.
-- Avoid sharing browser profiles with untrusted users.
-- Be aware that query strings can appear in reverse-proxy access logs unless logging is configured carefully.
+- Avoid sharing authenticated browser profiles with untrusted users.
 - Usernames and streamed job details are HTML-escaped before rendering in the dashboard.
 
 ### CORS
 
-`CORS_ORIGINS` defaults to `*` for easy LAN setup. For a proxied or internet-reachable deployment, set it to your dashboard origin:
+`CORS_ORIGINS` defaults to empty, allowing same-origin dashboard use without
+cross-origin API access. Add explicit origins only when required:
 
 ```bash
 CORS_ORIGINS=https://plexmind.example.com
@@ -70,7 +71,8 @@ CORS is not an authentication boundary. Set `PLEXMIND_API_KEY`.
 
 `POST /webhook` is restricted to RFC 1918 LAN ranges and loopback. This is defense-in-depth only. If PlexMind is behind a reverse proxy, the application may see the proxy's private IP instead of the true client IP, so the LAN check can be bypassed by proxy topology.
 
-If you expose PlexMind through a proxy, set `PLEXMIND_API_KEY` and include `?api_key=<key>` in the Plex webhook URL.
+Plex webhooks use the distinct `webhook_secret` query parameter configured by
+`PLEXMIND_WEBHOOK_SECRET`; never place the general API key in a webhook URL.
 
 ### Network exposure
 
@@ -92,7 +94,7 @@ The Unraid template expects an existing llama.cpp endpoint via `LLAMA_CPP_URL`, 
 
 The maintenance scripts can delete files inside mounted media folders:
 
-- `pgs-cleanup` deletes `.sup` files, and `.sub/.idx` pairs, when matching SRTs exist.
+- `pgs-cleanup` deletes `.sup` files, and `.sub/.idx` pairs, only when language-compatible SRTs exist. Unknown-language image tracks are preserved unless explicitly opted in.
 - `dedup` removes duplicate `.srt` files after scoring cue count and size.
 - `encoding` rewrites SRT files after conversion to UTF-8.
 
@@ -139,7 +141,7 @@ Recommended reverse-proxy settings:
 | Huntarr-style flaw | PlexMind status |
 |---|---|
 | `/api/settings` returned app keys | No equivalent endpoint exists. |
-| Unauthenticated API by default | Still optional for LAN convenience; startup warning logs loudly. Set `PLEXMIND_API_KEY`. |
+| Unauthenticated API by default | Closed: startup fails unless all scoped secrets are configured and distinct. |
 | Container ran as root | API container runs as UID `1000`. |
 | No rate limits | GPU-heavy and webhook endpoints are rate-limited. |
 | Docker socket mounted | Removed from Compose scripts service. |

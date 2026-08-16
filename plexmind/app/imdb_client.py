@@ -9,6 +9,9 @@ import asyncio
 import json
 import logging
 import os
+import tempfile
+import time
+from threading import RLock
 
 import httpx
 from dotenv import load_dotenv
@@ -16,7 +19,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 OMDB_API_KEY = os.getenv("OMDB_API_KEY", "")
-OMDB_BASE = "http://www.omdbapi.com"
+OMDB_BASE = "https://www.omdbapi.com"
 OMDB_CACHE_FILE = os.getenv("OMDB_CACHE", "data/omdb_cache.json")
 
 _OMDB_SEM = asyncio.Semaphore(5)
@@ -24,18 +27,32 @@ _log = logging.getLogger("plexmind.omdb")
 
 # In-memory mirror of the disk cache — loaded once at import time
 _cache: dict[str, dict | None] = {}
+_cache_lock = RLock()
 
 def _load_cache() -> dict:
     try:
         with open(OMDB_CACHE_FILE) as f:
             return json.load(f)
-    except Exception:
+    except FileNotFoundError:
+        return {}
+    except (OSError, json.JSONDecodeError) as exc:
+        quarantine = f"{OMDB_CACHE_FILE}.corrupt-{int(time.time())}"
+        try:
+            os.replace(OMDB_CACHE_FILE, quarantine)
+        except OSError:
+            pass
+        _log.error("OMDb cache was quarantined as %s: %s", quarantine, exc)
         return {}
 
 def _save_cache() -> None:
-    os.makedirs(os.path.dirname(OMDB_CACHE_FILE) or ".", exist_ok=True)
-    with open(OMDB_CACHE_FILE, "w") as f:
+    directory = os.path.dirname(OMDB_CACHE_FILE) or "."
+    os.makedirs(directory, exist_ok=True)
+    with _cache_lock, tempfile.NamedTemporaryFile("w", dir=directory, delete=False) as f:
+        tmp = f.name
         json.dump(_cache, f)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, OMDB_CACHE_FILE)
 
 _cache = _load_cache()
 
