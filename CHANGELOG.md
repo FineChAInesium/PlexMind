@@ -24,6 +24,8 @@
 
 ## Unreleased
 
+- Keep PGS cleanup logs separate from the numeric deletion count so standalone and full-maintenance results remain accurate.
+- Align packaging regression coverage with the HttpOnly-session security contract that forbids persisting raw API keys in browser storage.
 - Accept short invariant translations while rejecting substantial unchanged dialogue, and record cue-level rejection diagnostics without duplicate log lines.
 - Validate library SRT files with a strict timestamp parser, distinguish structural audits from generated-output quality policy, and add an atomic timestamp repair utility with original-file archives.
 - Preserve intentional job stops as interrupted runs and use durable absolute paths for recommendation-worker state.

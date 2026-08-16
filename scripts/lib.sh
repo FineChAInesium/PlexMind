@@ -1116,6 +1116,7 @@ verify_encoding() {
 
 cleanup_pgs() {
     local DELETED=0
+    PGS_DELETED_COUNT=0
 
     for DIR in "$@"; do
         while IFS= read -r -d '' PGS_FILE; do
@@ -1169,7 +1170,7 @@ cleanup_pgs() {
     done
 
     log "PGS CLEANUP: Deleted ${DELETED} image-based subtitle file(s)."
-    echo "$DELETED"
+    PGS_DELETED_COUNT=$DELETED
 }
 
 # ---------------------------------------------------------------------------

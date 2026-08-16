@@ -28,9 +28,10 @@ class PackagingTests(unittest.TestCase):
         self.assertIn("<Name>SCRIPTS_API_URL</Name>", template)
         self.assertIn("<Name>DOCKER_BROKER_URL</Name>", template)
 
-    def test_dashboard_api_key_persists_in_local_storage(self):
+    def test_dashboard_api_key_is_not_persisted_in_browser_storage(self):
         dashboard = (ROOT / "plexmind" / "app" / "static" / "index.html").read_text(encoding="utf-8")
-        self.assertIn("JSON.stringify({ apiBase: API_BASE, apiKey: API_KEY })", dashboard)
+        self.assertIn('JSON.stringify({ apiBase: API_BASE })', dashboard)
+        self.assertNotIn("apiBase: API_BASE, apiKey: API_KEY", dashboard)
         self.assertNotIn("sessionStorage.setItem('pm_api_key'", dashboard)
 
 

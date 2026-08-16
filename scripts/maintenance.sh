@@ -58,7 +58,8 @@ case "$MODE" in
 
     pgs-cleanup)
         log "Scanning for PGS subtitle files to clean up..."
-        DELETED=$(cleanup_pgs "${ALL_DIRS[@]}") || { log "ERROR: PGS cleanup failed."; exit 2; }
+        cleanup_pgs "${ALL_DIRS[@]}" || { log "ERROR: PGS cleanup failed."; exit 2; }
+        DELETED=${PGS_DELETED_COUNT:-0}
         log "PGS cleanup complete. Deleted: ${DELETED} files."
         ;;
 
@@ -99,7 +100,7 @@ case "$MODE" in
         deduplicate_subs "${TV_DIR}" || { log "ERROR: TV deduplication failed."; exit 2; }
 
         log "--- Phase 3: PGS Cleanup ---"
-        cleanup_pgs "${ALL_DIRS[@]}" >/dev/null || { log "ERROR: PGS cleanup failed."; exit 2; }
+        cleanup_pgs "${ALL_DIRS[@]}" || { log "ERROR: PGS cleanup failed."; exit 2; }
 
         log "--- Phase 4: Audit ---"
         REPORT_FILE="${REPORT_DIR}/audit_$(date '+%Y-%m-%d_%H%M%S').txt"

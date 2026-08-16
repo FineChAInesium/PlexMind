@@ -50,6 +50,18 @@ if validate_srt "$TEMP_ROOT/non-positive.srt"; then
     exit 1
 fi
 
+cp "$TEMP_ROOT/arrow-dialogue.srt" "$TEMP_ROOT/movies/cleanup.en.srt"
+printf 'fixture\n' > "$TEMP_ROOT/movies/cleanup.en.sup"
+cleanup_pgs "$TEMP_ROOT/movies" > "$TEMP_ROOT/pgs-cleanup.log"
+[ "${PGS_DELETED_COUNT:-0}" -eq 1 ] || {
+    echo "PGS cleanup did not expose an exact numeric deletion count" >&2
+    exit 1
+}
+[ ! -e "$TEMP_ROOT/movies/cleanup.en.sup" ] || {
+    echo "PGS cleanup did not remove the fixture" >&2
+    exit 1
+}
+
 MOVIE_DIR="$TEMP_ROOT/missing"
 if validate_media_directories; then
     echo "missing media root was incorrectly accepted" >&2
