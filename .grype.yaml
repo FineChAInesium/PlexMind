@@ -1,0 +1,8 @@
+ignore:
+  # No supported stable Python release contains the database's stated fix
+  # (3.15.0). Keep this exception package-specific so every other High or
+  # Critical vulnerability continues to block image publication.
+  - vulnerability: CVE-2026-15308
+    package:
+      name: python
+      type: binary

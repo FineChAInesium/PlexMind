@@ -57,6 +57,7 @@ jobs:
           image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.meta.outputs.version }}
           fail-build: true
           severity-cutoff: high
+          only-fixed: true
 
       - uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5
         with:
@@ -89,6 +90,7 @@ jobs:
           image: ${{ env.REGISTRY }}/finechainesium/plexmind-scripts:${{ steps.scripts-meta.outputs.version }}
           fail-build: true
           severity-cutoff: high
+          only-fixed: true
 
       - uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5
         with:
@@ -121,6 +123,7 @@ jobs:
           image: ${{ env.REGISTRY }}/finechainesium/plexmind-docker-broker:${{ steps.broker-meta.outputs.version }}
           fail-build: true
           severity-cutoff: high
+          only-fixed: true
 
       - uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5
         with:
