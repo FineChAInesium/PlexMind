@@ -779,6 +779,7 @@ async function fetchModelAdvisor() {
   }
 }
 
+let storageReadingLoaded = false;
 async function fetchStorage() {
   if (DEMO) {
     const d = MOCK.storage;
@@ -790,17 +791,23 @@ async function fetchStorage() {
     return;
   }
   try {
-    const res = await apiFetch(`${API_BASE}/api/storage`, { signal: AbortSignal.timeout(2000) });
-    if (!res.ok) throw new Error();
+    const res = await apiFetch(`${API_BASE}/api/storage`, { signal: AbortSignal.timeout(10000) });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const d = await res.json();
+    if (![d.used_bytes, d.total_bytes, d.used_pct].every(Number.isFinite) || d.total_bytes <= 0) {
+      throw new Error('Invalid storage response');
+    }
     const usedTB = (d.used_bytes / 1e12).toFixed(1);
     const totalTB = (d.total_bytes / 1e12).toFixed(1);
     document.getElementById('storage-bar').style.width = d.used_pct + '%';
     document.getElementById('storage-label').textContent = `${usedTB} TB / ${totalTB} TB`;
     document.getElementById('storage-pct').textContent = `${d.used_pct}%`;
+    storageReadingLoaded = true;
   } catch {
-    document.getElementById('storage-label').textContent = 'N/A';
-    document.getElementById('storage-pct').textContent = '';
+    if (!storageReadingLoaded) {
+      document.getElementById('storage-label').textContent = 'Temporarily unavailable';
+      document.getElementById('storage-pct').textContent = '';
+    }
   }
 }
 

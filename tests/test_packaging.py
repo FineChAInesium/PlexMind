@@ -47,6 +47,12 @@ class PackagingTests(unittest.TestCase):
         self.assertIn("data.script_windows?.translate", dashboard)
         self.assertIn("data.cron_hour != null", dashboard)
 
+    def test_storage_display_tolerates_media_filesystem_latency(self):
+        dashboard = (ROOT / "plexmind" / "app" / "static" / "index.html").read_text(encoding="utf-8")
+        self.assertIn("AbortSignal.timeout(10000)", dashboard)
+        self.assertIn("storageReadingLoaded", dashboard)
+        self.assertNotIn("storage-label').textContent = 'N/A'", dashboard)
+
     def test_documented_script_configuration_is_wired(self):
         compose = (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
         for key in (
