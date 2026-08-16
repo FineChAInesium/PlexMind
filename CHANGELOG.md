@@ -24,7 +24,10 @@
 
 ## Unreleased
 
+- Complete the production-hardening audit and deploy the API, recommendation worker, scripts worker, and authenticated Docker broker with end-to-end health verification.
 - Discover translation targets from the worker's configured language list instead of hard-coding Chinese and Mexican Spanish in the dashboard.
+- Read the displayed llama.cpp model, translation window, timezone, and zero-valued cron fields from runtime scheduler configuration instead of stale UI assumptions.
+- Make storage reporting tolerate media-filesystem latency, validate returned capacity data, and retain the last successful reading across transient failures.
 - Parse shared statistics as a strict numeric data format, preserve safe subtitle modes, and support configured media ownership.
 - Make PGS cleanup and its audit language-aware so an unrelated text subtitle cannot authorize deletion.
 - Serialize and validate worker controls, expose broker-backed health, and rate-limit bounded browser sessions.
@@ -44,6 +47,8 @@
 - Use one canonical llama.cpp base URL, keep the shared recommendation service externally managed by default, and remove brittle Docker bridge rewriting.
 - Consolidate application and scripts-sidecar builds on the root `scripts/` tree and add packaging, path, sidecar, readiness, and Plex-section regression tests.
 - Discover Plex video sections by media type instead of assuming the titles `Movies` and `TV Shows`.
+- Repair 16 affected live subtitle files to media ownership and mode `0644`; verify a new 1,661-cue transcription finalizes as UID/GID `99:100` with no root-owned mode-`0600` SRT files remaining.
+- Verify all shell and Python regressions plus a full 8,003-video/17,522-SRT library audit with zero invalid SRTs, zero language-safe PGS cleanup candidates, and zero sampled encoding issues.
 
 ## v0.8.18 - 2026-06-07
 
