@@ -60,8 +60,8 @@ source "${SCRIPT_DIR}/lib.sh" || { echo "FATAL: Cannot load lib.sh"; exit 1; }
 mkdir -p "$(dirname "$LOG_FILE")"
 prepare_log_file
 acquire_lock "/tmp/transcription_backfill.lock"
-acquire_lock "/app/data/plexmind_media_mutation.lock"
-acquire_lock "/app/data/plexmind_gpu.lock"
+acquire_lock "${DATA_DIR}/plexmind_media_mutation.lock"
+acquire_lock "${DATA_DIR}/plexmind_gpu.lock"
 
 TEMP_AUDIO_FILE="/tmp/transcribe_temp_audio.${TRANSCRIBE_AUDIO_EXT}"
 

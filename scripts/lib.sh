@@ -40,8 +40,9 @@ SUBTITLE_FILE_MODE="${SUBTITLE_FILE_MODE:-0644}"
 SUBTITLE_UID="${SUBTITLE_UID:-}"
 SUBTITLE_GID="${SUBTITLE_GID:-}"
 
-QUARANTINE_DIR="${QUARANTINE_DIR:-/app/data/quarantine}"
-REPORT_DIR="${REPORT_DIR:-/app/data/reports}"
+DATA_DIR="${DATA_DIR:-/app/data}"
+QUARANTINE_DIR="${QUARANTINE_DIR:-${DATA_DIR}/quarantine}"
+REPORT_DIR="${REPORT_DIR:-${DATA_DIR}/reports}"
 
 # Media directories (container paths)
 MOVIE_DIR="${MOVIE_DIR:-/media/movies}"

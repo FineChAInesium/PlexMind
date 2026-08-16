@@ -48,8 +48,8 @@ source "${SCRIPT_DIR}/lib.sh" || { echo "FATAL: Cannot load lib.sh"; exit 1; }
 mkdir -p "$(dirname "$LOG_FILE")"
 prepare_log_file
 acquire_lock "/tmp/translation_backfill.lock"
-acquire_lock "/app/data/plexmind_media_mutation.lock"
-acquire_lock "/app/data/plexmind_gpu.lock"
+acquire_lock "${DATA_DIR}/plexmind_media_mutation.lock"
+acquire_lock "${DATA_DIR}/plexmind_gpu.lock"
 
 TEMP_JSON_PAYLOAD="/tmp/llama_cpp_payload.json"
 TEMP_RESPONSE_FILE="/tmp/llama_cpp_response.json"

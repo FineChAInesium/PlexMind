@@ -33,7 +33,7 @@ MODE="${1:-help}"
 
 case "$MODE" in
     audit|report|help) ;;
-    *) acquire_lock "/app/data/plexmind_media_mutation.lock" ;;
+    *) acquire_lock "${DATA_DIR}/plexmind_media_mutation.lock" ;;
 esac
 
 case "$MODE" in

@@ -21,6 +21,7 @@ export MOVIE_DIR="$TEMP_ROOT/movies"
 export TV_DIR="$TEMP_ROOT/tv"
 export LOG_FILE="$TEMP_ROOT/data/translation.log"
 export LIFETIME_STATS_FILE="$TEMP_ROOT/data/translation_stats.env"
+export DATA_DIR="$TEMP_ROOT/data"
 export REPORT_DIR="$TEMP_ROOT/data/reports"
 export MANAGE_LLAMA_CPP_CONTAINER=0
 export LLAMA_STARTUP_ATTEMPTS=3

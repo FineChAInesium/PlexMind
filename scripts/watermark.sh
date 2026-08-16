@@ -33,7 +33,7 @@ log "========================================================="
 
 ALL_MEDIA_DIRS=("${MOVIE_DIR}" "${TV_DIR}")
 validate_media_directories || exit 1
-acquire_lock "/app/data/plexmind_media_mutation.lock"
+acquire_lock "${DATA_DIR}/plexmind_media_mutation.lock"
 
 for DIR in "${ALL_MEDIA_DIRS[@]}"; do
     if [ ! -d "$DIR" ]; then
