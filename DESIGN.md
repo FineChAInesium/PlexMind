@@ -37,7 +37,7 @@ PlexMind Suite is a self-hosted AI control plane for Plex. It runs entirely on l
 
 **Stack:** Python 3.12 / FastAPI / APScheduler / Bash / Tailwind CSS (vanilla JS)  
 **Deployment:** Docker Compose (5 services) on Unraid  
-**LLM:** llama.cpp OpenAI-compatible server running qwen3-4b-q4_k_m (local, no cloud)  
+**LLM:** llama.cpp OpenAI-compatible server running qwen3.5-9b-q5_k_m (local, no cloud)
 **ASR:** Whisper (onerahmet webservice, GPU-accelerated)
 
 ---
@@ -65,7 +65,7 @@ Storage  [persistent volumes]
   └─ /media/tv             — mounted TV library
 
 Infrastructure
-  ├─ /var/run/docker.sock  — container lifecycle for sidecars
+  ├─ authenticated scripts API — media-job control
   └─ nginx-proxy-manager   — TLS termination / LAN reverse proxy
 ```
 
@@ -174,10 +174,10 @@ Active symlinks: `transcription.log`, `translation.log`, `maintenance.log`
 | TMDB | Genres, keywords, posters, trending | Optional (strongly recommended) |
 | TVDB | TV show status, networks | Optional |
 | OMDB / IMDb | IMDb ratings, Metascore | Optional |
-| Docker socket | Start/stop Whisper and llama.cpp sidecars; probe GPU utilization through GPU-backed containers | For sidecar lifecycle and GPU status fallback |
+| Docker broker | Allowlisted sidecar lifecycle, inspect, and fixed NVIDIA telemetry; it alone mounts the raw Docker socket | For sidecar lifecycle and GPU status |
 
 **Current config:**
-- Model: `qwen3-4b-q4_k_m`; generation defaults are capped for 8192-token context
+- Model: `qwen3.5-9b-q5_k_m`; generation defaults are capped for 8192-token context
 - TVDB + OMDB keys: **not set** — metadata enrichment is partial
 - Plex token in `.env` (plaintext — keep `chmod 600`)
 
@@ -283,10 +283,10 @@ Video file
 
 ### Weaknesses
 
-- **API key is optional by default** — all endpoints are open if `PLEXMIND_API_KEY` is unset
+- **Secrets are mandatory** — API, control, broker, and webhook secrets must all be configured and distinct
 - Plex token and TMDB key are plaintext in `.env` on disk
-- `PLEXMIND_API_KEY` can be passed as query param (`?api_key=...`) — appears in proxy access logs
-- Dashboard stores API key in browser `localStorage` (XSS risk if ever internet-exposed)
+- The scoped webhook secret is carried in the Plex webhook URL and can appear in proxy access logs
+- Browser sessions are process-local and require sign-in again after an API restart
 - Webhook LAN check is bypassable via reverse proxy
 - Destructive maintenance ops (`pgs-cleanup`, `dedup`) delete files without per-file confirmation
 
@@ -306,7 +306,7 @@ Video file
 
 | Item | State |
 |---|---|
-| LLM model | qwen3-4b-q4_k_m via llama.cpp OpenAI-compatible API |
+| LLM model | qwen3.5-9b-q5_k_m via llama.cpp OpenAI-compatible API |
 | LLM health | `/health` returns `llm_ready: true` |
 | LLM endpoint | `http://192.168.2.10:11435` externally, `http://llama-cpp:8080` in Docker network |
 | GPU status | NVIDIA detected; `/api/scheduler/status` returns `gpu_vendor`, `gpu_detection_source`, and `gpu_probe_error` diagnostics |
@@ -322,7 +322,7 @@ Video file
 
 ### Current Fix State
 
-The previous port 8000 UI and API failures were caused by stale Ollama/qwen3.5 references, oversized llama.cpp prompts, and Qwen reasoning output leaking into translation chunks. The live app now serves llama.cpp/qwen3-4b labels, caps recommendation prompt inputs, lowers max generation tokens to fit the 8192-token model context, preserves `/no_think` for every translation chunk, and reports NVIDIA GPU utilization with detection-source and probe-error diagnostics. The 2026-06-07 release also fixes the Whisper large-audio crash path by extracting compressed 16 kHz mono MP3, segmenting uploads over 50 MB, adding a 12 GB Whisper sidecar memory limit, and moving bundled sidecar host ports to `11435` for llama.cpp and `9001` for Whisper so PlexMind does not contend with services using host `8080` or `9000`. A later same-day regression in local script-runner mode was fixed by routing API-container Whisper health checks and transcription launches through `172.17.0.1:9001` whenever the configured URL names the Whisper sidecar.
+The previous port 8000 UI and API failures were caused by stale model references, oversized llama.cpp prompts, and Qwen reasoning output leaking into translation chunks. The live app now serves llama.cpp/qwen3.5-9b labels, caps recommendation prompt inputs, preserves `/no_think` for translation chunks, and reports NVIDIA GPU utilization through the narrow broker. The 2026-06-07 release also fixed the Whisper large-audio crash path by extracting compressed 16 kHz mono MP3, segmenting uploads over 50 MB, adding a 12 GB Whisper sidecar memory limit, and moving bundled sidecar host ports to `11435` for llama.cpp and `9001` for Whisper.
 
 ### Current Live Verification
 
@@ -374,7 +374,7 @@ Episodes that previously produced 80-90 MB uploads now go through compressed 16 
 
 ### R2 — Set PLEXMIND_API_KEY *(High / Security)*
 
-The dashboard is currently protected in the live `.env`, but the application default remains open if `PLEXMIND_API_KEY` is omitted. Given Docker socket access, every deployment should set a strong key.
+Startup fails closed unless the API, control, broker, and webhook secrets are all present and distinct. Keep strong generated values in the protected `.env`.
 
 Keep set in `.env`:
 ```
@@ -524,7 +524,7 @@ These are worth considering but not blocking anything current.
 ### 2026-06-07 - Changes Applied
 
 **Bug fixes:**
-- Dashboard requests now authenticate with a same-origin HttpOnly cookie set when the root page is served, so transcribe/translate controls work after removing the committed static API-key seed. X-API-Key and query-string API keys remain supported for API clients and webhooks.
+- Dashboard requests now authenticate with a same-origin HttpOnly session cookie created after explicit API-key exchange. API clients use `X-API-Key`; Plex webhooks use a distinct scoped webhook secret.
 - Large Whisper uploads now use compressed 16 kHz mono MP3 instead of uncompressed WAV.
 - Uploads over 50 MB are split into 10-minute chunks and stitched back into one SRT.
 - Whisper sidecar memory is capped at 12 GB to reduce crash risk during large ASR jobs.
@@ -546,13 +546,13 @@ These are worth considering but not blocking anything current.
 ### 2026-05-25 - Changes Applied
 
 **Bug fixes:**
-- Port 8000 dashboard no longer presents Ollama/qwen3.5 as the active LLM; live labels and health defaults now show llama.cpp and `qwen3-4b-q4_k_m`.
+- Port 8000 dashboard and health responses show the configured llama.cpp `qwen3.5-9b-q5_k_m` alias.
 - Recommendations no longer overflow llama.cpp context. Prompt inputs are capped with `MAX_HISTORY_PROMPT_ITEMS`, `MAX_CANDIDATE_PROMPT_ITEMS`, and `MAX_FEEDBACK_PROMPT_ITEMS`; `LLAMA_CPP_MAX_TOKENS` defaults to 768.
 - Translation chunks preserve `/no_think` even when previous-context text is included, preventing Qwen reasoning-only responses from producing empty subtitle output.
-- GPU status on the dashboard now falls back to probing the GPU-backed `llama-cpp` container through the Docker socket when the `plexmind` app container lacks `nvidia-smi`.
+- GPU status uses the authenticated narrow broker to run a fixed telemetry probe in the GPU-backed `llama-cpp` container.
 
 **Verified live:**
-- `/health` returns `llm_ready: true` for `qwen3-4b-q4_k_m`.
+- `/health` returns `llm_ready: true` for `qwen3.5-9b-q5_k_m`.
 - `/api/scheduler/status` returns `gpu_vendor: nvidia` and a utilization percentage.
 - `/api/scripts/translate/status` returns HTTP 200.
 - `GET /api/users/admin/recommendations?force=true` returns HTTP 200 with recommendation JSON.

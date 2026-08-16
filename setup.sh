@@ -9,6 +9,7 @@
 #   curl -sSL https://raw.githubusercontent.com/.../setup.sh | bash
 #   — or —
 #   git clone ... && cd plexmind-suite && ./setup.sh
+#   ./setup.sh --check   # read-only dependency/hardware/model preflight
 # ==============================================================================
 set -euo pipefail
 umask 077
@@ -209,6 +210,9 @@ generate_env() {
     PLEXMIND_CONTROL_TOKEN="$(openssl rand -hex 32)"
     PLEXMIND_BROKER_TOKEN="$(openssl rand -hex 32)"
     PLEXMIND_WEBHOOK_SECRET="$(openssl rand -hex 32)"
+    local subtitle_uid subtitle_gid
+    subtitle_uid="$(stat -c '%u' "$MOVIES_HOST_PATH" 2>/dev/null || id -u)"
+    subtitle_gid="$(stat -c '%g' "$MOVIES_HOST_PATH" 2>/dev/null || id -g)"
 
     cat > .env << ENVEOF
 # ==============================================================================
@@ -260,7 +264,13 @@ OMDB_API_KEY=
 
 # --- Translation ---
 TARGET_LANGUAGES=${TARGET_LANGS}
+ENABLE_WATERMARK=true
 WATERMARK_TEXT=${WATERMARK_TEXT}
+WATERMARK_SEARCH=PlexMind
+SUBTITLE_FILE_MODE=0644
+SUBTITLE_UID=${subtitle_uid}
+SUBTITLE_GID=${subtitle_gid}
+PGS_CLEANUP_ALLOW_UNKNOWN=0
 
 # --- PlexMind Recommendations ---
 MAX_RECOMMENDATIONS=10
@@ -373,6 +383,11 @@ print_summary() {
 # ==============================================================================
 
 main() {
+    local mode="${1:-install}"
+    if [[ "$mode" != "install" && "$mode" != "--check" ]]; then
+        error "Usage: $0 [--check]"
+        return 2
+    fi
     banner
     check_dependencies
     echo ""
@@ -384,6 +399,11 @@ main() {
     echo ""
 
     select_models
+
+    if [[ "$mode" == "--check" ]]; then
+        ok "Read-only setup preflight passed. No configuration or services were changed."
+        return 0
+    fi
 
     prompt_config
     generate_env

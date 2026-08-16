@@ -36,7 +36,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import APIKeyHeader
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, Field, field_validator
+from typing import Literal
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
@@ -135,6 +136,16 @@ _API_KEY_COOKIE = "plexmind_api_key"
 _SESSIONS: dict[str, float] = {}
 
 
+def _prune_sessions(now: float | None = None) -> None:
+    now = time.time() if now is None else now
+    for token, expires in list(_SESSIONS.items()):
+        if expires <= now:
+            _SESSIONS.pop(token, None)
+    if len(_SESSIONS) >= 1024:
+        for token, _expires in sorted(_SESSIONS.items(), key=lambda item: item[1])[:len(_SESSIONS) - 1023]:
+            _SESSIONS.pop(token, None)
+
+
 async def _require_key(
     request: Request,
     key: str | None = Depends(_api_key_header),
@@ -146,9 +157,7 @@ async def _require_key(
     cookie = request.cookies.get(_API_KEY_COOKIE, "")
     header_ok = bool(key and secrets.compare_digest(key.encode(), _API_KEY.encode()))
     now = time.time()
-    expired = [token for token, expires in _SESSIONS.items() if expires <= now]
-    for token in expired:
-        _SESSIONS.pop(token, None)
+    _prune_sessions(now)
     session_ok = bool(cookie and _SESSIONS.get(cookie, 0) > now)
     if not header_ok and not session_ok:
         raise HTTPException(status_code=403, detail="Invalid or missing API key")
@@ -170,9 +179,11 @@ async def _require_webhook_key(request: Request) -> None:
 
 
 @app.post("/api/session", include_in_schema=False)
-async def create_session(_: None = Depends(_require_header_key)):
+@limiter.limit("10/minute")
+async def create_session(request: Request, _: None = Depends(_require_header_key)):
     response = JSONResponse({"status": "ok"})
     if _API_KEY:
+        _prune_sessions()
         session_token = secrets.token_urlsafe(32)
         _SESSIONS[session_token] = time.time() + 60 * 60 * 12
         response.set_cookie(
@@ -225,9 +236,9 @@ def _validate_user_id(user_id: str) -> str:
 # ---------------------------------------------------------------------------
 
 class FeedbackRequest(BaseModel):
-    title: str
-    rating: str          # "like" | "dislike" | "watched"
-    note: str = ""
+    title: str = Field(min_length=1, max_length=300)
+    rating: Literal["like", "dislike", "watched"]
+    note: str = Field(default="", max_length=2000)
 
 
 class RecommendationItem(BaseModel):
@@ -457,8 +468,6 @@ def user_feedback(user_id: str, body: FeedbackRequest, _: None = Depends(_requir
     Automatically invalidates the user's recommendation cache.
     """
     _validate_user_id(user_id)
-    if body.rating not in ("like", "dislike", "watched"):
-        raise HTTPException(status_code=422, detail="rating must be 'like', 'dislike', or 'watched'")
     cache.add_feedback(user_id, body.title, body.rating, body.note)
     return {"status": "ok", "user_id": user_id, "title": body.title, "rating": body.rating}
 
@@ -510,7 +519,6 @@ def remove_plex_sync(user_id: str, _: None = Depends(_require_key)):
 @limiter.limit("3/hour")
 async def run_all(
     request: Request,
-    force: bool = Query(True),
     _: None = Depends(_require_key),
 ):
     """
@@ -560,7 +568,7 @@ async def job_events(job_id: str, _: None = Depends(_require_key)):
                 if event.get("type") in ("done", "error", "already_running"):
                     return
 
-            if job.get("status") in ("completed", "failed", "skipped"):
+            if job.get("status") in ("completed", "failed", "skipped", "interrupted"):
                 return
 
             await asyncio.sleep(1)
@@ -666,6 +674,17 @@ def scheduler_status():
         "cron_day": cron_day,
         "cron_hour": cron_hour,
         "cron_minute": cron_minute,
+        "script_timezone": os.getenv("TZ", "UTC"),
+        "script_windows": {
+            "transcribe": {
+                "start_hour": int(os.getenv("TRANSCRIBE_START_HOUR", "5")),
+                "end_hour": int(os.getenv("TRANSCRIBE_END_HOUR", "12")),
+            },
+            "translate": {
+                "start_hour": int(os.getenv("TRANSLATE_START_HOUR", "23")),
+                "end_hour": int(os.getenv("TRANSLATE_END_HOUR", "3")),
+            },
+        },
     }
 
 

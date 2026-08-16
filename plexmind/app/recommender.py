@@ -22,7 +22,7 @@ from collections import Counter
 
 from dotenv import load_dotenv
 
-from app import cache, imdb_client, llm_client, plex_client, plex_sync, tmdb_client, tvdb_client
+from app import cache, imdb_client, llm_client, plex_client, tmdb_client, tvdb_client
 
 load_dotenv()
 

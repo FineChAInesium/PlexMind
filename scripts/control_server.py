@@ -10,6 +10,8 @@ import time
 import secrets
 import tempfile
 import threading
+import urllib.request
+import urllib.error
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
@@ -50,7 +52,7 @@ JOB_DETAILS = {
     "maintenance-audit": ("Library Audit", "maintenance", "maintenance", "Scan media folders and write an audit report."),
     "maintenance-dupes": ("Duplicate Cleanup", "maintenance", "maintenance", "Remove duplicate subtitle files."),
     "maintenance-pgs": ("PGS Cleanup", "maintenance", "maintenance", "Delete image subtitles when matching SRT files exist."),
-    "maintenance-all": ("Full Maintenance", "maintenance", "maintenance", "Run audit, duplicate cleanup, and PGS cleanup."),
+    "maintenance-all": ("Full Maintenance", "maintenance", "maintenance", "Run encoding repair, duplicate and PGS cleanup, audit, and reporting."),
 }
 PROCS = {}
 LAST_RESULTS = {}
@@ -59,6 +61,7 @@ IDEMPOTENCY = {}
 STATE_PATH = Path(os.environ.get("DATA_DIR", "/app/data")) / "worker_job_state.json"
 IDEMPOTENCY_PATH = Path(os.environ.get("DATA_DIR", "/app/data")) / "worker_idempotency.json"
 STATE_LOCK = threading.RLock()
+MUTATION_LOCK = threading.RLock()
 
 
 def _boot_id():
@@ -219,6 +222,29 @@ def _log_meta(path):
     return {"log_exists": True, "log_size": stat.st_size, "log_mtime": stat.st_mtime}
 
 
+def _broker_ready():
+    broker = os.getenv("DOCKER_BROKER_URL", "").rstrip("/")
+    token = os.getenv("PLEXMIND_BROKER_TOKEN", "")
+    if not broker or not token:
+        return False
+    try:
+        request = urllib.request.Request(f"{broker}/health", headers={"X-Broker-Token": token})
+        with urllib.request.urlopen(request, timeout=3) as response:
+            return response.status == 200
+    except (OSError, urllib.error.URLError):
+        return False
+
+
+def _configured_target_languages():
+    raw = os.getenv("TARGET_LANGUAGES", "zh,es-MX")
+    languages = [item.strip() for item in raw.split(",") if item.strip()]
+    if not languages or len(languages) > 10 or any(
+        not re.fullmatch(r"[a-z]{2,3}(?:-[A-Za-z]{2,8})?", item) for item in languages
+    ):
+        return []
+    return languages
+
+
 def _status(job):
     pid = _running_pid(job)
     proc = PROCS.get(job)
@@ -267,13 +293,21 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def _read_body(self):
-        length = int(self.headers.get("Content-Length", "0") or 0)
+        try:
+            length = int(self.headers.get("Content-Length", "0") or 0)
+        except ValueError as exc:
+            raise ValueError("Content-Length must be an integer") from exc
         if not length:
             return {}
+        if length > 65536:
+            raise ValueError("request body is too large")
         try:
-            return json.loads(self.rfile.read(length).decode())
-        except json.JSONDecodeError:
-            return {}
+            payload = json.loads(self.rfile.read(length).decode())
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ValueError("request body must be valid JSON") from exc
+        if not isinstance(payload, dict):
+            raise ValueError("request body must be a JSON object")
+        return payload
 
     def _parts(self):
         parsed = urlparse(self.path)
@@ -287,7 +321,13 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(403, {"detail": "invalid control token"})
         parsed, parts = self._parts()
         if parts == ["health"]:
-            return self._json(200, {"status": "ok", "jobs": list(JOBS)})
+            broker_ready = _broker_ready()
+            return self._json(200 if broker_ready else 503, {
+                "status": "ok" if broker_ready else "degraded",
+                "broker_ready": broker_ready,
+                "target_languages": _configured_target_languages(),
+                "jobs": list(JOBS),
+            })
         if parts == ["storage"]:
             storage_path = os.environ.get("STORAGE_PATH", os.environ.get("MOVIE_DIR", "/media/movies"))
             try:
@@ -306,7 +346,10 @@ class Handler(BaseHTTPRequestHandler):
         if len(parts) == 2 and parts[0] == "jobs" and parts[1] in JOBS:
             return self._json(200, _status(parts[1]))
         if len(parts) == 3 and parts[0] == "jobs" and parts[1] in JOBS and parts[2] == "log":
-            lines = int(parse_qs(parsed.query).get("lines", ["200"])[0])
+            try:
+                lines = int(parse_qs(parsed.query).get("lines", ["200"])[0])
+            except ValueError:
+                return self._json(400, {"detail": "lines must be an integer"})
             lines = max(1, min(lines, 500))
             return self._json(200, {
                 "job": parts[1],
@@ -316,13 +359,20 @@ class Handler(BaseHTTPRequestHandler):
         return self._json(404, {"detail": "not found"})
 
     def do_POST(self):
+        with MUTATION_LOCK:
+            return self._do_POST_locked()
+
+    def _do_POST_locked(self):
         if not self._authorized():
             return self._json(403, {"detail": "invalid control token"})
         _, parts = self._parts()
         if len(parts) != 3 or parts[0] != "jobs" or parts[1] not in JOBS:
             return self._json(404, {"detail": "not found"})
         job, action = parts[1], parts[2]
-        body = self._read_body()
+        try:
+            body = self._read_body()
+        except ValueError as exc:
+            return self._json(400, {"detail": str(exc)})
         request_key = self.headers.get("Idempotency-Key", "")
         if not request_key:
             return self._json(400, {"detail": "Idempotency-Key is required"})
@@ -342,11 +392,15 @@ class Handler(BaseHTTPRequestHandler):
             env = os.environ.copy()
             job_token = os.urandom(24).hex()
             env["PLEXMIND_JOB_TOKEN"] = job_token
-            if body.get("run_now", True):
-                env["RUN_NOW"] = "1"
-            max_runtime = int(body.get("max_runtime_minutes") or 0)
+            env["RUN_NOW"] = "1" if body.get("run_now", True) else "0"
+            try:
+                max_runtime = int(body.get("max_runtime_minutes") or 0)
+            except (TypeError, ValueError):
+                return self._json(400, {"detail": "max_runtime_minutes must be an integer"})
+            if max_runtime < 0 or max_runtime > 10080:
+                return self._json(400, {"detail": "max_runtime_minutes must be 0-10080"})
             if max_runtime > 0:
-                env["MAX_RUNTIME_MINUTES"] = str(min(max_runtime, 10080))
+                env["MAX_RUNTIME_MINUTES"] = str(max_runtime)
             if job == "translate" and body.get("target_languages"):
                 languages = [item.strip() for item in str(body["target_languages"]).split(",") if item.strip()]
                 if not languages or len(languages) > 10 or any(

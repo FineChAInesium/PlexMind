@@ -120,7 +120,23 @@ class Handler(BaseHTTPRequestHandler):
         except (OSError, ValueError, json.JSONDecodeError) as exc:
             return self.reply(502, json.dumps({"detail": str(exc)}).encode())
 
-    def do_GET(self): self.proxy("GET")
+    def health(self):
+        conn = UnixConnection("localhost", timeout=3)
+        try:
+            conn.request("GET", "/_ping")
+            response = conn.getresponse()
+            response.read()
+            code = 200 if response.status == 200 else 503
+            return self.reply(code, b'{"status":"ok"}' if code == 200 else b'{"status":"degraded"}')
+        except OSError as exc:
+            return self.reply(503, json.dumps({"status": "degraded", "detail": str(exc)}).encode())
+        finally:
+            conn.close()
+
+    def do_GET(self):
+        if urlparse(self.path).path == "/health":
+            return self.health()
+        self.proxy("GET")
     def do_POST(self): self.proxy("POST")
 
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import fcntl
 import hashlib
 import os
 import re
@@ -75,25 +76,41 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--backup-root", required=True, type=Path)
     parser.add_argument("--audit-report", type=Path)
+    parser.add_argument("--movies-root", type=Path, default=os.getenv("MOVIES_HOST_PATH"))
+    parser.add_argument("--tv-root", type=Path, default=os.getenv("TV_HOST_PATH"))
+    parser.add_argument("--lock-file", type=Path)
     parser.add_argument("paths", nargs="*", type=Path)
     args = parser.parse_args()
     paths = args.paths
     if args.audit_report:
         report = args.audit_report.read_text(encoding="utf-8", errors="replace")
         container_paths = re.findall(r"^  \[INVALID[^]]*\] (/media/.*\.srt)$", report, re.MULTILINE)
-        paths.extend(
-            Path(value.replace("/media/movies", "/mnt/user/data/media/Movies")
-                       .replace("/media/tv", "/mnt/user/data/media/TV Shows"))
-            for value in container_paths
-        )
+        if container_paths and (not args.movies_root or not args.tv_root):
+            parser.error("--movies-root and --tv-root are required with container-path audit reports")
+        for value in container_paths:
+            if value.startswith("/media/movies/"):
+                paths.append(args.movies_root / value.removeprefix("/media/movies/"))
+            elif value.startswith("/media/tv/"):
+                paths.append(args.tv_root / value.removeprefix("/media/tv/"))
     if not paths:
         paths = [Path(os.fsdecode(value)) for value in sys.stdin.buffer.read().split(b"\0") if value]
+    lock_file = args.lock_file
+    if lock_file is None:
+        data_dir = os.getenv("DATA_DIR")
+        lock_file = Path(data_dir) / "plexmind_media_mutation.lock" if data_dir else args.backup_root / ".media-mutation.lock"
+    lock_file.parent.mkdir(parents=True, exist_ok=True)
     total = 0
-    for path in paths:
-        fixes, backup = repair(path, args.backup_root)
-        if fixes:
-            total += fixes
-            print(f"REPAIRED fixes={fixes} backup={backup} file={path}")
+    with lock_file.open("a+") as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            print(f"Another media mutation is running (lock: {lock_file}).")
+            return 1
+        for path in paths:
+            fixes, backup = repair(path, args.backup_root)
+            if fixes:
+                total += fixes
+                print(f"REPAIRED fixes={fixes} backup={backup} file={path}")
     print(f"TOTAL_REPAIRS={total}")
     return 0
 

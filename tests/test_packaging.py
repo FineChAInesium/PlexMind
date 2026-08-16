@@ -34,6 +34,41 @@ class PackagingTests(unittest.TestCase):
         self.assertNotIn("apiBase: API_BASE, apiKey: API_KEY", dashboard)
         self.assertNotIn("sessionStorage.setItem('pm_api_key'", dashboard)
 
+    def test_translation_targets_come_from_worker_configuration(self):
+        dashboard = (ROOT / "plexmind" / "app" / "static" / "index.html").read_text(encoding="utf-8")
+        controller = (ROOT / "scripts" / "control_server.py").read_text(encoding="utf-8")
+        self.assertNotIn('id="target-langs" value="zh,es-MX"', dashboard)
+        self.assertIn("health?.scripts?.target_languages", dashboard)
+        self.assertIn('"target_languages": _configured_target_languages()', controller)
+
+    def test_dashboard_runtime_configuration_avoids_stale_display_defaults(self):
+        dashboard = (ROOT / "plexmind" / "app" / "static" / "index.html").read_text(encoding="utf-8")
+        self.assertNotIn("Scheduled runs use 23:00-03:00", dashboard)
+        self.assertIn("data.script_windows?.translate", dashboard)
+        self.assertIn("data.cron_hour != null", dashboard)
+
+    def test_documented_script_configuration_is_wired(self):
+        compose = (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
+        for key in (
+            "ENABLE_WATERMARK", "WATERMARK_SEARCH", "KNOWN_BILINGUAL_TITLES",
+            "KNOWN_ENGLISH_REALITY_TITLES", "SUBTITLE_FILE_MODE", "PGS_CLEANUP_ALLOW_UNKNOWN",
+        ):
+            self.assertIn(f"- {key}=", compose)
+
+    def test_security_docs_match_http_only_session_contract(self):
+        docs = "\n".join(
+            (ROOT / name).read_text(encoding="utf-8")
+            for name in ("README.md", "SECURITY.md")
+        )
+        self.assertNotIn("stores its API key in browser localStorage", docs)
+        self.assertIn("HttpOnly", docs)
+
+    def test_setup_has_read_only_preflight(self):
+        setup = (ROOT / "setup.sh").read_text(encoding="utf-8")
+        self.assertIn('mode="${1:-install}"', setup)
+        self.assertIn('mode" == "--check', setup)
+        self.assertIn("No configuration or services were changed", setup)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -13,6 +13,11 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class BlastRadiusTests(unittest.TestCase):
+    def test_broker_exposes_a_container_healthcheck(self):
+        source = (ROOT / "scripts/docker_broker.py").read_text()
+        dockerfile = (ROOT / "scripts/Dockerfile.broker").read_text()
+        self.assertIn('urlparse(self.path).path == "/health"', source)
+        self.assertIn("HEALTHCHECK", dockerfile)
     def test_remote_dispatch_has_one_upstream_request(self):
         source = (ROOT / "plexmind/app/main.py").read_text()
         block = source.split("async def _scripts_request", 1)[1].split("# ---------------------------------------------------------------------------", 1)[0]

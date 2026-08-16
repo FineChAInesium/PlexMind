@@ -36,6 +36,9 @@ RUN_NOW="${RUN_NOW:-0}"
 MAX_RUNTIME_MINUTES="${MAX_RUNTIME_MINUTES:-0}"
 SCRIPT_STARTED_AT="${SCRIPT_STARTED_AT:-$(date +%s)}"
 LOG_RETENTION_DAYS="${LOG_RETENTION_DAYS:-7}"
+SUBTITLE_FILE_MODE="${SUBTITLE_FILE_MODE:-0644}"
+SUBTITLE_UID="${SUBTITLE_UID:-}"
+SUBTITLE_GID="${SUBTITLE_GID:-}"
 
 QUARANTINE_DIR="${QUARANTINE_DIR:-/app/data/quarantine}"
 REPORT_DIR="${REPORT_DIR:-/app/data/reports}"
@@ -61,6 +64,45 @@ log() {
     echo "$MSG"
     if [ -n "${LOG_FILE:-}" ] && [ -n "$LOG_FILE" ]; then
         echo "$MSG" >> "$LOG_FILE"
+    fi
+}
+
+# Read the numeric lifetime-stat files as data. Never source files from the
+# shared data volume: the API and worker containers can also write there.
+load_numeric_stats() {
+    local stats_file="$1" raw key value
+    [ -f "$stats_file" ] || return 0
+    while IFS= read -r raw || [ -n "$raw" ]; do
+        raw="${raw%$'\r'}"
+        [[ "$raw" =~ ^[[:space:]]*(#|$) ]] && continue
+        if [[ "$raw" =~ ^(LIFETIME_[A-Z0-9_]+)=([0-9]+)$ ]]; then
+            key="${BASH_REMATCH[1]}"
+            value="${BASH_REMATCH[2]}"
+            printf -v "$key" '%s' "$value"
+        else
+            log "WARNING: Ignoring invalid stats record in ${stats_file##*/}."
+        fi
+    done < "$stats_file"
+}
+
+finalize_subtitle_permissions() {
+    local subtitle_file="$1"
+    chmod "$SUBTITLE_FILE_MODE" "$subtitle_file" || {
+        log "ERROR: Could not set subtitle mode ${SUBTITLE_FILE_MODE}: $subtitle_file"
+        return 1
+    }
+    if [ -n "$SUBTITLE_UID" ] || [ -n "$SUBTITLE_GID" ]; then
+        if { [ -n "$SUBTITLE_UID" ] && ! [[ "$SUBTITLE_UID" =~ ^[0-9]+$ ]]; } || \
+           { [ -n "$SUBTITLE_GID" ] && ! [[ "$SUBTITLE_GID" =~ ^[0-9]+$ ]]; }; then
+            log "ERROR: SUBTITLE_UID and SUBTITLE_GID must be numeric when configured."
+            return 1
+        fi
+        local owner="$SUBTITLE_UID"
+        [ -n "$SUBTITLE_GID" ] && owner="${owner}:${SUBTITLE_GID}"
+        chown "$owner" "$subtitle_file" || {
+            log "ERROR: Could not set configured subtitle ownership: $subtitle_file"
+            return 1
+        }
     fi
 }
 
@@ -600,6 +642,8 @@ apply_watermark() {
         if ! head -n 15 "$SUB_FILE" | grep -qF "$WATERMARK_SEARCH"; then
             printf '0\n00:00:00,000 --> 00:00:05,000\n%s\n\n' "${WATERMARK_TEXT}" \
                 | cat - "$SUB_FILE" > "${SUB_FILE}.tmp"
+            chmod --reference="$SUB_FILE" "${SUB_FILE}.tmp" || return 1
+            chown --reference="$SUB_FILE" "${SUB_FILE}.tmp" 2>/dev/null || true
             mv "${SUB_FILE}.tmp" "$SUB_FILE"
         fi
     fi
@@ -1114,6 +1158,29 @@ verify_encoding() {
     fi
 }
 
+matching_text_subtitles() {
+    local subtitle_dir="$1" base_no_ext="$2" normalized="$2" language=""
+    PGS_MATCHING_SRTS=()
+    while [[ "$normalized" =~ ^(.+)\.(forced|hi|sdh|cc)$ ]]; do
+        normalized="${BASH_REMATCH[1]}"
+    done
+    if [[ "$normalized" =~ ^(.+)\.([a-zA-Z]{2,3}(-[a-zA-Z]{2,4})?)$ ]]; then
+        normalized="${BASH_REMATCH[1]}"
+        language="${BASH_REMATCH[2]}"
+    elif [ "${PGS_CLEANUP_ALLOW_UNKNOWN:-0}" != "1" ]; then
+        return 0
+    fi
+    shopt -s nullglob nocaseglob
+    if [ -n "$language" ]; then
+        local exact_srt="${subtitle_dir}/${normalized}.${language}.srt"
+        [ -f "$exact_srt" ] && PGS_MATCHING_SRTS+=( "$exact_srt" )
+        PGS_MATCHING_SRTS+=( "${subtitle_dir}/${normalized}.${language}."*.srt )
+    else
+        PGS_MATCHING_SRTS+=( "${subtitle_dir}/${normalized}."*.srt )
+    fi
+    shopt -u nullglob nocaseglob
+}
+
 cleanup_pgs() {
     local DELETED=0
     PGS_DELETED_COUNT=0
@@ -1126,14 +1193,8 @@ cleanup_pgs() {
             PGS_BASE=$(basename "$PGS_FILE")
             local BASE_NO_EXT="${PGS_BASE%.sup}"
 
-            local VIDEO_STEM="$BASE_NO_EXT"
-            if [[ "$BASE_NO_EXT" =~ ^(.+)\.([a-z]{2,3}(-[a-z]{2,4})?)$ ]]; then
-                VIDEO_STEM="${BASH_REMATCH[1]}"
-            fi
-
-            shopt -s nullglob nocaseglob
-            local SRT_FILES=( "${PGS_DIR}/${VIDEO_STEM}".*.srt )
-            shopt -u nullglob nocaseglob
+            matching_text_subtitles "$PGS_DIR" "$BASE_NO_EXT"
+            local SRT_FILES=( "${PGS_MATCHING_SRTS[@]}" )
 
             if [ ${#SRT_FILES[@]} -gt 0 ]; then
                 log "PGS CLEANUP: Deleting ${PGS_BASE} (${#SRT_FILES[@]} SRT file(s) exist)"
@@ -1152,14 +1213,8 @@ cleanup_pgs() {
             if [ ! -f "$IDX_FILE" ]; then continue; fi
 
             local BASE_NO_EXT="${SUB_BASE%.sub}"
-            local VIDEO_STEM="$BASE_NO_EXT"
-            if [[ "$BASE_NO_EXT" =~ ^(.+)\.([a-z]{2,3}(-[a-z]{2,4})?)$ ]]; then
-                VIDEO_STEM="${BASH_REMATCH[1]}"
-            fi
-
-            shopt -s nullglob nocaseglob
-            local SRT_FILES=( "${SUB_DIR}/${VIDEO_STEM}".*.srt )
-            shopt -u nullglob nocaseglob
+            matching_text_subtitles "$SUB_DIR" "$BASE_NO_EXT"
+            local SRT_FILES=( "${PGS_MATCHING_SRTS[@]}" )
 
             if [ ${#SRT_FILES[@]} -gt 0 ]; then
                 log "PGS CLEANUP: Deleting ${SUB_BASE} + .idx (${#SRT_FILES[@]} SRT file(s) exist)"
@@ -1401,13 +1456,8 @@ for raw_path in sys.stdin.buffer.read().split(b"\0"):
                 local PBASE
                 PBASE=$(basename "$PGS")
                 local PNAME="${PBASE%.sup}"
-                local VSTEM="$PNAME"
-                if [[ "$PNAME" =~ ^(.+)\.([a-z]{2,3}(-[a-z]{2,4})?)$ ]]; then
-                    VSTEM="${BASH_REMATCH[1]}"
-                fi
-                shopt -s nullglob nocaseglob
-                local SRTS=( "${PDIR}/${VSTEM}".*.srt )
-                shopt -u nullglob nocaseglob
+                matching_text_subtitles "$PDIR" "$PNAME"
+                local SRTS=( "${PGS_MATCHING_SRTS[@]}" )
                 if [ ${#SRTS[@]} -gt 0 ]; then
                     echo "  [CLEANABLE] ${PGS}"
                     PGS_CLEANABLE=$((PGS_CLEANABLE + 1))
@@ -1474,7 +1524,10 @@ generate_report() {
         echo "## Transcription Lifetime Stats"
         echo ""
         if [ -f "$TRANS_STATS" ]; then
-            source "$TRANS_STATS"
+            LIFETIME_SCANNED=0 LIFETIME_ENGLISH_PROCESSED=0 LIFETIME_BILINGUAL_PROCESSED=0
+            LIFETIME_FOREIGN_PROCESSED=0 LIFETIME_SKIPPED_EXISTING=0 LIFETIME_SKIPPED_FAILED=0
+            LIFETIME_SKIPPED_SIZE=0 LIFETIME_HALLUCINATIONS_CLEANED=0 LIFETIME_PROCESSING_SECONDS=0
+            load_numeric_stats "$TRANS_STATS"
             local TOTAL_PROC=$(( ${LIFETIME_ENGLISH_PROCESSED:-0} + ${LIFETIME_BILINGUAL_PROCESSED:-0} + ${LIFETIME_FOREIGN_PROCESSED:-0} ))
             local HOURS=$(( ${LIFETIME_PROCESSING_SECONDS:-0} / 3600 ))
             local MINS=$(( (${LIFETIME_PROCESSING_SECONDS:-0} % 3600) / 60 ))
@@ -1502,7 +1555,9 @@ generate_report() {
         echo "## Translation Lifetime Stats"
         echo ""
         if [ -f "$TRANSL_STATS" ]; then
-            source "$TRANSL_STATS"
+            LIFETIME_SCANNED=0 LIFETIME_PROCESSED=0 LIFETIME_SKIPPED_EXISTING=0
+            LIFETIME_SKIPPED_FAILED=0 LIFETIME_PROCESSING_SECONDS=0
+            load_numeric_stats "$TRANSL_STATS"
             local TL_HOURS=$(( ${LIFETIME_PROCESSING_SECONDS:-0} / 3600 ))
             local TL_MINS=$(( (${LIFETIME_PROCESSING_SECONDS:-0} % 3600) / 60 ))
             local TL_AVG=0

@@ -33,6 +33,7 @@ log "========================================================="
 
 ALL_MEDIA_DIRS=("${MOVIE_DIR}" "${TV_DIR}")
 validate_media_directories || exit 1
+acquire_lock "/app/data/plexmind_media_mutation.lock"
 
 for DIR in "${ALL_MEDIA_DIRS[@]}"; do
     if [ ! -d "$DIR" ]; then
@@ -58,6 +59,8 @@ for DIR in "${ALL_MEDIA_DIRS[@]}"; do
                 log "ERROR: Refusing invalid watermarked output for ${SUB_FILE}."
                 exit 2
             fi
+            chmod --reference="$SUB_FILE" "${SUB_FILE}.tmp" || { rm -f "${SUB_FILE}.tmp"; log "ERROR: Could not preserve mode for ${SUB_FILE}."; exit 2; }
+            chown --reference="$SUB_FILE" "${SUB_FILE}.tmp" 2>/dev/null || true
             mv -f "${SUB_FILE}.tmp" "$SUB_FILE" || { rm -f "${SUB_FILE}.tmp"; log "ERROR: Atomic watermark replacement failed for ${SUB_FILE}."; exit 2; }
 
             log "INJECTED: $(basename "$SUB_FILE")"

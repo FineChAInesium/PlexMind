@@ -24,6 +24,12 @@
 
 ## Unreleased
 
+- Discover translation targets from the worker's configured language list instead of hard-coding Chinese and Mexican Spanish in the dashboard.
+- Parse shared statistics as a strict numeric data format, preserve safe subtitle modes, and support configured media ownership.
+- Make PGS cleanup and its audit language-aware so an unrelated text subtitle cannot authorize deletion.
+- Serialize and validate worker controls, expose broker-backed health, and rate-limit bounded browser sessions.
+- Lock standalone subtitle mutation tools, use atomic timestamp/order repairs, and archive originals safely.
+- Add read-only setup preflight, wire documented settings, and expand regression coverage across the hardened suite.
 - Keep PGS cleanup logs separate from the numeric deletion count so standalone and full-maintenance results remain accurate.
 - Align packaging regression coverage with the HttpOnly-session security contract that forbids persisting raw API keys in browser storage.
 - Accept short invariant translations while rejecting substantial unchanged dialogue, and record cue-level rejection diagnostics without duplicate log lines.

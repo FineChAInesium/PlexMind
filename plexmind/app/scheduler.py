@@ -635,7 +635,10 @@ def start(app=None) -> None:
     )
     scheduler.start()
     log.info(
-        "Scheduler started — monthly recs run on the 1st at 03:00 UTC; script launches are checked every 15 minutes in %s.",
+        "Scheduler started — monthly recs use %s; transcription window %02d:00-%02d:00 and translation window %02d:00-%02d:00 in %s.",
+        scheduler.get_job("monthly_recs").trigger,
+        TRANSCRIBE_START_HOUR, TRANSCRIBE_END_HOUR,
+        TRANSLATE_START_HOUR, TRANSLATE_END_HOUR,
         script_tz,
     )
 

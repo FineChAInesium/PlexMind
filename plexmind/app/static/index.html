@@ -333,12 +333,12 @@
               <div class="space-y-4">
                 <div>
                   <label class="text-xs text-slate-400 mb-1.5 block">TARGET_LANGUAGES</label>
-                  <input id="target-langs" value="zh,es-MX" class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-violet-500/50" placeholder="zh,es-MX,fr">
+                  <input id="target-langs" class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-violet-500/50" placeholder="Loading configured languages…">
                   <p class="text-[11px] text-slate-500 mt-1.5">Comma-separated ISO codes</p>
                 </div>
                 <div class="rounded-xl bg-slate-900 border border-slate-700 p-3 text-xs text-slate-400">
                   <i data-lucide="info" class="w-3.5 h-3.5 inline mr-1 text-violet-400"></i>
-                  Uses llama.cpp (<span id="tl-model-label">qwen3.5-9b-q5_k_m</span>) for chunk-based translation. Scheduled runs use 23:00-03:00 local; run now with <code>RUN_NOW=1</code> and optional <code>MAX_RUNTIME_MINUTES</code>.
+                  Uses llama.cpp (<span id="tl-model-label">configured model</span>) for chunk-based translation. Scheduled runs use <span id="tl-window-label">the configured worker window</span>; run now with <code>RUN_NOW=1</code> and optional <code>MAX_RUNTIME_MINUTES</code>.
                 </div>
                 <div class="grid grid-cols-2 gap-2 mt-2">
                   <button id="btn-translate" class="rounded-xl bg-violet-600 hover:bg-violet-500 py-3 font-medium flex items-center justify-center gap-2 shadow-glow transition">
@@ -603,6 +603,17 @@ async function fetchHealth() {
   }
 }
 
+let translationTargetsLoaded = false;
+function syncTranslationTargets(health) {
+  if (translationTargetsLoaded) return;
+  const configured = health?.scripts?.target_languages;
+  if (!Array.isArray(configured) || !configured.length) return;
+  const input = document.getElementById('target-langs');
+  input.value = configured.join(',');
+  input.placeholder = 'BCP-47 tags, comma-separated';
+  translationTargetsLoaded = true;
+}
+
 function fmtCount(value) {
   return Number(value || 0).toLocaleString();
 }
@@ -645,9 +656,9 @@ function updateHealthUI(h) {
   const llmOk = h && h.llm_ready;
   document.getElementById('llm-dot').className = `w-2.5 h-2.5 rounded-full ${llmOk ? 'bg-emerald-500 shadow-[0_0_10px_rgba(16,185,129,.5)]' : h ? 'bg-amber-500' : 'bg-red-500'}`;
   document.getElementById('llm-status').textContent = llmOk ? 'Ready' : h ? 'Not ready' : 'Offline';
-  document.getElementById('llm-label').textContent = h ? (h.llm || 'qwen3.5-9b-q5_k_m') : 'API Offline';
+  document.getElementById('llm-label').textContent = h ? (h.llm || 'Configured model') : 'API Offline';
   document.getElementById('llm-model-display').value = h ? (h.llm || '') : '';
-  document.getElementById('tl-model-label').textContent = h ? (h.llm || 'qwen3.5-9b-q5_k_m') : 'qwen3.5-9b-q5_k_m';
+  document.getElementById('tl-model-label').textContent = h ? (h.llm || 'configured model') : 'configured model';
 
   // Whisper ASR
   const whisper = h?.whisper;
@@ -707,9 +718,14 @@ async function fetchSchedulerStatus() {
       document.getElementById('stat-schedule').textContent = '—';
     }
     // Pre-fill editor with current cron values
-    if (data.cron_day)    document.getElementById('sched-day').value    = data.cron_day;
-    if (data.cron_hour)   document.getElementById('sched-hour').value   = data.cron_hour;
-    if (data.cron_minute) document.getElementById('sched-minute').value = data.cron_minute;
+    if (data.cron_day != null)    document.getElementById('sched-day').value    = data.cron_day;
+    if (data.cron_hour != null)   document.getElementById('sched-hour').value   = data.cron_hour;
+    if (data.cron_minute != null) document.getElementById('sched-minute').value = data.cron_minute;
+    const translateWindow = data.script_windows?.translate;
+    if (translateWindow) {
+      const padHour = value => String(value).padStart(2, '0') + ':00';
+      document.getElementById('tl-window-label').textContent = `${padHour(translateWindow.start_hour)}-${padHour(translateWindow.end_hour)} ${data.script_timezone || 'configured timezone'}`;
+    }
 
     // GPU from real data
     const util = data.gpu_utilization_pct;
@@ -1058,13 +1074,14 @@ document.addEventListener('DOMContentLoaded', async () => {
   await fetchApiLive();
   const h = await fetchHealth();
   updateHealthUI(h);
+  syncTranslationTargets(h);
   await loadWhisperModels();
   fetchSchedulerStatus();
   fetchModelAdvisor();
   fetchStorage();
   updateScriptStatsUI(await fetchScriptStats());
   setInterval(fetchApiLive, 10000);
-  setInterval(async () => updateHealthUI(await fetchHealth()), 30000);
+  setInterval(async () => { const health = await fetchHealth(); updateHealthUI(health); syncTranslationTargets(health); }, 30000);
   setInterval(fetchSchedulerStatus, 30000);
   setInterval(fetchModelAdvisor, 7 * 24 * 60 * 60 * 1000);
   setInterval(fetchStorage, 60000);
@@ -1538,8 +1555,8 @@ async function refreshScriptLog(job, logEl) {
     'maintenance-pgs':   { freq:'weekly', time:'04:00', weekday:'1', monthday:'1', active:false },
   };
   const SCHED_META = {
-    'transcribe': 'Window 05:00-12:00 local (7h). Estimate: about 3 min per pending video after the script pre-scan. Stop or watch logs here.',
-    'translate': 'Window 23:00-03:00 local (4h). Estimate: about 26 min per pending subtitle file after the script pre-scan. Stop or watch logs here.',
+    'transcribe': 'The built-in worker uses its configured transcription window. This helper creates a separate external cron command; stop or watch logs here.',
+    'translate': 'The built-in worker uses its configured translation window. This helper creates a separate external cron command; stop or watch logs here.',
     'maintenance-audit': 'Usually minutes; reads media folders and writes an audit report.',
     'maintenance-dupes': 'Usually minutes; can delete duplicate SRT files.',
     'maintenance-pgs': 'Usually minutes; can delete PGS/image subtitles when SRTs exist.',

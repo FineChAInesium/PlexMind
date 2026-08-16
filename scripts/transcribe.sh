@@ -72,7 +72,7 @@ FILES_SINCE_HEALTH_CHECK=0
 
 # --- LIFETIME STATS ---
 if [ -f "$LIFETIME_STATS_FILE" ]; then
-    source "$LIFETIME_STATS_FILE"
+    load_numeric_stats "$LIFETIME_STATS_FILE"
 fi
 LIFETIME_SCANNED="${LIFETIME_SCANNED:-0}"
 LIFETIME_ENGLISH_PROCESSED="${LIFETIME_ENGLISH_PROCESSED:-0}"
@@ -563,6 +563,7 @@ PYEOF
         FINAL_OUTPUT_FILE="${DIR_PATH}/${BASENAME_NO_EXT}.${DETECTED_FOREIGN_LANG}.srt"
 
     mv "${TEMP_OUTPUT_FILE}" "${FINAL_OUTPUT_FILE}"
+    finalize_subtitle_permissions "${FINAL_OUTPUT_FILE}" || return
     log "SUCCESS: ${FINAL_OUTPUT_FILE}"
 
     # --- BILINGUAL VIP: detect non-Latin → rename + translate pass ---
@@ -604,6 +605,7 @@ PYEOF
         if [ -n "$FOREIGN_LANG_CODE" ]; then
             local FOREIGN_SRT="${DIR_PATH}/${BASENAME_NO_EXT}.${FOREIGN_LANG_CODE}.srt"
             mv "${FINAL_OUTPUT_FILE}" "${FOREIGN_SRT}"
+            finalize_subtitle_permissions "${FOREIGN_SRT}" || return
             log "  Non-Latin detected [${FOREIGN_LANG_CODE}] — renamed to $(basename "${FOREIGN_SRT}")"
 
             # Translate pass → .en.srt
@@ -625,6 +627,7 @@ PYEOF
                     apply_watermark "${TRANSLATE_TMP}"
                     verify_encoding "${TRANSLATE_TMP}"
                     mv "${TRANSLATE_TMP}" "${FINAL_OUTPUT_FILE}"
+                    finalize_subtitle_permissions "${FINAL_OUTPUT_FILE}" || return
                     log "  SUCCESS: English translation → $(basename "${FINAL_OUTPUT_FILE}")"
                 else
                     log "  WARNING: Translate pass failed (${WHISPER_UPLOAD_RESULT:-exit ${TRANSLATE_EXIT}}) — .en.srt not created."

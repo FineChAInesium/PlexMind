@@ -462,7 +462,7 @@ Important details:
 - `/webhook` rejects non-LAN clients, but reverse proxies can make internet traffic appear local. Use `PLEXMIND_API_KEY` if proxied.
 - Only the allowlisted Docker broker mounts `/var/run/docker.sock`; script jobs use its authenticated start/stop API.
 - Subtitle maintenance modes can delete `.sup`, `.sub/.idx`, and duplicate `.srt` files from mounted media folders. Run audits first and keep backups if your media library is not disposable.
-- The dashboard stores its API key in browser localStorage so it persists across browser and container restarts. Use HTTPS and a trusted browser profile when accessing it through a reverse proxy.
+- The dashboard exchanges the API key for a same-origin HttpOnly session cookie and never persists the raw key in browser storage. Use HTTPS when accessing it through a reverse proxy.
 
 See [SECURITY.md](SECURITY.md) for the full security model and audit notes.
 

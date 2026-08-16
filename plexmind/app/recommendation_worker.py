@@ -6,6 +6,7 @@ import fcntl
 import os
 import signal
 import socket
+import tempfile
 import time
 from pathlib import Path
 
@@ -18,6 +19,21 @@ STOP = False
 def _stop(*_args):
     global STOP
     STOP = True
+
+
+def _write_heartbeat(path: Path) -> None:
+    fd, temp_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    try:
+        with os.fdopen(fd, "w") as handle:
+            handle.write(str(time.time()))
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temp_name, path)
+    finally:
+        try:
+            os.unlink(temp_name)
+        except FileNotFoundError:
+            pass
 
 
 async def run_job(job_id: str, record: dict) -> None:
@@ -51,8 +67,8 @@ async def main() -> None:
     recovered = recommendation_jobs.recover_running("recommendation worker restarted")
     print(f"PlexMind recommendation worker ready; recovered={recovered}", flush=True)
     while not STOP:
-        heartbeat = Path(os.getenv("DATA_DIR", "/app/data")) / "recommendation_worker_heartbeat"
-        heartbeat.write_text(str(time.time()))
+        heartbeat = data_dir / "recommendation_worker_heartbeat"
+        _write_heartbeat(heartbeat)
         claimed = recommendation_jobs.claim_next(owner)
         if claimed is None:
             await asyncio.sleep(1)

@@ -8,13 +8,19 @@ Fix timestamp ordering in script-generated SRT translations.
 
 import os
 import re
-import sys
+import fcntl
+import hashlib
+import shutil
+import tempfile
 from pathlib import Path
 
 MEDIA_DIRS = [
     Path(os.getenv("MOVIE_DIR", "/media/movies")),
     Path(os.getenv("TV_DIR", "/media/tv")),
 ]
+DATA_DIR = Path(os.getenv("DATA_DIR", "/app/data"))
+BACKUP_DIR = Path(os.getenv("ORDERING_BACKUP_DIR", str(DATA_DIR / "quarantine" / "srt-ordering-backups")))
+LOCK_FILE = Path(os.getenv("MEDIA_MUTATION_LOCK", str(DATA_DIR / "plexmind_media_mutation.lock")))
 
 def parse_time_ms(ts):
     m = re.match(r'(\d{2}):(\d{2}):(\d{2}),(\d{3})', ts)
@@ -59,6 +65,9 @@ def fix_file(path):
     blocks = parse_srt(content)
     if not blocks:
         return 'skip', 'no blocks parsed'
+    raw_blocks = [block for block in re.split(r'\n{2,}', content.replace('\r\n', '\n').replace('\r', '\n').strip()) if block.strip()]
+    if len(blocks) != len(raw_blocks):
+        return 'error', f'refusing lossy rewrite: parsed {len(blocks)} of {len(raw_blocks)} blocks'
 
     sorted_blocks = sorted(blocks, key=lambda b: b[0])
     issues = sum(1 for a, b in zip(blocks, sorted_blocks) if a[0] != b[0])
@@ -71,8 +80,27 @@ def fix_file(path):
         lines.append(f"{i}\n{start_str} --> {end_str}\n{text}\n")
 
     try:
-        path.write_text('\n'.join(lines) + '\n', encoding='utf-8')
+        stat = path.stat()
+        BACKUP_DIR.mkdir(parents=True, exist_ok=True)
+        digest = hashlib.sha256(os.fsencode(path)).hexdigest()[:16]
+        backup = BACKUP_DIR / f"{digest}-{path.name}"
+        if not backup.exists():
+            shutil.copy2(path, backup)
+            os.chmod(backup, 0o600)
+        with tempfile.NamedTemporaryFile('w', encoding='utf-8', dir=path.parent, delete=False) as handle:
+            temporary = Path(handle.name)
+            handle.write('\n'.join(lines) + '\n')
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(temporary, stat.st_mode & 0o777)
+        try:
+            os.chown(temporary, stat.st_uid, stat.st_gid)
+        except PermissionError:
+            pass
+        os.replace(temporary, path)
     except Exception as e:
+        if 'temporary' in locals():
+            temporary.unlink(missing_ok=True)
         return 'error', str(e)
 
     return 'fixed', issues
@@ -98,6 +126,16 @@ def find_translated_files():
     return sorted(files)
 
 def main():
+    LOCK_FILE.parent.mkdir(parents=True, exist_ok=True)
+    with LOCK_FILE.open('a+') as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            print(f"Another media mutation is running (lock: {LOCK_FILE}).")
+            return 1
+        return run()
+
+def run():
     files = find_translated_files()
     print(f"Found {len(files)} translated SRT files to check.\n")
 
@@ -117,6 +155,7 @@ def main():
             total_ok += 1
 
     print(f"\nDone. Fixed: {total_fixed} | Already OK: {total_ok} | Errors: {total_errors}")
+    return 1 if total_errors else 0
 
 if __name__ == '__main__':
-    main()
+    raise SystemExit(main())

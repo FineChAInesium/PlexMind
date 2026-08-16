@@ -59,7 +59,7 @@ export SESSION_PROCESSING_SECONDS=0
 FILES_SINCE_HEALTH_CHECK=0
 
 # --- LIFETIME STATS ---
-if [ -f "$LIFETIME_STATS_FILE" ]; then source "$LIFETIME_STATS_FILE"; fi
+if [ -f "$LIFETIME_STATS_FILE" ]; then load_numeric_stats "$LIFETIME_STATS_FILE"; fi
 LIFETIME_SCANNED="${LIFETIME_SCANNED:-0}"
 LIFETIME_PROCESSED="${LIFETIME_PROCESSED:-0}"
 LIFETIME_SKIPPED_EXISTING="${LIFETIME_SKIPPED_EXISTING:-0}"
@@ -386,6 +386,7 @@ PYEOF
             normalize_timestamps "$TEMP_FINAL_FILE" >/dev/null
 
             mv "$TEMP_FINAL_FILE" "$FINAL_OUTPUT_FILE"
+            finalize_subtitle_permissions "$FINAL_OUTPUT_FILE" || return
             rm -f "$CHECKPOINT_FILE" "$FAILED_MARKER_FILE"
             log "SUCCESS: ${TARGET_LANG} translation complete."
             TRANSLATIONS_PROCESSED=$((TRANSLATIONS_PROCESSED+1))
