@@ -11,6 +11,7 @@ Endpoints:
 """
 import asyncio
 from contextlib import asynccontextmanager
+import hashlib
 from ipaddress import ip_address, ip_network
 import json
 import logging
@@ -73,6 +74,7 @@ async def lifespan(app: FastAPI):
         Path(os.getenv("REC_HISTORY_FILE", data_dir / "recommendation_history.json")),
         data_dir / "recommendation_jobs.json",
         data_dir / "scheduler_state.json",
+        _SESSION_FILE,
     ]
     unwritable = [
         str(path) for path in required_writes
@@ -81,6 +83,8 @@ async def lifespan(app: FastAPI):
     ]
     if unwritable:
         raise RuntimeError(f"PlexMind persistent files are not writable: {', '.join(unwritable)}")
+
+    _load_sessions()
 
     ok = await llm_client.health_check()
     if not ok:
@@ -134,16 +138,60 @@ _api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
 
 _API_KEY_COOKIE = "plexmind_api_key"
 _SESSIONS: dict[str, float] = {}
+_SESSION_FILE = Path(os.getenv(
+    "PLEXMIND_SESSION_FILE",
+    Path(os.getenv("DATA_DIR", "/app/data")) / "auth_sessions.json",
+))
+_SESSION_MAX_AGE = max(1, int(os.getenv("PLEXMIND_SESSION_DAYS", "30"))) * 24 * 60 * 60
 
 
-def _prune_sessions(now: float | None = None) -> None:
+def _session_id(token: str) -> str:
+    """Store only a one-way digest of the browser's opaque session token."""
+    return hashlib.sha256(token.encode()).hexdigest()
+
+
+def _save_sessions() -> None:
+    _SESSION_FILE.parent.mkdir(parents=True, exist_ok=True)
+    temporary = _SESSION_FILE.with_suffix(f"{_SESSION_FILE.suffix}.tmp")
+    temporary.write_text(
+        json.dumps({"version": 1, "sessions": _SESSIONS}, separators=(",", ":")),
+        encoding="utf-8",
+    )
+    os.chmod(temporary, 0o600)
+    os.replace(temporary, _SESSION_FILE)
+
+
+def _load_sessions() -> None:
+    _SESSIONS.clear()
+    try:
+        payload = json.loads(_SESSION_FILE.read_text(encoding="utf-8"))
+        sessions = payload.get("sessions", {})
+        if not isinstance(sessions, dict):
+            raise ValueError("sessions must be an object")
+        now = time.time()
+        _SESSIONS.update({
+            token_id: float(expires)
+            for token_id, expires in sessions.items()
+            if isinstance(token_id, str) and float(expires) > now
+        })
+    except FileNotFoundError:
+        return
+    except (OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
+        logging.getLogger(__name__).warning("Ignoring invalid persisted browser sessions: %s", exc)
+
+
+def _prune_sessions(now: float | None = None) -> bool:
     now = time.time() if now is None else now
+    changed = False
     for token, expires in list(_SESSIONS.items()):
         if expires <= now:
             _SESSIONS.pop(token, None)
+            changed = True
     if len(_SESSIONS) >= 1024:
         for token, _expires in sorted(_SESSIONS.items(), key=lambda item: item[1])[:len(_SESSIONS) - 1023]:
             _SESSIONS.pop(token, None)
+            changed = True
+    return changed
 
 
 async def _require_key(
@@ -157,8 +205,9 @@ async def _require_key(
     cookie = request.cookies.get(_API_KEY_COOKIE, "")
     header_ok = bool(key and secrets.compare_digest(key.encode(), _API_KEY.encode()))
     now = time.time()
-    _prune_sessions(now)
-    session_ok = bool(cookie and _SESSIONS.get(cookie, 0) > now)
+    if _prune_sessions(now):
+        _save_sessions()
+    session_ok = bool(cookie and _SESSIONS.get(_session_id(cookie), 0) > now)
     if not header_ok and not session_ok:
         raise HTTPException(status_code=403, detail="Invalid or missing API key")
 
@@ -185,12 +234,13 @@ async def create_session(request: Request, _: None = Depends(_require_header_key
     if _API_KEY:
         _prune_sessions()
         session_token = secrets.token_urlsafe(32)
-        _SESSIONS[session_token] = time.time() + 60 * 60 * 12
+        _SESSIONS[_session_id(session_token)] = time.time() + _SESSION_MAX_AGE
+        _save_sessions()
         response.set_cookie(
             _API_KEY_COOKIE, session_token, httponly=True,
             samesite="strict",
             secure=os.getenv("PLEXMIND_SECURE_COOKIE", "").lower() in ("1", "true", "yes"),
-            max_age=60 * 60 * 12,
+            max_age=_SESSION_MAX_AGE,
         )
     return response
 
@@ -199,7 +249,8 @@ async def create_session(request: Request, _: None = Depends(_require_header_key
 async def delete_session(request: Request):
     token = request.cookies.get(_API_KEY_COOKIE, "")
     if token:
-        _SESSIONS.pop(token, None)
+        _SESSIONS.pop(_session_id(token), None)
+        _save_sessions()
     response = JSONResponse({"status": "signed_out"})
     response.delete_cookie(_API_KEY_COOKIE, samesite="strict")
     return response

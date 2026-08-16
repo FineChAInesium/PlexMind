@@ -286,7 +286,7 @@ Video file
 - **Secrets are mandatory** — API, control, broker, and webhook secrets must all be configured and distinct
 - Plex token and TMDB key are plaintext in `.env` on disk
 - The scoped webhook secret is carried in the Plex webhook URL and can appear in proxy access logs
-- Browser sessions are process-local and require sign-in again after an API restart
+- Browser session digests persist under the API data directory and survive restarts; sessions expire after the configured lifetime
 - Webhook LAN check is bypassable via reverse proxy
 - Destructive maintenance ops (`pgs-cleanup`, `dedup`) delete files without per-file confirmation
 

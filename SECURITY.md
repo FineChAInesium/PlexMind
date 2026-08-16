@@ -40,9 +40,11 @@ Key comparison uses `secrets.compare_digest`.
 
 ### Browser dashboard
 
-The dashboard exchanges the API key for a 12-hour, same-origin HttpOnly session
+The dashboard exchanges the API key for a persistent, same-origin HttpOnly session
 cookie. It stores only the API base URL in `localStorage`; the raw key is cleared
-from the form and is not persisted by browser JavaScript. SSE uses the same cookie.
+from the form and is not persisted by browser JavaScript. Only one-way session-token
+digests are saved under the persistent data directory. Sessions survive API restarts
+and expire after 30 days by default (`PLEXMIND_SESSION_DAYS`). SSE uses the same cookie.
 
 Security implications:
 
