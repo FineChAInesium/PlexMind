@@ -1232,85 +1232,22 @@ cleanup_pgs() {
 # ---------------------------------------------------------------------------
 # deduplicate_subs()
 #
-# Detects cases where multiple SRT files exist for the same language
-# (e.g., one downloaded + one from Whisper). Keeps the one with more cues
-# and better timing. Deletes or renames the inferior one.
+# Detects cases where multiple SRT files exist for the same title, language
+# and track kind (e.g., one downloaded + one from Whisper). Keeps the one with
+# more cues and moves the inferior one to DATA_DIR/quarantine/dedup. Forced
+# and SDH tracks are never treated as duplicates of a regular track.
 #
 # Arguments: $1 = directory to scan (recursive)
-# Returns:   number of duplicates removed (printed to stdout)
 # ---------------------------------------------------------------------------
 deduplicate_subs() {
     local SCAN_DIR="$1"
+    local helper="${SCRIPT_DIR:-$(dirname "${BASH_SOURCE[0]}")}/dedup_subs.py"
 
-    python3 - "$SCAN_DIR" <<'PYEOF'
-import os, sys, re
-from collections import defaultdict
-
-scan_dir = sys.argv[1]
-removed = 0
-
-groups = defaultdict(list)
-
-for root, dirs, files in os.walk(scan_dir):
-    srt_files = [f for f in files if f.lower().endswith('.srt')]
-    for srt in srt_files:
-        path = os.path.join(root, srt)
-        name = srt
-        for suffix in ['.srt']:
-            name = name[:-len(suffix)] if name.lower().endswith(suffix) else name
-
-        parts = name.split('.')
-        lang = None
-        base_parts = []
-        tags = []
-        for p in parts:
-            pl = p.lower()
-            if pl in ('hi', 'sdh', 'cc', 'forced', 'ai'):
-                tags.append(pl)
-            elif len(pl) >= 2 and len(pl) <= 3 and pl.isalpha() and not base_parts:
-                base_parts.append(p)
-            elif len(pl) >= 2 and len(pl) <= 5 and re.match(r'^[a-z]{2,3}(-[a-z]{2,4})?$', pl):
-                lang = pl
-            else:
-                base_parts.append(p)
-
-        if lang is None:
-            lang = 'unknown'
-
-        base_name = '.'.join(base_parts)
-        key = (root, base_name, lang)
-        groups[key].append(path)
-
-for key, paths in groups.items():
-    if len(paths) <= 1:
-        continue
-
-    scored = []
-    for p in paths:
-        try:
-            with open(p, 'r', encoding='utf-8', errors='replace') as f:
-                content = f.read()
-            cues = len(re.findall(r' --> ', content))
-            size = os.path.getsize(p)
-            scored.append((cues, size, p))
-        except Exception:
-            scored.append((0, 0, p))
-
-    scored.sort(key=lambda x: (x[0], x[1]), reverse=True)
-
-    best = scored[0][2]
-    for cues, size, path in scored[1:]:
-        try:
-            os.remove(path)
-            removed += 1
-            print(f"DEDUP: Removed {os.path.basename(path)} (kept {os.path.basename(best)}, {scored[0][0]} vs {cues} cues)")
-        except Exception as e:
-            print(f"DEDUP: Failed to remove {path}: {e}")
-
-print(f"TOTAL:{removed}")
-PYEOF
+    python3 "$helper" "$SCAN_DIR" 2>&1 | while IFS= read -r line; do log "$line"; done
+    local rc=${PIPESTATUS[0]}
 
     log "DEDUP: Scan of ${SCAN_DIR} complete."
+    return "$rc"
 }
 
 audit_library() {

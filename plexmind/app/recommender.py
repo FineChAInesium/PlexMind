@@ -620,20 +620,22 @@ Raw JSON array only. No variable names, no prose, no markdown.\
 # ---------------------------------------------------------------------------
 
 async def get_recommendations(user_id: str, force: bool = False) -> list[dict]:
+    # plexapi and the flock/fsync cache helpers are synchronous; run them in a
+    # worker thread so a regeneration never stalls the API event loop.
     if not force:
-        cached = cache.cache_get(user_id)
+        cached = await asyncio.to_thread(cache.cache_get, user_id)
         if cached is not None:
             return cached
 
     # 1. Watch history (per-user, with timestamps)
-    history = plex_client.get_watch_history(user_id)
+    history = await asyncio.to_thread(plex_client.get_watch_history, user_id)
     watched_titles = {item.title.lower() for item in history}
 
     # 2. In-progress titles (exclude from candidates)
-    in_progress = plex_client.get_in_progress_titles(user_id)
+    in_progress = await asyncio.to_thread(plex_client.get_in_progress_titles, user_id)
 
     # 3. Unwatched library candidates (excludes watched + in-progress)
-    library_items = _get_unwatched_library(watched_titles, in_progress)
+    library_items = await asyncio.to_thread(_get_unwatched_library, watched_titles, in_progress)
     if not library_items:
         return []
 
@@ -659,10 +661,10 @@ async def get_recommendations(user_id: str, force: bool = False) -> list[dict]:
         meta["rating_key"] = source.get("rating_key")
 
     # 6. Shown-rec suppression data
-    shown_recs = cache.get_shown_recs(user_id)
+    shown_recs = await asyncio.to_thread(cache.get_shown_recs, user_id)
 
     # 7. Pre-filter enriched candidates to focused pool
-    feedback = cache.get_user_feedback(user_id)
+    feedback = await asyncio.to_thread(cache.get_user_feedback, user_id)
     n = min(MAX_RECS, len(shortlist))
     # Reserve one slot for the deep cut; LLM fills n-1
     llm_n = max(1, n - 1)
@@ -742,9 +744,9 @@ async def get_recommendations(user_id: str, force: bool = False) -> list[dict]:
     if deep_cut:
         recs.append(deep_cut)
 
-    cache.cache_set(user_id, recs)
+    await asyncio.to_thread(cache.cache_set, user_id, recs)
 
     # 11. Mark shown (for future suppression)
-    cache.mark_shown_recs(user_id, [r["title"] for r in recs])
+    await asyncio.to_thread(cache.mark_shown_recs, user_id, [r["title"] for r in recs])
 
     return recs

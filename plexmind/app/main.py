@@ -12,6 +12,7 @@ Endpoints:
 import asyncio
 from contextlib import asynccontextmanager
 import hashlib
+import hmac
 from ipaddress import ip_address, ip_network
 import json
 import logging
@@ -145,16 +146,22 @@ _SESSION_FILE = Path(os.getenv(
 _SESSION_MAX_AGE = max(1, int(os.getenv("PLEXMIND_SESSION_DAYS", "30"))) * 24 * 60 * 60
 
 
+_SESSION_FILE_VERSION = 2
+
+
 def _session_id(token: str) -> str:
-    """Store only a one-way digest of the browser's opaque session token."""
-    return hashlib.sha256(token.encode()).hexdigest()
+    """Store only a one-way digest of the browser's opaque session token.
+
+    Keyed by the API key so rotating PLEXMIND_API_KEY revokes every session.
+    """
+    return hmac.new(_API_KEY.encode(), token.encode(), hashlib.sha256).hexdigest()
 
 
 def _save_sessions() -> None:
     _SESSION_FILE.parent.mkdir(parents=True, exist_ok=True)
     temporary = _SESSION_FILE.with_suffix(f"{_SESSION_FILE.suffix}.tmp")
     temporary.write_text(
-        json.dumps({"version": 1, "sessions": _SESSIONS}, separators=(",", ":")),
+        json.dumps({"version": _SESSION_FILE_VERSION, "sessions": _SESSIONS}, separators=(",", ":")),
         encoding="utf-8",
     )
     os.chmod(temporary, 0o600)
@@ -165,6 +172,10 @@ def _load_sessions() -> None:
     _SESSIONS.clear()
     try:
         payload = json.loads(_SESSION_FILE.read_text(encoding="utf-8"))
+        if payload.get("version") != _SESSION_FILE_VERSION:
+            # v1 stored unkeyed SHA-256 digests, which survive key rotation.
+            logging.getLogger(__name__).info("Discarding browser sessions from an older session format")
+            return
         sessions = payload.get("sessions", {})
         if not isinstance(sessions, dict):
             raise ValueError("sessions must be an object")
@@ -233,6 +244,9 @@ async def create_session(request: Request, _: None = Depends(_require_header_key
     response = JSONResponse({"status": "ok"})
     if _API_KEY:
         _prune_sessions()
+        previous = request.cookies.get(_API_KEY_COOKIE, "")
+        if previous:
+            _SESSIONS.pop(_session_id(previous), None)
         session_token = secrets.token_urlsafe(32)
         _SESSIONS[_session_id(session_token)] = time.time() + _SESSION_MAX_AGE
         _save_sessions()
@@ -246,9 +260,14 @@ async def create_session(request: Request, _: None = Depends(_require_header_key
 
 
 @app.delete("/api/session", include_in_schema=False)
-async def delete_session(request: Request):
+async def delete_session(request: Request, everywhere: bool = Query(False)):
+    if everywhere:
+        # Revoking other browsers' sessions requires an authenticated caller.
+        await _require_key(request, request.headers.get("X-API-Key"))
+        _SESSIONS.clear()
+        _save_sessions()
     token = request.cookies.get(_API_KEY_COOKIE, "")
-    if token:
+    if token and not everywhere:
         _SESSIONS.pop(_session_id(token), None)
         _save_sessions()
     response = JSONResponse({"status": "signed_out"})
@@ -544,10 +563,14 @@ async def sync_plex(user_id: str, force: bool = Query(False), _: None = Depends(
     recs = await recommender.get_recommendations(user_id, force=force)
     if not recs:
         raise HTTPException(status_code=404, detail="No recommendations to sync — generate them first.")
-    try:
+    def _sync() -> dict:
         users = plex_client.get_users()
         username = next((u["username"] for u in users if str(u["id"]) == str(user_id)), str(user_id))
-        result = plex_sync.sync_to_plex(user_id, username, recs)
+        user_token = None if user_id == "admin" else plex_client.get_user_token(user_id)
+        return plex_sync.sync_to_plex(user_id, username, recs, user_token=user_token)
+
+    try:
+        result = await asyncio.to_thread(_sync)
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"Plex sync failed: {exc}")
     return {"status": "ok", "user_id": user_id, **result}

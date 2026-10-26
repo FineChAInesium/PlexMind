@@ -62,9 +62,11 @@ output="$FIXTURE/movies/Film/Film.es-MX.srt"
 [ -s "$output" ]
 grep -qF '00:00:01,000 --> 00:00:03,000' "$output"
 grep -qF 'Hola.' "$output"
-! grep -qF 'WARNING:' "$output"
-! find "$FIXTURE/movies" -name '*.failed' -print -quit | grep -q .
-! find "$FIXTURE/movies" -name '*.checkpoint' -print -quit | grep -q .
+# `! cmd` is exempt from `set -e`, so negative assertions must exit explicitly.
+fail() { echo "FAIL: $*" >&2; exit 1; }
+if grep -qE ' - (WARNING|ERROR|INFO):' "$output"; then fail "log line leaked into $output"; fi
+if [ -n "$(find "$FIXTURE/movies" -name '*.failed' -print -quit)" ]; then fail "unexpected .failed marker"; fi
+if [ -n "$(find "$FIXTURE/movies" -name '*.checkpoint' -print -quit)" ]; then fail "unexpected checkpoint"; fi
 
 rm -f "$FIXTURE/count"
 env PATH="$FIXTURE/bin:$PATH" MOCK_COUNT_FILE="$FIXTURE/count" MOCK_INVARIANT=1 \
@@ -100,6 +102,9 @@ set -e
 [ "$failure_rc" -eq 2 ]
 [ "$(cat "$FIXTURE/count")" -eq 4 ]
 [ -s "$FIXTURE/movies/Failure/Failure.es-MX.temp" ]
+if grep -qE ' - (WARNING|ERROR|INFO):' "$FIXTURE/movies/Failure/Failure.es-MX.temp"; then
+  fail "log line leaked into partial translation"
+fi
 [ -s "$FIXTURE/movies/Failure/Failure.es-MX.temp.checkpoint" ] || [ -f "$FIXTURE/movies/Failure/Failure.es-MX.temp.checkpoint" ]
 [ -f "$FIXTURE/movies/Failure/Failure.es-MX.failed" ]
 diagnostic=$(find "$FIXTURE/data/translation-failures" -type f -name '*.json' -print -quit)

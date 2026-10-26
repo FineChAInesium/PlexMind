@@ -173,8 +173,10 @@ calculate_pending_jobs() {
 }
 
 # --- TRANSLATE CHUNK ---
+# Appends the translated cue to $6. It never writes subtitle text to stdout,
+# so log() output (which echoes to stdout) cannot leak into the .srt.
 translate_chunk() {
-    local _prev_chunk="$1" curr_chunk="$2" sys_prompt="$3" diagnostic_key="$4" target_lang="$5"
+    local _prev_chunk="$1" curr_chunk="$2" sys_prompt="$3" diagnostic_key="$4" target_lang="$5" out_file="$6"
     local cue_id cue_timestamp source_dialogue previous_dialogue=""
     cue_id=$(printf '%s\n' "$curr_chunk" | sed -n '1p')
     cue_timestamp=$(printf '%s\n' "$curr_chunk" | sed -n '2p')
@@ -232,9 +234,11 @@ if substantial and src_words == out_words:
 print("ok")
 PYEOF
             ); then
-                printf '%s\n%s\n' "$cue_id" "$cue_timestamp"
-                cat "$translated_file"
-                printf '\n\n'
+                {
+                    printf '%s\n%s\n' "$cue_id" "$cue_timestamp"
+                    cat "$translated_file"
+                    printf '\n\n'
+                } >> "$out_file"
                 rm -f "$translated_file"
                 return 0
             fi
@@ -361,7 +365,7 @@ PYEOF
         fi
         local diagnostic_key
         diagnostic_key=$(printf '%s-%s-%05d' "$(printf '%s' "${SOURCE_FILE}:${TARGET_LANG}" | sha256sum | cut -c1-16)" "$TARGET_LANG" "$chunk_index")
-        if ! translate_chunk "$previous_chunk" "$cc" "$SYSTEM_PROMPT" "$diagnostic_key" "$TARGET_LANG" >> "$TEMP_FINAL_FILE"; then
+        if ! translate_chunk "$previous_chunk" "$cc" "$SYSTEM_PROMPT" "$diagnostic_key" "$TARGET_LANG" "$TEMP_FINAL_FILE"; then
             chunk_success=false; break
         fi
         processed_chunks=$((chunk_index+1))

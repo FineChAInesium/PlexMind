@@ -135,49 +135,58 @@ def _sync_watchlist(token: str, user_key: str, recs: list[dict]) -> dict:
         return {"mode": "watchlist_error", "error": "could not authenticate with plex.tv"}
 
     index = _build_index(server)
+    # Hold the ownership lock for the whole read-modify-write so a concurrent
+    # API sync and worker batch cannot each overwrite the other's identities.
     with _ownership_lock():
         track = _load_track()
-    previous = set(track.get(user_key, []))
+        previous = set(track.get(user_key, []))
 
-    # Add new recommendations to watchlist
-    matched: list = []
-    unmatched: list[str] = []
-    new_identities: list[str] = []
+        # Add new recommendations to watchlist
+        matched: list = []
+        unmatched: list[str] = []
+        new_identities: list[str] = []
 
-    for rec in recs:
-        item = _resolve(index, rec)
-        if item:
+        for rec in recs:
+            item = _resolve(index, rec)
+            if not item:
+                unmatched.append(rec.get("title", ""))
+                continue
+            rating_key = getattr(item, "ratingKey", None)
+            identity = f"rating:{rating_key}" if rating_key else rec.get("title", "").casefold().strip()
             try:
+                if account.onWatchlist(item):
+                    # plexapi raises on a duplicate add. Keep ownership only if
+                    # PlexMind added it previously; never claim a user's own item.
+                    matched.append(rec["title"])
+                    if identity in previous:
+                        new_identities.append(identity)
+                    continue
                 account.addToWatchlist(item)
                 matched.append(rec["title"])
-                rating_key = getattr(item, "ratingKey", None)
-                new_identities.append(f"rating:{rating_key}" if rating_key else rec.get("title", "").casefold().strip())
+                new_identities.append(identity)
             except Exception as exc:
                 log.debug("Watchlist add failed for %s: %s", rec["title"], exc)
                 unmatched.append(rec["title"])
-        else:
-            unmatched.append(rec.get("title", ""))
 
-    if not new_identities and previous:
-        return {"mode": "watchlist_error", "error": "replacement resolved no items; previous set retained"}
+        if not matched and previous:
+            return {"mode": "watchlist_error", "error": "replacement resolved no items; previous set retained"}
 
-    # Remove the old set only after at least one replacement was added.
-    owned_identities = set(new_identities)
-    cleanup_failed: list[str] = []
-    for identity in previous - owned_identities:
-        item = index.get(identity)
-        if item:
-            try:
-                account.removeFromWatchlist(item)
-            except Exception as exc:
-                log.warning("Could not remove obsolete watchlist item %s: %s", identity, exc)
+        # Remove the old set only after at least one replacement was added.
+        owned_identities = set(new_identities)
+        cleanup_failed: list[str] = []
+        for identity in previous - owned_identities:
+            item = index.get(identity)
+            if item:
+                try:
+                    account.removeFromWatchlist(item)
+                except Exception as exc:
+                    log.warning("Could not remove obsolete watchlist item %s: %s", identity, exc)
+                    owned_identities.add(identity)
+                    cleanup_failed.append(identity)
+            else:
                 owned_identities.add(identity)
                 cleanup_failed.append(identity)
-        else:
-            owned_identities.add(identity)
-            cleanup_failed.append(identity)
 
-    with _ownership_lock():
         track = _load_track()
         track[user_key] = sorted(owned_identities)
         _save_track(track)
@@ -468,23 +477,28 @@ def purge_all_plexmind_playlists() -> None:
 
 def remove_collection(user_id: str, username: str) -> None:
     """Remove PlexMind watchlist entries and any legacy collections/playlists for this user."""
+    is_admin = user_id == "admin"
     token = PLEX_TOKEN
-    if user_id != "admin":
+    if not is_admin:
+        # Never fall back to the admin token: that would edit the admin's
+        # watchlist and delete the admin's playlists on the friend's behalf.
+        from app import plex_client
         try:
-            from app import plex_client
             t = plex_client.get_user_token(user_id)
-            if t and t != PLEX_TOKEN:
-                token = t
-        except Exception:
-            pass
+        except Exception as exc:
+            raise RuntimeError(f"could not obtain a Plex token for user {user_id}: {exc}") from exc
+        if not t or t == PLEX_TOKEN:
+            raise RuntimeError(f"no Plex token for user {user_id}; refusing to act with the admin token")
+        token = t
 
-    # Clear watchlist entries we added
+    # Clear watchlist entries we added. Only the admin is synced via watchlist;
+    # other users' tracked identities are playlist titles, removed below.
     failures = []
     with _ownership_lock():
         track = _load_track()
         previous = set(track.get(str(user_id), []))
         remaining = set()
-        if previous:
+        if previous and is_admin:
             try:
                 server = PlexServer(PLEX_URL, token)
                 index = _build_index(server)
