@@ -44,7 +44,7 @@ from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 
-from app import cache, llm_client, model_advisor, plex_client, plex_sync, recommender, scheduler, tmdb_client, whisper_models, recommendation_jobs
+from app import cache, llama_lifecycle, llm_client, model_advisor, plex_client, plex_sync, recommender, scheduler, tmdb_client, whisper_models, recommendation_jobs
 
 # ---------------------------------------------------------------------------
 # Startup
@@ -88,7 +88,9 @@ async def lifespan(app: FastAPI):
     _load_sessions()
 
     ok = await llm_client.health_check()
-    if not ok:
+    if not ok and llama_lifecycle.ON_DEMAND:
+        print(f"llama.cpp is on standby; it starts on demand ({llm_client.LLAMA_CPP_MODEL}).")
+    elif not ok:
         print(
             f"WARNING: llama.cpp model '{llm_client.LLAMA_CPP_MODEL}' not found at "
             f"{llm_client.LLAMA_CPP_URL}. Recommendations will fail until resolved."
@@ -434,6 +436,15 @@ async def health():
         llm_client.health_check(),
         _whisper_health(),
     )
+    if llm_ok:
+        llm_state = "ready"
+    elif llama_lifecycle.ON_DEMAND:
+        # Stopped on purpose between uses: like Whisper, that is standby, not a fault.
+        container = await llama_lifecycle.container_state()
+        llm_state = {"standby": "standby", "running": "starting"}.get(container, "fault")
+    else:
+        llm_state = "fault"
+    llm_available = llm_state in ("ready", "standby")
     try:
         scripts = await _scripts_request("GET", "/health")
     except HTTPException as exc:
@@ -444,9 +455,11 @@ async def health():
     except (OSError, ValueError):
         recommendation_worker_ready = False
     return {
-        "status": "ok" if llm_ok and scripts["status"] == "ok" and recommendation_worker_ready else "degraded",
+        "status": "ok" if llm_available and scripts["status"] == "ok" and recommendation_worker_ready else "degraded",
         "llm": llm_client.LLAMA_CPP_MODEL,
         "llm_ready": llm_ok,
+        "llm_state": llm_state,
+        "llm_on_demand": llama_lifecycle.ON_DEMAND,
         "whisper": whisper,
         "scripts": scripts,
         "recommendation_worker_ready": recommendation_worker_ready,

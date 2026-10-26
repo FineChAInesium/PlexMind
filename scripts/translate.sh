@@ -114,7 +114,11 @@ EOF
     log "Lifetime Total: ${LIFETIME_PROCESSED}"
     log "========================================================="
     rm -f "$TEMP_JSON_PAYLOAD" "$TEMP_RESPONSE_FILE" /tmp/translation_backfill.pid 2>/dev/null
-    if [ "${MANAGE_LLAMA_CPP_CONTAINER:-0}" = "1" ]; then
+    if [ "${LLAMA_ON_DEMAND:-0}" = "1" ]; then
+        # Start the shared idle countdown; the recommendation worker stops
+        # llama.cpp once nobody has used it for LLAMA_IDLE_STOP_MINUTES.
+        touch "${DATA_DIR:-/app/data}/llama_last_used" 2>/dev/null || true
+    elif [ "${MANAGE_LLAMA_CPP_CONTAINER:-0}" = "1" ]; then
         stop_docker_container "llama.cpp" "${LLAMA_CPP_CONTAINER_NAME:-llama-cpp}"
     fi
 }
@@ -425,7 +429,13 @@ fi
 
 ALL_MEDIA_DIRS=("${MOVIE_DIR}" "${TV_DIR}")
 validate_media_directories || exit 1
-if [ "${MANAGE_LLAMA_CPP_CONTAINER:-0}" = "1" ]; then
+if [ "${LLAMA_ON_DEMAND:-0}" = "1" ]; then
+    # Hold a shared lease for the whole run so the idle reaper never stops
+    # llama.cpp mid-translation (it needs the exclusive lock to stop it).
+    exec {LLAMA_LEASE_FD}>>"${DATA_DIR:-/app/data}/llama_lifecycle.lock"
+    flock -s "$LLAMA_LEASE_FD"
+    start_docker_container "llama.cpp" "${LLAMA_CPP_CONTAINER_NAME:-llama-cpp}" || exit 1
+elif [ "${MANAGE_LLAMA_CPP_CONTAINER:-0}" = "1" ]; then
     start_docker_container "llama.cpp" "${LLAMA_CPP_CONTAINER_NAME:-llama-cpp}" || exit 1
 else
     log "llama.cpp lifecycle is externally managed; waiting for the configured endpoint."

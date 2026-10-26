@@ -10,10 +10,18 @@ import tempfile
 import time
 from pathlib import Path
 
-from app import recommendation_jobs, scheduler
+from app import llama_lifecycle, recommendation_jobs, scheduler
 
 os.umask(0o077)
 STOP = False
+REAP_INTERVAL_SECONDS = 60
+
+
+async def _reap_llama() -> None:
+    try:
+        await asyncio.to_thread(llama_lifecycle.reap_if_idle)
+    except Exception as exc:
+        print(f"llama.cpp idle check failed: {exc}", flush=True)
 
 
 def _stop(*_args):
@@ -66,9 +74,15 @@ async def main() -> None:
         raise RuntimeError("Another recommendation worker already owns the queue") from exc
     recovered = recommendation_jobs.recover_running("recommendation worker restarted")
     print(f"PlexMind recommendation worker ready; recovered={recovered}", flush=True)
+    if llama_lifecycle.ON_DEMAND:
+        print(f"llama.cpp on-demand: idle stop after {llama_lifecycle.IDLE_STOP_SECONDS // 60} min", flush=True)
+    next_reap = 0.0
     while not STOP:
         heartbeat = data_dir / "recommendation_worker_heartbeat"
         _write_heartbeat(heartbeat)
+        if time.monotonic() >= next_reap:
+            next_reap = time.monotonic() + REAP_INTERVAL_SECONDS
+            await _reap_llama()
         claimed = recommendation_jobs.claim_next(owner)
         if claimed is None:
             await asyncio.sleep(1)

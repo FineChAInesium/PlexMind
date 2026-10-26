@@ -12,6 +12,9 @@ services:
     environment:
       - PLEXMIND_BROKER_TOKEN=${PLEXMIND_BROKER_TOKEN}
       - PLEXMIND_ALLOWED_CONTAINERS=${WHISPER_CONTAINER_NAME:-whisper-asr-webservice},${LLAMA_CPP_CONTAINER_NAME:-llama-cpp}
+      # GPU-probe-only containers: the broker may run its fixed nvidia-smi query
+      # in these, nothing else (no start/stop/inspect).
+      - PLEXMIND_GPU_PROBE_CONTAINERS=${PLEXMIND_GPU_PROBE_CONTAINERS:-}
   # ---------------------------------------------------------------------------
   # llama.cpp — Local LLM server (recommendations + translation)
   # ---------------------------------------------------------------------------
@@ -34,6 +37,9 @@ services:
       - ${LLAMA_CPP_MODEL_ALIAS:-qwen3.5-9b-q5_k_m}
       - --ctx-size
       - ${LLAMA_CPP_CTX_SIZE:-8192}
+      # PlexMind sends one request at a time; extra slots only reserve memory.
+      - --parallel
+      - ${LLAMA_CPP_PARALLEL:-1}
       - --n-gpu-layers
       - ${LLAMA_CPP_N_GPU_LAYERS:-99}
     deploy:
@@ -144,6 +150,9 @@ services:
       - LLAMA_CPP_API_URL=${LLAMA_CPP_API_URL:-}
       - LLAMA_CPP_CONTAINER_NAME=${LLAMA_CPP_CONTAINER_NAME:-llama-cpp}
       - MANAGE_LLAMA_CPP_CONTAINER=${MANAGE_LLAMA_CPP_CONTAINER:-0}
+      - LLAMA_ON_DEMAND=${LLAMA_ON_DEMAND:-0}
+      - LLAMA_STARTUP_TIMEOUT_SECONDS=${LLAMA_STARTUP_TIMEOUT_SECONDS:-180}
+      - GPU_PROBE_CONTAINERS=${GPU_PROBE_CONTAINERS:-llama-cpp}
       - MOVIE_DIR=/media/movies
       - MOVIES_DIR=/media/movies
       - TV_DIR=/media/tv
@@ -190,6 +199,11 @@ services:
       - PLEXMIND_BROKER_TOKEN=${PLEXMIND_BROKER_TOKEN}
       - GPU_THRESHOLD_PCT=${GPU_THRESHOLD_PCT:-30}
       - GPU_BACKOFF_MINUTES=${GPU_BACKOFF_MINUTES:-30}
+      - GPU_PROBE_CONTAINERS=${GPU_PROBE_CONTAINERS:-llama-cpp}
+      - LLAMA_CPP_CONTAINER_NAME=${LLAMA_CPP_CONTAINER_NAME:-llama-cpp}
+      - LLAMA_ON_DEMAND=${LLAMA_ON_DEMAND:-0}
+      - LLAMA_IDLE_STOP_MINUTES=${LLAMA_IDLE_STOP_MINUTES:-15}
+      - LLAMA_STARTUP_TIMEOUT_SECONDS=${LLAMA_STARTUP_TIMEOUT_SECONDS:-180}
       - TZ=${TZ:-UTC}
     depends_on:
       - llama-cpp
@@ -217,6 +231,7 @@ services:
       - LLAMA_CPP_API_URL=${LLAMA_CPP_API_URL:-}
       - LLAMA_CPP_CONTAINER_NAME=${LLAMA_CPP_CONTAINER_NAME:-llama-cpp}
       - MANAGE_LLAMA_CPP_CONTAINER=${MANAGE_LLAMA_CPP_CONTAINER:-0}
+      - LLAMA_ON_DEMAND=${LLAMA_ON_DEMAND:-0}
       - LLAMA_CPP_MODEL=${LLAMA_CPP_MODEL_ALIAS:-qwen3.5-9b-q5_k_m}
       - LLAMA_CPP_MAX_TOKENS=${LLAMA_CPP_MAX_TOKENS:-768}
       - SCRIPTS_API_URL=${SCRIPTS_API_URL:-http://scripts:9010}

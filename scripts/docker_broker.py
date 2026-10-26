@@ -12,8 +12,28 @@ from urllib.parse import urlparse
 SOCKET = os.getenv("DOCKER_SOCKET", "/var/run/docker.sock")
 TOKEN = os.getenv("PLEXMIND_BROKER_TOKEN", "")
 ALLOWED = {x for x in os.getenv("PLEXMIND_ALLOWED_CONTAINERS", "whisper-asr-webservice,llama-cpp").split(",") if x}
+# Containers where only the fixed nvidia-smi GPU probe may run (e.g. an
+# always-on Plex container), so GPU telemetry works while sidecars are stopped.
+GPU_PROBE_ONLY = {x.strip() for x in os.getenv("PLEXMIND_GPU_PROBE_CONTAINERS", "").split(",") if x.strip()}
 if not TOKEN:
     raise RuntimeError("PLEXMIND_BROKER_TOKEN is required")
+
+
+def route(method, path):
+    """Map a request to ("gpu", container), ("docker", docker_path) or ("error", status)."""
+    parts = [p for p in urlparse(path).path.split("/") if p]
+    if len(parts) not in (2, 3) or parts[0] != "containers":
+        return "error", 404
+    name = parts[1]
+    if method == "GET" and len(parts) == 3 and parts[2] == "gpu" and (name in ALLOWED or name in GPU_PROBE_ONLY):
+        return "gpu", name
+    if name not in ALLOWED:
+        return "error", 404
+    if method == "GET" and len(parts) == 3 and parts[2] == "json":
+        return "docker", f"/containers/{name}/json"
+    if method == "POST" and len(parts) == 3 and parts[2] in ("start", "stop"):
+        return "docker", f"/containers/{name}/{parts[2]}"
+    return "error", 405
 
 
 class UnixConnection(http.client.HTTPConnection):
@@ -40,17 +60,13 @@ class Handler(BaseHTTPRequestHandler):
     def proxy(self, method):
         if not self.authorized():
             return self.reply(403, b'{"detail":"forbidden"}')
-        parts = [p for p in urlparse(self.path).path.split("/") if p]
-        if len(parts) not in (2, 3) or parts[0] != "containers" or parts[1] not in ALLOWED:
-            return self.reply(404, b'{"detail":"not allowed"}')
-        if method == "GET" and len(parts) == 3 and parts[2] == "gpu":
-            return self.gpu(parts[1])
-        if method == "GET" and len(parts) == 3 and parts[2] == "json":
-            docker_path = f"/containers/{parts[1]}/json"
-        elif method == "POST" and len(parts) == 3 and parts[2] in ("start", "stop"):
-            docker_path = f"/containers/{parts[1]}/{parts[2]}"
-        else:
-            return self.reply(405, b'{"detail":"method not allowed"}')
+        kind, target = route(method, self.path)
+        if kind == "gpu":
+            return self.gpu(target)
+        if kind == "error":
+            body = b'{"detail":"not allowed"}' if target == 404 else b'{"detail":"method not allowed"}'
+            return self.reply(target, body)
+        docker_path = target
         conn = UnixConnection("localhost", timeout=10)
         try:
             conn.request(method, docker_path)

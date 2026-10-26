@@ -9,6 +9,8 @@ import re
 
 import httpx
 
+from app import llama_lifecycle
+
 log = logging.getLogger("plexmind.llm")
 from dotenv import load_dotenv
 
@@ -178,7 +180,7 @@ async def generate(prompt: str, system: str | None = None) -> str:
         "max_tokens": MAX_TOKENS,
     }
 
-    async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT) as client:
+    async with llama_lifecycle.in_use(), httpx.AsyncClient(timeout=REQUEST_TIMEOUT) as client:
         resp = await client.post(f"{LLAMA_CPP_URL.rstrip('/')}/v1/chat/completions", json=payload)
         resp.raise_for_status()
         data = resp.json()

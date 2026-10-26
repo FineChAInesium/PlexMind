@@ -26,6 +26,8 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from dotenv import load_dotenv
 
+from app import llama_lifecycle
+
 load_dotenv()
 
 GPU_THRESHOLD_PCT = int(os.getenv("GPU_THRESHOLD_PCT", "30"))
@@ -459,7 +461,10 @@ async def run_all_users(triggered_by: str = "scheduler", on_progress=None) -> di
                 if on_progress:
                     await on_progress({"type": "already_running", "owner": "media_job"})
                 return result
-            return await _do_run_all_users(triggered_by, on_progress)
+            # Keep an on-demand llama.cpp up for the whole batch (and for the
+            # GPU probe, which execs nvidia-smi inside it by default).
+            async with llama_lifecycle.in_use():
+                return await _do_run_all_users(triggered_by, on_progress)
 
 
 SENTINEL_PATH = str(DATA_DIR / "plexmind.running")
