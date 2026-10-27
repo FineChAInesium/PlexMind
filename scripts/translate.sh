@@ -21,7 +21,10 @@ LLAMA_CPP_MAX_TOKENS="${LLAMA_CPP_MAX_TOKENS:-768}"
 CHUNK_RETRY_ATTEMPTS="${CHUNK_RETRY_ATTEMPTS:-3}"
 CHUNK_RETRY_DELAY_SECONDS="${CHUNK_RETRY_DELAY_SECONDS:-2}"
 FAILED_RETRY_HOURS="${FAILED_RETRY_HOURS:-24}"
-case "$CHUNK_RETRY_ATTEMPTS:$CHUNK_RETRY_DELAY_SECONDS:$FAILED_RETRY_HOURS" in
+# A cue the model cannot translate keeps its source line; a file fails only
+# when more than this percentage of its cues had to fall back.
+TRANSLATION_MAX_FALLBACK_PCT="${TRANSLATION_MAX_FALLBACK_PCT:-10}"
+case "$CHUNK_RETRY_ATTEMPTS:$CHUNK_RETRY_DELAY_SECONDS:$FAILED_RETRY_HOURS:$TRANSLATION_MAX_FALLBACK_PCT" in
     *[!0-9:]*|0:*) echo "FATAL: Translation retry settings must be non-negative integers and attempts must be at least 1." >&2; exit 2 ;;
 esac
 SOURCE_LANG="${SOURCE_LANG:-en}"
@@ -186,7 +189,15 @@ translate_chunk() {
     cue_timestamp=$(printf '%s\n' "$curr_chunk" | sed -n '2p')
     source_dialogue=$(printf '%s\n' "$curr_chunk" | sed '1,2d')
     [ -z "$_prev_chunk" ] || previous_dialogue=$(printf '%s\n' "$_prev_chunk" | sed '1,2d')
-    local user_message="$source_dialogue"
+
+    # The PlexMind watermark cue is copied verbatim, never translated.
+    if python3 "${SCRIPT_DIR}/translation_cue.py" passthrough "$source_dialogue"; then
+        printf '%s\n%s\n%s\n\n' "$cue_id" "$cue_timestamp" "$source_dialogue" >> "$out_file"
+        return 0
+    fi
+
+    local user_message
+    user_message=$(get_user_message "$target_lang" "$source_dialogue")
 
     local attempt HTTP_STATUS CURL_EXIT finish_reason rejection_reason="unknown" translated_file="/tmp/llama_translated_$$.txt"
     for attempt in $(seq 1 "$CHUNK_RETRY_ATTEMPTS"); do
@@ -210,34 +221,7 @@ translate_chunk() {
             jq -r '.choices[0].message.content // empty' < "$TEMP_RESPONSE_FILE" \
                 | sed '/^```/d; /^\[TARGET TO TRANSLATE\]/d; /^\[PREVIOUS CONTEXT/d' > "$translated_file"
             finish_reason=$(jq -r '.choices[0].finish_reason // "unknown"' < "$TEMP_RESPONSE_FILE")
-            if rejection_reason=$(python3 - "$source_dialogue" "$translated_file" "$target_lang" <<'PYEOF'
-import re, sys
-source, output_path, lang = sys.argv[1], sys.argv[2], sys.argv[3]
-output = open(output_path, encoding="utf-8", errors="strict").read().strip()
-def reject(reason):
-    print(reason)
-    raise SystemExit(1)
-if not output:
-    reject("empty_output")
-if "-->" in output or re.search(r"(?im)^\s*```|</?think>|\[(?:target|previous context)", output):
-    reject("unexpected_formatting")
-if re.search(r"(?m)^\s*\d+\s*$", output):
-    reject("cue_number_in_output")
-letters = re.findall(r"[A-Za-z]", source)
-src_words = re.findall(r"[A-Za-z]+", source.casefold())
-out_words = re.findall(r"[A-Za-z]+", output.casefold())
-# Short cues frequently consist only of names, acronyms, sound words, or
-# interjections that legitimately remain unchanged. Treat language heuristics
-# as a failure only for substantial dialogue; envelope validity is enforced
-# independently when the final SRT is assembled.
-substantial = len(src_words) >= 4 and sum(map(len, src_words)) >= 12
-if lang == "zh" and letters and substantial and not re.search(r"[\u3400-\u9fff]", output):
-    reject("missing_target_script")
-if substantial and src_words == out_words:
-    reject("substantial_dialogue_unchanged")
-print("ok")
-PYEOF
-            ); then
+            if rejection_reason=$(python3 "${SCRIPT_DIR}/translation_cue.py" validate "$source_dialogue" "$translated_file" "$target_lang"); then
                 {
                     printf '%s\n%s\n' "$cue_id" "$cue_timestamp"
                     cat "$translated_file"
@@ -268,8 +252,31 @@ PYEOF
         > "${diagnostic_dir}/${diagnostic_key}.json" 2>/dev/null || true
     chmod 600 "${diagnostic_dir}/${diagnostic_key}.json" 2>/dev/null || true
     rm -f "$translated_file"
-    log "ERROR: Cue translation failed validation after ${CHUNK_RETRY_ATTEMPTS} attempts (reason=${rejection_reason:-unknown}); diagnostic=${diagnostic_key}.json"
-    return 1
+    case "$rejection_reason" in
+        request_failed_*)
+            # llama.cpp is unreachable or erroring: stop and resume later
+            # rather than filling the file with untranslated lines.
+            log "ERROR: Cue translation request failed after ${CHUNK_RETRY_ATTEMPTS} attempts (reason=${rejection_reason}); diagnostic=${diagnostic_key}.json"
+            return 1
+            ;;
+    esac
+    # One stubborn cue must not fail the whole file: keep the source line
+    # for this cue. process_subtitle fails the file if too many cues fall back.
+    printf '%s\n%s\n%s\n\n' "$cue_id" "$cue_timestamp" "$source_dialogue" >> "$out_file"
+    CUE_FALLBACKS=$((CUE_FALLBACKS + 1))
+    log "WARNING: Cue ${cue_id} kept in the source language after ${CHUNK_RETRY_ATTEMPTS} attempts (reason=${rejection_reason:-unknown}); diagnostic=${diagnostic_key}.json"
+    return 0
+}
+
+# --- USER MESSAGES ---
+# Small models sometimes echo a bare English line back unchanged; for Chinese,
+# restate the target language next to the dialogue itself.
+get_user_message() {
+    local lang="$1" dialogue="$2"
+    case "$lang" in
+        "zh") printf '將以下英文字幕翻譯成繁體中文，只輸出譯文：\n%s' "$dialogue" ;;
+        *)    printf '%s' "$dialogue" ;;
+    esac
 }
 
 # --- PROCESS SUBTITLE ---
@@ -323,6 +330,7 @@ process_subtitle() {
     local total_chunks=$(( (total_blocks + CHUNK_SIZE - 1) / CHUNK_SIZE ))
 
     local chunk_success=true processed_chunks=0
+    CUE_FALLBACKS=0
     local CHUNK_DIR="/tmp/srt_chunks_$$"
     mkdir -p "$CHUNK_DIR"
 
@@ -381,6 +389,15 @@ PYEOF
     rm -rf "$CHUNK_DIR"
     echo ""
 
+    if [[ "$chunk_success" == true ]] && [ $((CUE_FALLBACKS * 100)) -gt $((total_chunks * TRANSLATION_MAX_FALLBACK_PCT)) ]; then
+        # Mostly untranslated: discard it so the retry starts fresh instead
+        # of resuming into a finished-but-English file.
+        log "ERROR: ${CUE_FALLBACKS}/${total_chunks} cues stayed untranslated (limit ${TRANSLATION_MAX_FALLBACK_PCT}%); discarding output."
+        rm -f "$TEMP_FINAL_FILE" "$CHECKPOINT_FILE"
+        FAILED_THIS_RUN=$((FAILED_THIS_RUN+1)); touch "$FAILED_MARKER_FILE"
+        return
+    fi
+
     if [[ "$chunk_success" == true && -s "$TEMP_FINAL_FILE" ]]; then
         if python3 - "$SOURCE_FILE" "$TEMP_FINAL_FILE" <<'PYEOF'
 import re, sys
@@ -396,7 +413,7 @@ PYEOF
             mv "$TEMP_FINAL_FILE" "$FINAL_OUTPUT_FILE"
             finalize_subtitle_permissions "$FINAL_OUTPUT_FILE" || return
             rm -f "$CHECKPOINT_FILE" "$FAILED_MARKER_FILE"
-            log "SUCCESS: ${TARGET_LANG} translation complete."
+            log "SUCCESS: ${TARGET_LANG} translation complete (${CUE_FALLBACKS} cue(s) kept in the source language)."
             TRANSLATIONS_PROCESSED=$((TRANSLATIONS_PROCESSED+1))
             SESSION_PROCESSING_SECONDS=$(( SESSION_PROCESSING_SECONDS + $(date +%s) - START_JOB_TIME ))
         else
