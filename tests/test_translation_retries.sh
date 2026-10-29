@@ -54,6 +54,10 @@ fi
 if [ "$count" -le "${MOCK_PEG_FIRST:-0}" ]; then
   reply 500 '{"error":{"code":500,"message":"The model produced output that does not match the expected peg-native format","type":"server_error"}}'
 fi
+if [ "$count" -le "${MOCK_LENGTH_FIRST:-0}" ]; then
+  # Cut off at max_tokens: plausible text, but incomplete.
+  reply 200 '{"choices":[{"finish_reason":"length","message":{"content":"Hola, ¿a dónde"}}]}'
+fi
 if jq -e '.response_format' "$payload" >/dev/null; then
   # Batch request: the JSON array is the last line of the user message. Item
   # "..., N?" becomes "Hola, N." (or 你好，N。) so tests can see where it landed.
@@ -258,9 +262,25 @@ grep -qF 'Cue 1 kept in the source language after 3 attempts (reason=unparseable
   || fail "peg-native fallback not logged"
 jq -se '[.[:3][] | .temperature] == [0.1, 0.3, 0.5] and [.[:3][] | .seed] == [null, 2, 3]' "$FIXTURE/peg-requests" >/dev/null \
   || fail "peg-native retries were not resampled"
-# A 33-character cue gets 73 tokens, and each retry a larger share, still under LLAMA_CPP_MAX_TOKENS.
-jq -se '[.[:3][] | .max_tokens] == [73, 146, 219]' "$FIXTURE/peg-requests" >/dev/null \
+# A 33-character cue gets 73 tokens, a retry twice that, and the last attempt all of LLAMA_CPP_MAX_TOKENS.
+jq -se '[.[:3][] | .max_tokens] == [73, 146, 768]' "$FIXTURE/peg-requests" >/dev/null \
   || fail "per-cue token budgets do not grow per attempt: $(jq -sc '[.[:3][] | .max_tokens]' "$FIXTURE/peg-requests")"
+
+# A reply cut off at max_tokens is retried with a larger budget, never
+# published; the budget stays within LLAMA_CPP_MAX_TOKENS.
+mkdir -p "$FIXTURE/movies/Cut"
+srt_cues 2 > "$FIXTURE/movies/Cut/Cut.en.srt"
+run_translate "$FIXTURE/movies/Cut" TARGET_LANGUAGES=es-MX MOCK_LENGTH_FIRST=1 LLAMA_CPP_MAX_TOKENS=100 \
+  MOCK_REQUEST_LOG="$FIXTURE/cut-requests"
+out="$FIXTURE/movies/Cut/Cut.es-MX.srt"
+[ "$RC" -eq 0 ] || fail "truncation run exited $RC"
+[ "$(cat "$FIXTURE/count")" -eq 3 ] || fail "truncation run took $(cat "$FIXTURE/count") requests"
+if grep -qF 'dónde' "$out"; then fail "a reply cut off at max_tokens was published"; fi
+[ "$(grep -c '^Hola\.$' "$out")" -eq 2 ] || fail "truncated cue not retried"
+grep -qF 'rejected cue on attempt 1/3 (reason=truncated, finish=length)' "$FIXTURE/data/translation.log" \
+  || fail "truncation not logged"
+jq -se '[.[].max_tokens] == [73, 100, 73]' "$FIXTURE/cut-requests" >/dev/null \
+  || fail "truncated cue budgets not grown and capped: $(jq -sc '[.[].max_tokens]' "$FIXTURE/cut-requests")"
 
 # The same error on a batch sends its cues one per request, with no fallback.
 mkdir -p "$FIXTURE/movies/PegBatch"

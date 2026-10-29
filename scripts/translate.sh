@@ -1,7 +1,7 @@
 #!/bin/bash
 # ==============================================================================
 # translate.sh — SRT Translation Backfill via llama.cpp LLM
-# Version: 0.8.22 — PlexMind release line
+# Version: 0.8.23 — PlexMind release line
 #
 # Finds .en.srt files, translates to target languages using llama.cpp's OpenAI-compatible chat API.
 # Sends TRANSLATION_BATCH_CUES consecutive cues per request as a JSON array and
@@ -271,9 +271,13 @@ translate_chunk() {
         if [ -n "$previous_dialogue" ]; then
             contextual_prompt+=$'\nThe previous source cue is context only. Do not translate or repeat it:\n'"${previous_dialogue}"
         fi
-        # Each retry gets a larger allowance, so a long cue cut short once can still succeed.
+        # Each retry gets a larger allowance, so a long cue cut short once can
+        # still succeed; the last attempt gets all of LLAMA_CPP_MAX_TOKENS.
+        local max_tokens="$LLAMA_CPP_MAX_TOKENS"
+        [ "$attempt" -ge "$CHUNK_RETRY_ATTEMPTS" ] \
+            || max_tokens=$(token_budget "${#source_dialogue}" 1 "$attempt" "$LLAMA_CPP_MAX_TOKENS")
         jq -n --arg model "$LLAMA_CPP_MODEL" --arg sys "$contextual_prompt" --arg user_msg "$user_message" \
-            --argjson max_tokens "$(token_budget "${#source_dialogue}" 1 "$attempt" "$LLAMA_CPP_MAX_TOKENS")" \
+            --argjson max_tokens "$max_tokens" \
             --argjson temperature "$temperature" --argjson attempt "$attempt" \
             '{model: $model, stream: false, temperature: $temperature, max_tokens: $max_tokens, chat_template_kwargs: {enable_thinking: false}, messages: [{role: "system", content: $sys}, {role: "user", content: $user_msg}]}
              + (if $attempt > 1 then {seed: $attempt} else {} end)' \
@@ -288,7 +292,11 @@ translate_chunk() {
             jq -r '.choices[0].message.content // empty' < "$TEMP_RESPONSE_FILE" \
                 | sed '/^```/d; /^\[TARGET TO TRANSLATE\]/d; /^\[PREVIOUS CONTEXT/d; /^[[:space:]]*$/d' > "$translated_file"
             finish_reason=$(jq -r '.choices[0].finish_reason // "unknown"' < "$TEMP_RESPONSE_FILE")
-            if rejection_reason=$(python3 "${SCRIPT_DIR}/translation_cue.py" validate "$source_dialogue" "$translated_file" "$target_lang"); then
+            if [ "$finish_reason" = "length" ]; then
+                # Cut off at max_tokens: the translation is incomplete, or the
+                # reply loops. Either way it is retried, not published.
+                rejection_reason="truncated"
+            elif rejection_reason=$(python3 "${SCRIPT_DIR}/translation_cue.py" validate "$source_dialogue" "$translated_file" "$target_lang"); then
                 {
                     printf '%s\n%s\n' "$cue_id" "$cue_timestamp"
                     cat "$translated_file"
@@ -653,7 +661,7 @@ PYEOF
 # MAIN
 # ==============================================================================
 log "========================================================="
-log "Translation Backfill v0.8.22 (containerized)"
+log "Translation Backfill v0.8.23 (containerized)"
 log "Schedule: launched by PlexMind; max runtime: ${MAX_RUNTIME_MINUTES:-0}m; retention: ${LOG_RETENTION_DAYS}d; RUN_NOW=${RUN_NOW}"
 log "========================================================="
 check_dependencies curl jq python3

@@ -1,8 +1,9 @@
 # Changelog
 
-## Unreleased
+## v0.8.23 - 2026-10-29
 
 - Size each translation request's token budget to its cues instead of a flat 256 tokens per batched cue (768 per single cue), growing it on each retry. A reply that loops on sung lyrics now stops within seconds instead of running for about 40 s.
+- Retry a single-cue reply cut off at the token limit instead of publishing it; the last attempt gets all of `LLAMA_CPP_MAX_TOKENS`, so no cue has less room than before.
 
 ## v0.8.22 - 2026-10-29
 

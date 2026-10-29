@@ -511,7 +511,7 @@ See [SECURITY.md](SECURITY.md) for the full security model and audit notes.
 
 ---
 
-## ⬆️ Upgrading to v0.8.22
+## ⬆️ Upgrading to v0.8.22 or later
 
 See [CHANGELOG.md](CHANGELOG.md) for the full list. Things to check when upgrading from v0.8.20:
 

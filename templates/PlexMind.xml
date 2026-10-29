@@ -1,7 +1,7 @@
 <?xml version="1.0"?>
 <Container version="2">
   <Name>PlexMind</Name>
-  <Repository>ghcr.io/finechainesium/plexmind:0.8.22</Repository>
+  <Repository>ghcr.io/finechainesium/plexmind:0.8.23</Repository>
   <Registry>https://github.com/FineChAInesium/PlexMind/pkgs/container/plexmind</Registry>
   <Network>bridge</Network>
   <Shell>bash</Shell>
@@ -17,7 +17,7 @@
   <Icon>https://raw.githubusercontent.com/FineChAInesium/PlexMind/main/templates/icon.png</Icon>
   <ExtraParams/>
   <Description>
-    PlexMind API/dashboard component. Version line: v0.8.22. This safe template does not mount media or the Docker socket. Deploy the authenticated PlexMind scripts worker, recommendation worker, and Docker broker from the repository Compose stack before using jobs or schedules.
+    PlexMind API/dashboard component. Version line: v0.8.23. This safe template does not mount media or the Docker socket. Deploy the authenticated PlexMind scripts worker, recommendation worker, and Docker broker from the repository Compose stack before using jobs or schedules.
   </Description>
 
   <Networking>
