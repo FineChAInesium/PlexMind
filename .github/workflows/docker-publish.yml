@@ -27,7 +27,7 @@ jobs:
         run: |
           python -m pip install -r plexmind/requirements.txt pytest
           PYTHON_DOTENV_DISABLED=1 PYTHONPATH=plexmind python -m pytest -q
-          bash -n scripts/*.sh setup.sh
+          for shell_script in scripts/*.sh setup.sh tests/*.sh; do bash -n "$shell_script"; done
           for test_script in tests/*.sh; do bash "$test_script"; done
 
       - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3

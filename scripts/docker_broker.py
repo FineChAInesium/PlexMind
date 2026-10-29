@@ -3,11 +3,12 @@
 import http.client
 import json
 import os
+import re
 import secrets
 import socket
 import struct
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 SOCKET = os.getenv("DOCKER_SOCKET", "/var/run/docker.sock")
 TOKEN = os.getenv("PLEXMIND_BROKER_TOKEN", "")
@@ -21,7 +22,8 @@ if not TOKEN:
 
 def route(method, path):
     """Map a request to ("gpu", container), ("docker", docker_path) or ("error", status)."""
-    parts = [p for p in urlparse(path).path.split("/") if p]
+    parsed = urlparse(path)
+    parts = [p for p in parsed.path.split("/") if p]
     if len(parts) not in (2, 3) or parts[0] != "containers":
         return "error", 404
     name = parts[1]
@@ -31,9 +33,26 @@ def route(method, path):
         return "error", 404
     if method == "GET" and len(parts) == 3 and parts[2] == "json":
         return "docker", f"/containers/{name}/json"
-    if method == "POST" and len(parts) == 3 and parts[2] in ("start", "stop"):
-        return "docker", f"/containers/{name}/{parts[2]}"
+    if method == "POST" and len(parts) == 3 and parts[2] == "start":
+        return "docker", f"/containers/{name}/start"
+    if method == "POST" and len(parts) == 3 and parts[2] == "stop":
+        # t: seconds Docker waits after SIGTERM before it kills the container.
+        wait = parse_qs(parsed.query).get("t", [""])[0]
+        if not wait:
+            return "docker", f"/containers/{name}/stop"
+        if not re.fullmatch(r"[0-9]{1,3}", wait):
+            return "error", 400
+        return "docker", f"/containers/{name}/stop?t={int(wait)}"
     return "error", 405
+
+
+def docker_timeout(docker_path):
+    """Socket timeout for a Docker call: a stop blocks for up to its grace
+    period (Docker's default is 10 s) before Docker answers."""
+    parsed = urlparse(docker_path)
+    if not parsed.path.endswith("/stop"):
+        return 10
+    return int(parse_qs(parsed.query).get("t", ["10"])[0]) + 15
 
 
 class UnixConnection(http.client.HTTPConnection):
@@ -55,7 +74,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def authorized(self):
         supplied = self.headers.get("X-Broker-Token", "")
-        return bool(TOKEN and supplied and secrets.compare_digest(TOKEN, supplied))
+        # Bytes: compare_digest raises TypeError on non-ASCII str.
+        return bool(TOKEN and supplied and secrets.compare_digest(TOKEN.encode(), supplied.encode()))
 
     def proxy(self, method):
         if not self.authorized():
@@ -64,10 +84,11 @@ class Handler(BaseHTTPRequestHandler):
         if kind == "gpu":
             return self.gpu(target)
         if kind == "error":
-            body = b'{"detail":"not allowed"}' if target == 404 else b'{"detail":"method not allowed"}'
+            body = {404: b'{"detail":"not allowed"}', 400: b'{"detail":"invalid stop timeout"}'}.get(
+                target, b'{"detail":"method not allowed"}')
             return self.reply(target, body)
         docker_path = target
-        conn = UnixConnection("localhost", timeout=10)
+        conn = UnixConnection("localhost", timeout=docker_timeout(docker_path))
         try:
             conn.request(method, docker_path)
             response = conn.getresponse()

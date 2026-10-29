@@ -34,25 +34,6 @@ WHISPER_SEGMENT_SECONDS="${WHISPER_SEGMENT_SECONDS:-600}"
 IFS=',' read -ra KNOWN_BILINGUAL_TITLES <<< "${KNOWN_BILINGUAL_TITLES:-90 Day Fiancé,Shogun,Shōgun,Squid Game}"
 IFS=',' read -ra KNOWN_ENGLISH_REALITY_TITLES <<< "${KNOWN_ENGLISH_REALITY_TITLES:-Summer House,Vanderpump Rules}"
 
-normalize_lang_code() {
-    local LANG
-    LANG=$(printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]' | cut -d'-' -f1)
-    case "$LANG" in
-        eng|english) echo "en" ;;
-        jpn|jp|japanese) echo "ja" ;;
-        kor|korean) echo "ko" ;;
-        zho|chi|cmn|yue|chinese) echo "zh" ;;
-        por|portuguese) echo "pt" ;;
-        spa|spanish) echo "es" ;;
-        fre|fra|french) echo "fr" ;;
-        ger|deu|german) echo "de" ;;
-        ita|italian) echo "it" ;;
-        rus|russian) echo "ru" ;;
-        und|unk|unknown|none) echo "" ;;
-        *) echo "$LANG" ;;
-    esac
-}
-
 # --- LOAD SHARED LIBRARY ---
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/lib.sh" || { echo "FATAL: Cannot load lib.sh"; exit 1; }
@@ -86,6 +67,8 @@ LIFETIME_PROCESSING_SECONDS="${LIFETIME_PROCESSING_SECONDS:-0}"
 
 # --- CLEANUP TRAP ---
 cleanup() {
+    # A repeated Stop re-signals the job group; it must not kill the stats write or Whisper stop.
+    trap '' INT TERM
     LIFETIME_SCANNED=$((LIFETIME_SCANNED + TOTAL_SCANNED))
     LIFETIME_ENGLISH_PROCESSED=$((LIFETIME_ENGLISH_PROCESSED + ENGLISH_PROCESSED))
     LIFETIME_BILINGUAL_PROCESSED=$((LIFETIME_BILINGUAL_PROCESSED + VIP_PROCESSED))
@@ -113,11 +96,13 @@ EOF
     log "Hallucinations:${HALLUCINATIONS_CLEANED} Skip-Exist:${SKIPPED_EXISTING} New-Fail:${FAILED_THIS_RUN} Deferred-Fail:${SKIPPED_FAILED} Skip-Size:${SKIPPED_SIZE}"
     log "========================================================="
 
+    rm -f "$TEMP_AUDIO_FILE" "${WATERMARK_TMP_FILE:-}" /tmp/transcription_backfill.pid 2>/dev/null
+    # Before the library-wide report, which a container stop may SIGKILL.
+    stop_docker_container "Whisper" "${WHISPER_CONTAINER_NAME:-whisper-asr-webservice}"
+    trap - INT TERM
+
     log "Running non-destructive end-of-session report..."
     generate_report
-
-    rm -f "$TEMP_AUDIO_FILE" /tmp/transcription_backfill.pid 2>/dev/null
-    stop_docker_container "Whisper" "${WHISPER_CONTAINER_NAME:-whisper-asr-webservice}"
 }
 trap cleanup EXIT
 
@@ -128,12 +113,14 @@ calculate_pending_jobs() {
 
     while IFS= read -r -d '' VIDEO_FILE; do
         TEMP_TOTAL=$((TEMP_TOTAL+1))
-        local VBASE DIR_PATH BASENAME_NO_EXT
-        VBASE=$(basename "$VIDEO_FILE")
-        DIR_PATH=$(dirname "$VIDEO_FILE")
+        local VBASE DIR_PATH BASENAME_NO_EXT MARKER_REASON MARKER_COUNT
+        VBASE="${VIDEO_FILE##*/}"
+        DIR_PATH="${VIDEO_FILE%/*}"
         BASENAME_NO_EXT="${VBASE%.*}"
 
-        [ -f "${DIR_PATH}/${BASENAME_NO_EXT}.ai.failed" ] && continue
+        # A transient failure with retries left is still pending work.
+        [ -f "${DIR_PATH}/${BASENAME_NO_EXT}.ai.failed" ] \
+            && ! failed_marker_retryable "${DIR_PATH}/${BASENAME_NO_EXT}.ai.failed" && continue
 
         shopt -s nullglob nocaseglob
         local EXISTING_SUBS=( "${DIR_PATH}/${BASENAME_NO_EXT}".*.srt )
@@ -264,7 +251,7 @@ upload_whisper_audio() {
         for CHUNK in "${SEGMENT_DIR}"/chunk_*.${TRANSCRIBE_AUDIO_EXT}; do
             [ -f "$CHUNK" ] || continue
             CHUNK_OUT="${CHUNK%.*}.srt"
-            log "  Uploading chunk $(basename "$CHUNK")..."
+            log "  Uploading chunk ${CHUNK##*/}..."
             HTTP_STATUS=$(curl -s -w "%{http_code}" -o "$CHUNK_OUT" \
                 --connect-timeout 60 --max-time 7200 \
                 --retry 2 --retry-delay 2 --retry-connrefused --retry-max-time 14400 \
@@ -309,14 +296,25 @@ upload_whisper_audio() {
     return 0
 }
 
+# Records a failed Whisper upload. The marker counts every attempt; the video
+# is quarantined once, by the failure that uses up its last retry.
+record_transient_failure() {
+    local VIDEO_FILE="$1" MARKER_FILE="$2" REASON="$3" MARKER_REASON MARKER_COUNT
+    write_failed_marker "$MARKER_FILE" "$REASON"; FAILED_THIS_RUN=$((FAILED_THIS_RUN+1))
+    read_failed_marker "$MARKER_FILE"
+    if [ "$MARKER_COUNT" -ge "$MAX_RETRIES_SOFT" ]; then
+        quarantine_video "$VIDEO_FILE" "$REASON"
+    fi
+}
+
 # --- PROCESS VIDEO ---
 process_video() {
     local VIDEO_FILE="$1"
     [ ! -f "$VIDEO_FILE" ] && return
 
     local BASENAME_WITH_EXT DIR_PATH BASENAME_NO_EXT LANG_TAG
-    BASENAME_WITH_EXT=$(basename "$VIDEO_FILE")
-    DIR_PATH=$(dirname "$VIDEO_FILE")
+    BASENAME_WITH_EXT="${VIDEO_FILE##*/}"
+    DIR_PATH="${VIDEO_FILE%/*}"
     BASENAME_NO_EXT="${BASENAME_WITH_EXT%.*}"
     LANG_TAG="${TRANSCRIPTION_LANGUAGE}"
 
@@ -324,22 +322,23 @@ process_video() {
     local TEMP_OUTPUT_FILE="${DIR_PATH}/${BASENAME_NO_EXT}.ai.srt"
     local FAILED_MARKER_FILE="${DIR_PATH}/${BASENAME_NO_EXT}.ai.failed"
 
-    # --- RETRY CHECK ---
-    if [ -f "$FAILED_MARKER_FILE" ]; then
-        if ! retry_failed "$FAILED_MARKER_FILE"; then
-            local RC
-            RC=$(sed -n '2p' "$FAILED_MARKER_FILE" 2>/dev/null | tr -d '[:space:]')
-            [ "${RC:-0}" -ge "$MAX_RETRIES_SOFT" ] && quarantine_video "$VIDEO_FILE" "$(head -n1 "$FAILED_MARKER_FILE")"
-            SKIPPED_FAILED=$((SKIPPED_FAILED+1))
-            return
-        fi
-    fi
-
     # --- EXISTING SUBS CHECK ---
+    # A subtitle (from an earlier run, or from Bazarr) settles the video, so
+    # a failure marker left beside it is stale.
     shopt -s nullglob nocaseglob
     local EXISTING_SUBS=( "${DIR_PATH}/${BASENAME_NO_EXT}".*.srt )
     shopt -u nullglob nocaseglob
-    if [ ${#EXISTING_SUBS[@]} -gt 0 ]; then SKIPPED_EXISTING=$((SKIPPED_EXISTING+1)); return; fi
+    if [ ${#EXISTING_SUBS[@]} -gt 0 ]; then
+        rm -f "$FAILED_MARKER_FILE"
+        SKIPPED_EXISTING=$((SKIPPED_EXISTING+1)); return
+    fi
+
+    # --- RETRY CHECK ---
+    # A failure is quarantined once, when it is recorded, not on every skip.
+    if [ -f "$FAILED_MARKER_FILE" ] && ! retry_failed "$FAILED_MARKER_FILE"; then
+        SKIPPED_FAILED=$((SKIPPED_FAILED+1))
+        return
+    fi
 
     # --- HEALTH CHECK ---
     FILES_SINCE_HEALTH_CHECK=$((FILES_SINCE_HEALTH_CHECK + 1))
@@ -398,7 +397,7 @@ process_video() {
                         -map 0:a:0 -t 30 -vn -acodec pcm_s16le -ar 16000 -ac 1 \
                         -y "$TS" -loglevel quiet
                     local DL
-                    curl -s -X POST -F "audio_file=@${TS}" \
+                    [ -s "$TS" ] && curl -s --connect-timeout 30 --max-time 300 -X POST -F "audio_file=@${TS}" \
                         "${WHISPER_API_URL}?task=transcribe&output=json" -o "$JSON_FILE"
                     DL=$(python3 - "$JSON_FILE" <<'PYEOF'
 import json, sys, unicodedata
@@ -434,6 +433,8 @@ PYEOF
                         log "  -> ${PERCENT}%: [${DL}]"
                         FOREIGN_VOTES=$((FOREIGN_VOTES+1))
                         [ -z "$DETECTED_FOREIGN_LANG" ] && DETECTED_FOREIGN_LANG="$DL"
+                        # One foreign vote decides the verdict; skip the remaining samples.
+                        break
                     else
                         log "  -> ${PERCENT}%: [en]"
                     fi
@@ -513,13 +514,13 @@ PYEOF
     if [ $UPLOAD_EXIT -eq 10 ]; then
         log "ERROR: Curl failed during Whisper upload."
         rm -f "$TEMP_OUTPUT_FILE" 2>/dev/null
-        write_failed_marker "$FAILED_MARKER_FILE" "$FAIL_CURL_TIMEOUT"; FAILED_THIS_RUN=$((FAILED_THIS_RUN+1))
+        record_transient_failure "$VIDEO_FILE" "$FAILED_MARKER_FILE" "$FAIL_CURL_TIMEOUT"
         return
     fi
     if [ $UPLOAD_EXIT -eq 20 ]; then
         log "ERROR: API HTTP ${WHISPER_UPLOAD_RESULT:-unknown}"
         rm -f "$TEMP_OUTPUT_FILE" 2>/dev/null
-        write_failed_marker "$FAILED_MARKER_FILE" "$FAIL_API_ERROR"; FAILED_THIS_RUN=$((FAILED_THIS_RUN+1))
+        record_transient_failure "$VIDEO_FILE" "$FAILED_MARKER_FILE" "$FAIL_API_ERROR"
         return
     fi
     if [ $UPLOAD_EXIT -ne 0 ]; then
@@ -556,14 +557,23 @@ PYEOF
         return
     fi
 
-    apply_watermark "$TEMP_OUTPUT_FILE"
     verify_encoding "$TEMP_OUTPUT_FILE"
+    apply_watermark "$TEMP_OUTPUT_FILE"
 
-    [ "$PROCESSING_MODE" = "FOREIGN" ] && [ -n "$DETECTED_FOREIGN_LANG" ] && \
-        FINAL_OUTPUT_FILE="${DIR_PATH}/${BASENAME_NO_EXT}.${DETECTED_FOREIGN_LANG}.srt"
+    local OUTPUT_LANG="$LANG_TAG"
+    [ "$PROCESSING_MODE" = "FOREIGN" ] && [ -n "$DETECTED_FOREIGN_LANG" ] && OUTPUT_LANG="$DETECTED_FOREIGN_LANG"
+    FINAL_OUTPUT_FILE="${DIR_PATH}/${BASENAME_NO_EXT}.${OUTPUT_LANG}.srt"
 
-    mv "${TEMP_OUTPUT_FILE}" "${FINAL_OUTPUT_FILE}"
-    finalize_subtitle_permissions "${FINAL_OUTPUT_FILE}" || return
+    # Title.ai-<lang>.srt marks a finished transcript that resume_partial may
+    # promote; bilingual output only learns its language after detection below.
+    if [ "$PROCESSING_MODE" != "BILINGUAL_VIP" ]; then
+        mv "${TEMP_OUTPUT_FILE}" "${DIR_PATH}/${BASENAME_NO_EXT}.ai-${OUTPUT_LANG}.srt" || return
+        TEMP_OUTPUT_FILE="${DIR_PATH}/${BASENAME_NO_EXT}.ai-${OUTPUT_LANG}.srt"
+    fi
+    finalize_subtitle_permissions "${TEMP_OUTPUT_FILE}" || return
+    mv "${TEMP_OUTPUT_FILE}" "${FINAL_OUTPUT_FILE}" || return
+    # The transcript is final here; the bilingual pass below is best-effort.
+    rm -f "$FAILED_MARKER_FILE"
     log "SUCCESS: ${FINAL_OUTPUT_FILE}"
 
     # --- BILINGUAL VIP: detect non-Latin → rename + translate pass ---
@@ -606,7 +616,7 @@ PYEOF
             local FOREIGN_SRT="${DIR_PATH}/${BASENAME_NO_EXT}.${FOREIGN_LANG_CODE}.srt"
             mv "${FINAL_OUTPUT_FILE}" "${FOREIGN_SRT}"
             finalize_subtitle_permissions "${FOREIGN_SRT}" || return
-            log "  Non-Latin detected [${FOREIGN_LANG_CODE}] — renamed to $(basename "${FOREIGN_SRT}")"
+            log "  Non-Latin detected [${FOREIGN_LANG_CODE}] — renamed to ${FOREIGN_SRT##*/}"
 
             # Translate pass → .en.srt
             if [ ! -s "${TEMP_AUDIO_FILE}" ]; then
@@ -624,11 +634,11 @@ PYEOF
                     clean_hallucinations "${TRANSLATE_TMP}" >/dev/null
                     normalize_timestamps "${TRANSLATE_TMP}" >/dev/null
                     format_srt_readability "${TRANSLATE_TMP}" >/dev/null
-                    apply_watermark "${TRANSLATE_TMP}"
                     verify_encoding "${TRANSLATE_TMP}"
-                    mv "${TRANSLATE_TMP}" "${FINAL_OUTPUT_FILE}"
-                    finalize_subtitle_permissions "${FINAL_OUTPUT_FILE}" || return
-                    log "  SUCCESS: English translation → $(basename "${FINAL_OUTPUT_FILE}")"
+                    apply_watermark "${TRANSLATE_TMP}"
+                    finalize_subtitle_permissions "${TRANSLATE_TMP}" || return
+                    mv "${TRANSLATE_TMP}" "${FINAL_OUTPUT_FILE}" || return
+                    log "  SUCCESS: English translation → ${FINAL_OUTPUT_FILE##*/}"
                 else
                     log "  WARNING: Translate pass failed (${WHISPER_UPLOAD_RESULT:-exit ${TRANSLATE_EXIT}}) — .en.srt not created."
                     rm -f "${TRANSLATE_TMP}" 2>/dev/null
@@ -667,7 +677,7 @@ log "========================================================="
 check_dependencies curl ffmpeg ffprobe python3
 
 # Wait for PlexMind to finish if it's holding the GPU
-PLEXMIND_SENTINEL="/app/data/plexmind.running"
+PLEXMIND_SENTINEL="${DATA_DIR}/plexmind.running"
 if [ -f "$PLEXMIND_SENTINEL" ]; then
     log "PlexMind is running — waiting before starting Whisper..."
     while [ -f "$PLEXMIND_SENTINEL" ]; do

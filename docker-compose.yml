@@ -7,6 +7,8 @@ services:
     image: plexmind-docker-broker:0.8.20
     restart: unless-stopped
     read_only: true
+    security_opt:
+      - no-new-privileges:true
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
     environment:
@@ -22,8 +24,10 @@ services:
     image: ghcr.io/ggml-org/llama.cpp@sha256:a50b12bb92de0253d2737824ca1887f410e07b4dd3e3028f74a5a0a67c789e4b
     container_name: llama-cpp
     restart: unless-stopped
+    # PlexMind uses http://llama-cpp:8080 on the Docker network. llama.cpp has no
+    # API key, so the host port is loopback-only unless LLAMA_CPP_BIND_ADDRESS is set.
     ports:
-      - "${LLAMA_CPP_HOST_PORT:-11435}:8080"
+      - "${LLAMA_CPP_BIND_ADDRESS:-127.0.0.1}:${LLAMA_CPP_HOST_PORT:-11435}:8080"
     volumes:
       - ${LLAMA_CPP_MODEL_PATH:-/mnt/cache/appdata/llama-cpp/models/Qwen3.5-9B-Q5_K_M.gguf}:/models/model.gguf:ro
     command:
@@ -60,11 +64,13 @@ services:
     container_name: whisper-asr-webservice
     restart: "no"
     mem_limit: ${WHISPER_MEM_LIMIT:-12g}
+    # PlexMind uses http://whisper:9000 on the Docker network; set
+    # WHISPER_BIND_ADDRESS=0.0.0.0 if Bazarr or another LAN client needs the host port.
     ports:
-      - "${WHISPER_HOST_PORT:-9001}:9000"
+      - "${WHISPER_BIND_ADDRESS:-127.0.0.1}:${WHISPER_HOST_PORT:-9001}:9000"
     volumes:
       - ${WHISPER_CACHE_DIR:-./data/whisper-cache}:/root/.cache/whisper
-      - "${WHISPER_TMP_DIR:-/tmp}:/tmp"
+      - "${WHISPER_TMP_DIR:-whisper-tmp}:/tmp"
     environment:
       - ASR_MODEL=${WHISPER_MODEL:-turbo}
       - ASR_DEVICE=${WHISPER_DEVICE:-cuda}
@@ -103,6 +109,7 @@ services:
       - PLEX_TOKEN=${PLEX_TOKEN}
       - PLEXMIND_API_KEY=${PLEXMIND_API_KEY:-}
       - PLEXMIND_SESSION_DAYS=${PLEXMIND_SESSION_DAYS:-30}
+      - PLEXMIND_SECURE_COOKIE=${PLEXMIND_SECURE_COOKIE:-0}
       - PLEXMIND_WEBHOOK_SECRET=${PLEXMIND_WEBHOOK_SECRET}
       - PLEXMIND_CONTROL_TOKEN=${PLEXMIND_CONTROL_TOKEN}
       - DOCKER_BROKER_URL=http://docker-broker:9020
@@ -122,6 +129,8 @@ services:
       - CACHE_TTL_SECONDS=${CACHE_TTL_SECONDS:-3600}
       - GPU_THRESHOLD_PCT=${GPU_THRESHOLD_PCT:-30}
       - GPU_BACKOFF_MINUTES=${GPU_BACKOFF_MINUTES:-30}
+      - GPU_BUSY_SAMPLES=${GPU_BUSY_SAMPLES:-3}
+      - GPU_SAMPLE_INTERVAL_SECONDS=${GPU_SAMPLE_INTERVAL_SECONDS:-5}
       - FEEDBACK_FILE=/app/data/feedback.json
       - SHOWN_RECS_FILE=/app/data/shown_recs.json
       - WATCHLIST_TRACK_FILE=/app/data/watchlist_track.json
@@ -199,6 +208,8 @@ services:
       - PLEXMIND_BROKER_TOKEN=${PLEXMIND_BROKER_TOKEN}
       - GPU_THRESHOLD_PCT=${GPU_THRESHOLD_PCT:-30}
       - GPU_BACKOFF_MINUTES=${GPU_BACKOFF_MINUTES:-30}
+      - GPU_BUSY_SAMPLES=${GPU_BUSY_SAMPLES:-3}
+      - GPU_SAMPLE_INTERVAL_SECONDS=${GPU_SAMPLE_INTERVAL_SECONDS:-5}
       - GPU_PROBE_CONTAINERS=${GPU_PROBE_CONTAINERS:-llama-cpp}
       - LLAMA_CPP_CONTAINER_NAME=${LLAMA_CPP_CONTAINER_NAME:-llama-cpp}
       - LLAMA_ON_DEMAND=${LLAMA_ON_DEMAND:-0}
@@ -219,6 +230,12 @@ services:
     image: plexmind-scripts:0.8.20
     container_name: plexmind-scripts
     restart: unless-stopped
+    # Must exceed control_server's 20 s child-job drain, so cleanup traps
+    # (Whisper stop, llama.cpp lease) finish before Docker sends SIGKILL.
+    stop_grace_period: 30s
+    # Default capabilities stay: SUBTITLE_UID/GID ownership changes need CAP_CHOWN.
+    security_opt:
+      - no-new-privileges:true
     volumes:
       - "${MOVIES_HOST_PATH:-${MOVIES_DIR:-/mnt/data/media/Movies}}:/media/movies"
       - "${TV_HOST_PATH:-${TV_DIR:-/mnt/data/media/TV Shows}}:/media/tv"
@@ -239,6 +256,7 @@ services:
       - CHUNK_RETRY_DELAY_SECONDS=${CHUNK_RETRY_DELAY_SECONDS:-2}
       - FAILED_RETRY_HOURS=${FAILED_RETRY_HOURS:-24}
       - TRANSLATION_MAX_FALLBACK_PCT=${TRANSLATION_MAX_FALLBACK_PCT:-10}
+      - TRANSLATION_BATCH_CUES=${TRANSLATION_BATCH_CUES:-8}
       - WHISPER_MODEL=${WHISPER_MODEL:-turbo}
       - TRANSCRIBE_AUDIO_EXT=${TRANSCRIBE_AUDIO_EXT:-mp3}
       - TRANSCRIBE_AUDIO_CODEC=${TRANSCRIBE_AUDIO_CODEC:-libmp3lame}
@@ -298,3 +316,7 @@ services:
               count: all
               capabilities: [gpu]
     profiles: ["tools"]
+
+volumes:
+  # Whisper's /tmp scratch space (WHISPER_TMP_DIR can point it at a host directory instead).
+  whisper-tmp:

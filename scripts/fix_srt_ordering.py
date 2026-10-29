@@ -4,10 +4,14 @@ Fix timestamp ordering in script-generated SRT translations.
 - Sorts blocks by start timestamp
 - Re-numbers sequentially
 - Skips files that are already in order
+
+  fix_srt_ordering.py            sweep every *.es-MX.srt / *.zh.srt in the library
+  fix_srt_ordering.py PATH...    check exactly these files (translate.sh output)
 """
 
 import os
 import re
+import sys
 import fcntl
 import hashlib
 import shutil
@@ -58,7 +62,10 @@ def parse_srt(content):
 
 def fix_file(path):
     try:
-        content = path.read_text(encoding='utf-8', errors='replace')
+        # Strict decode: a lenient one would rewrite GBK/cp1252 text as U+FFFD.
+        content = path.read_bytes().decode('utf-8-sig')
+    except UnicodeDecodeError:
+        return 'error', 'not valid UTF-8; left unchanged (convert it with maintenance.sh encoding)'
     except Exception as e:
         return 'error', str(e)
 
@@ -93,10 +100,11 @@ def fix_file(path):
             handle.flush()
             os.fsync(handle.fileno())
         os.chmod(temporary, stat.st_mode & 0o777)
-        try:
-            os.chown(temporary, stat.st_uid, stat.st_gid)
-        except PermissionError:
-            pass
+        if hasattr(os, "chown"):  # absent on Windows test hosts
+            try:
+                os.chown(temporary, stat.st_uid, stat.st_gid)
+            except PermissionError:
+                pass
         os.replace(temporary, path)
     except Exception as e:
         if 'temporary' in locals():
@@ -125,7 +133,11 @@ def find_translated_files():
                 files.append(p)
     return sorted(files)
 
-def main():
+def main(paths=()):
+    # translate.sh and maintenance.sh run this while they hold the lock; a
+    # second open of the lock file would always fail against their own flock.
+    if os.getenv("PLEXMIND_MEDIA_LOCK_HELD") == "1":
+        return run(paths)
     LOCK_FILE.parent.mkdir(parents=True, exist_ok=True)
     with LOCK_FILE.open('a+') as lock:
         try:
@@ -133,11 +145,15 @@ def main():
         except BlockingIOError:
             print(f"Another media mutation is running (lock: {LOCK_FILE}).")
             return 1
-        return run()
+        return run(paths)
 
-def run():
-    files = find_translated_files()
-    print(f"Found {len(files)} translated SRT files to check.\n")
+def run(paths=()):
+    if paths:
+        # Exactly the given files, whatever their language; no library walk.
+        files = [Path(p) for p in paths if Path(p).is_file()]
+    else:
+        files = find_translated_files()
+        print(f"Found {len(files)} translated SRT files to check.\n")
 
     total_fixed = 0
     total_ok = 0
@@ -154,8 +170,9 @@ def run():
         else:
             total_ok += 1
 
-    print(f"\nDone. Fixed: {total_fixed} | Already OK: {total_ok} | Errors: {total_errors}")
+    summary = f"Done. Fixed: {total_fixed} | Already OK: {total_ok} | Errors: {total_errors}"
+    print(summary if paths else f"\n{summary}")
     return 1 if total_errors else 0
 
 if __name__ == '__main__':
-    raise SystemExit(main())
+    raise SystemExit(main(sys.argv[1:]))

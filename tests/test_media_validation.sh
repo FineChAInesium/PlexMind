@@ -5,11 +5,13 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TEMP_ROOT="$(mktemp -d)"
 trap 'rm -rf "$TEMP_ROOT"' EXIT
 
-mkdir -p "$TEMP_ROOT/movies" "$TEMP_ROOT/tv"
+mkdir -p "$TEMP_ROOT/movies" "$TEMP_ROOT/tv" "$TEMP_ROOT/data"
 touch "$TEMP_ROOT/movies/example.mkv"
 
 MOVIE_DIR="$TEMP_ROOT/movies"
 TV_DIR="$TEMP_ROOT/tv"
+# Keeps quarantined fixtures out of the real /app/data.
+DATA_DIR="$TEMP_ROOT/data"
 LOG_FILE=""
 source "$ROOT_DIR/scripts/lib.sh"
 validate_media_directories
@@ -74,6 +76,10 @@ cleanup_pgs "$TEMP_ROOT/movies" > "$TEMP_ROOT/pgs-cleanup.log"
 }
 [ ! -e "$TEMP_ROOT/movies/cleanup.en.sup" ] || {
     echo "PGS cleanup did not remove the fixture" >&2
+    exit 1
+}
+[ -f "$TEMP_ROOT/data/quarantine/pgs/cleanup.en.sup" ] || {
+    echo "PGS cleanup did not quarantine the fixture" >&2
     exit 1
 }
 

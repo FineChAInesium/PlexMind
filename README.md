@@ -58,9 +58,9 @@ Translate existing or newly generated SRTs with the same local LLM stack.
 Keep subtitle folders predictable and client-friendly.
 
 - Audit missing subtitle coverage.
-- Remove duplicate subtitles.
-- Clean PGS/image subtitle files when usable SRT files exist.
-- Repair subtitle encoding where possible.
+- Quarantine duplicate subtitles.
+- Quarantine PGS/image subtitle files when an SRT of the same language and forced/SDH kind replaces them.
+- Repair subtitle encoding where possible, keeping the original.
 - Run maintenance from the dashboard or CLI helpers.
 
 ### 📊 Dashboard Control Plane
@@ -212,11 +212,13 @@ https://raw.githubusercontent.com/FineChAInesium/PlexMind/main/templates/PlexMin
 2. Use the template URL/folder option.
 3. Paste the template URL above.
 4. Deploy the repository Compose stack first; the safe API template intentionally does not recreate the worker and broker services.
-5. Set `PLEX_URL`, `PLEX_TOKEN`, and `LLAMA_CPP_URL`.
+5. Set `PLEX_URL`, `PLEX_TOKEN`, and `LLAMA_CPP_URL`. The Compose llama.cpp and Whisper ports listen on `127.0.0.1` by default; to reach them by LAN IP from the template container (or from Bazarr), set `LLAMA_CPP_BIND_ADDRESS=0.0.0.0` / `WHISPER_BIND_ADDRESS=0.0.0.0` in the stack's `.env`.
 6. Generate four distinct `PLEXMIND_API_KEY`, `PLEXMIND_CONTROL_TOKEN`, `PLEXMIND_BROKER_TOKEN`, and `PLEXMIND_WEBHOOK_SECRET` values.
 7. Start the stack and open `http://[unraid-ip]:8000`.
 
 The API template mounts neither media nor the Docker socket. Media is writable only in the scripts worker; the raw Docker socket is mounted only in the narrow broker.
+
+If you create the scripts worker container by hand instead of from the Compose stack, add `--stop-timeout=30` to its Extra Parameters. Docker's default 10-second stop timeout is shorter than the worker's 20-second drain of running jobs, so stopping the container would otherwise kill a job before its cleanup (stopping Whisper, releasing llama.cpp) finishes. Compose sets this with `stop_grace_period: 30s`.
 
 ---
 
@@ -244,9 +246,9 @@ Docker Broker
   -> Allows only named llama.cpp/Whisper inspect, start, stop, and fixed GPU probe
 
 AI Sidecars
-  -> llama.cpp (:8080 internal, :11435 host)
+  -> llama.cpp (:8080 internal, 127.0.0.1:11435 host by default)
       -> local recommendation and translation model
-  -> Whisper ASR webservice (:9000 internal, :9001 host)
+  -> Whisper ASR webservice (:9000 internal, 127.0.0.1:9001 host by default)
       -> Whisper model, default turbo
 
 Mounted Media + Data
@@ -292,11 +294,15 @@ when `WHISPER_MODEL` does not match a cached model artifact.
 | `MOVIE_DIR` / `TV_DIR` | Internal scan roots; normally `/media/movies` and `/media/tv`. | fixed in Compose/template |
 | `LLAMA_CPP_MODEL_ALIAS` | Recommendation and translation model alias. Must match llama.cpp `--alias`. | `qwen3.5-9b-q5_k_m` in Compose |
 | `LLAMA_CPP_HOST_PORT` | Host port for the bundled llama.cpp sidecar. Keep `8080` free for Chip Hedge Bot. | `11435` |
+| `LLAMA_CPP_BIND_ADDRESS` | Host address for that port. llama.cpp has no API key and PlexMind uses the Docker network, so it stays on loopback unless a LAN client needs it. | `127.0.0.1` |
 | `WHISPER_API_URL` | Whisper ASR endpoint used by scripts. | `http://whisper:9000/asr` |
 | `WHISPER_IMAGE` | Whisper ASR Docker image. | Digest-pinned; see `.env.example` |
 | `WHISPER_MODEL` | Whisper model: `tiny`, `base`, `small`, `medium`, `large`, `turbo`. | `turbo` |
 | `WHISPER_DEVICE` | Whisper device. Use `cuda` or `cpu`. | `cuda` |
 | `WHISPER_HOST_PORT` | Host port for the bundled Whisper sidecar. | `9001` |
+| `WHISPER_BIND_ADDRESS` | Host address for that port. Set `0.0.0.0` if Bazarr or another LAN client uses Whisper. | `127.0.0.1` |
+| `WHISPER_TMP_DIR` | Whisper `/tmp` scratch space: a host directory, or blank for the `whisper-tmp` Docker volume. | `whisper-tmp` volume |
+| `TRANSLATION_BATCH_CUES` | Consecutive subtitle cues per llama.cpp translation request; `1` sends one cue per request. | `8` |
 | `TARGET_LANGUAGES` | Comma-separated subtitle translation targets. | `zh,es-MX` |
 | `MAX_RECOMMENDATIONS` | Picks per user. | `10` |
 | `CANDIDATE_POOL_SIZE` | Prefiltered candidate count before LLM. | `40` |
@@ -304,10 +310,13 @@ when `WHISPER_MODEL` does not match a cached model artifact.
 | `SUPPRESSION_DAYS` | Days before a shown recommendation can return. | `60` |
 | `GPU_THRESHOLD_PCT` | Pause batch work at or above this GPU utilization. | `30` |
 | `GPU_BACKOFF_MINUTES` | Wait time before checking a busy GPU again. | `30` in Compose, `5` in `.env.example` |
+| `GPU_BUSY_SAMPLES` | Consecutive GPU readings that must all be at or above the threshold before work backs off. | `3` |
+| `GPU_SAMPLE_INTERVAL_SECONDS` | Seconds between those readings. | `5` |
 | `PLEXMIND_SCRIPT_MODE` | `remote` routes scripts through the authenticated worker. | `remote` |
 | `PLEXMIND_CONTROL_TOKEN` | Distinct API-to-scripts-worker secret. | required |
 | `PLEXMIND_BROKER_TOKEN` | Distinct client-to-Docker-broker secret. | required |
 | `PLEXMIND_WEBHOOK_SECRET` | Distinct Plex webhook secret. | required |
+| `PLEXMIND_SECURE_COOKIE` | Mark the dashboard session cookie `Secure`. Set `1` only when the dashboard is reached over HTTPS. | `0` |
 | `SCRIPT_START_RATE_LIMIT` | Rate limit for script Start buttons. | `60/hour` |
 | `WHISPER_CONTAINER_NAME` | Exact dedicated Whisper container to manage. | `whisper-asr-webservice` in Compose |
 | `LLAMA_CPP_CONTAINER_NAME` | Exact llama.cpp container identity when lifecycle management is enabled. | `llama-cpp` |
@@ -435,10 +444,15 @@ docker exec plexmind-scripts /app/stop-job.sh translate
 docker exec plexmind-scripts /app/maintenance.sh audit
 docker exec plexmind-scripts /app/maintenance.sh dedup
 docker exec plexmind-scripts /app/maintenance.sh pgs-cleanup
+docker exec plexmind-scripts /app/maintenance.sh ordering
 docker exec plexmind-scripts /app/maintenance.sh all
 ```
 
+`translate.sh` repairs timestamp order only in the translations it writes. After upgrading, run `maintenance.sh ordering` once to sweep older and Bazarr-supplied `.es-MX.srt`/`.zh.srt` files; originals are backed up under `/app/data/quarantine/srt-ordering-backups`. `maintenance.sh all` includes this step.
+
 Script logs are written as dated files under `/app/data/logs` and retained for `LOG_RETENTION_DAYS`. Compatibility log paths such as `/app/data/transcription.log`, `/app/data/translation.log`, and `/app/data/maintenance.log` point at the current day.
+
+When llama.cpp cannot use a batched translation reply, the translation log says `Batch of cues X-Y unusable (reason=...)` with llama.cpp's own error message (for example, a `json_schema` it cannot convert), and the reply is saved as `/app/data/translation-failures/<hash>-<lang>-batch-<NNNNN>.json`. Those cues are then translated one per request.
 
 ---
 

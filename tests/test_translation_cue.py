@@ -1,4 +1,5 @@
 import importlib.util
+import json
 import os
 from pathlib import Path
 from unittest.mock import patch
@@ -70,3 +71,91 @@ def test_cli_validate_and_passthrough(tmp_path):
     with patch.dict(os.environ, {"WATERMARK_SEARCH": "PlexMind"}):
         assert cue.main(["x", "passthrough", "<i>Brought to you by PlexMind</i>"]) == 0
         assert cue.main(["x", "passthrough", "Hello"]) == 1
+
+
+def write_chunks(tmp_path, *cues):
+    """Write single-cue chunk files the way translate.sh's splitter does."""
+    paths = []
+    for index, (number, dialogue) in enumerate(cues):
+        path = tmp_path / f"chunk_{index:05d}.txt"
+        path.write_bytes(f"{number}\n00:00:0{index},000 --> 00:00:0{index},500\n{dialogue}\n\n".encode("utf-8"))
+        paths.append(str(path))
+    return paths
+
+
+def test_read_cue_matches_the_shell_split(tmp_path):
+    [path] = write_chunks(tmp_path, ("7", "<i>Two</i>\n- lines"))
+    assert cue.read_cue(path) == ("7", "00:00:00,000 --> 00:00:00,500", "<i>Two</i>\n- lines")
+
+
+def test_classify_and_batch_sources_cli(tmp_path, capsys):
+    paths = write_chunks(tmp_path, ("1", "Où est-il?\nHere."), ("2", "{\\an8}<i>Brought to you by PlexMind</i>"))
+    with patch.dict(os.environ, {"WATERMARK_SEARCH": "PlexMind"}):
+        assert cue.main(["x", "classify", *paths]) == 0
+    assert capsys.readouterr().out.split() == ["translate", "passthrough"]
+    assert cue.main(["x", "batch-sources", paths[0]]) == 0
+    printed = capsys.readouterr().out
+    assert json.loads(printed) == ["Où est-il?\nHere."]
+    assert "Où" in printed and "\n" not in printed.rstrip("\n")
+
+
+@pytest.mark.parametrize("content, reason", [
+    ("Hola", "invalid_json"),
+    ('{"translations": ["Hola", "Adiós"]}', "not_a_string_array"),
+    ('["Hola", 2]', "not_a_string_array"),
+    ('["Hola"]', "item_count_1_of_2"),
+    ('["Hola", "Adiós", "Extra"]', "item_count_3_of_2"),
+])
+def test_unusable_batch_replies(content, reason):
+    assert cue.validate_batch(["Where are you going?", "Are you sure about this?"], content, "es-MX") == (None, reason)
+
+
+def test_batch_items_are_validated_one_by_one():
+    sources = ["Where are you going with this?", "Are you sure about this?", "Frida Kahlo."]
+    content = '```json\n["¿A dónde vas con esto?", "Are you sure about this?", "Frida Kahlo."]\n```'
+    items, reasons = cue.validate_batch(sources, content, "es-MX")
+    assert items == ["¿A dónde vas con esto?", "Are you sure about this?", "Frida Kahlo."]
+    assert reasons == [None, "substantial_dialogue_unchanged", None]
+
+
+def test_batch_items_keep_line_breaks_but_not_blank_lines():
+    items, reasons = cue.validate_batch(["Hi.\nBye."], '["\\nHola.\\n\\n<i>Adiós.</i>\\n"]', "es-MX")
+    assert items == ["Hola.\n<i>Adiós.</i>"]
+    assert reasons == [None]
+
+
+def test_batch_validate_cli_writes_only_accepted_cues(tmp_path, capsys):
+    paths = write_chunks(tmp_path, ("4", "Where are you going with this?"), ("5", "Are you sure about this?\nReally?"))
+    out_dir = tmp_path / "batch"
+    out_dir.mkdir()
+    content = tmp_path / "content.txt"
+    content.write_text(json.dumps(["¿A dónde vas con esto?", "Are you sure about this?\nReally?"]), encoding="utf-8")
+    assert cue.main(["x", "batch-validate", str(content), "es-MX", str(out_dir), *paths]) == 1
+    assert capsys.readouterr().out.strip() == "1/2 accepted; rejected cue(s) 5 (substantial_dialogue_unchanged)"
+    assert (out_dir / "0.cue").read_bytes() == "4\n00:00:00,000 --> 00:00:00,500\n¿A dónde vas con esto?\n\n".encode("utf-8")
+    assert not (out_dir / "1.cue").exists()
+
+    content.write_text('["¿A dónde vas con esto?", "¿Estás seguro?\\n¿De verdad?"]', encoding="utf-8")
+    assert cue.main(["x", "batch-validate", str(content), "es-MX", str(out_dir), *paths]) == 0
+    assert capsys.readouterr().out == ""
+    assert (out_dir / "1.cue").read_bytes() == "5\n00:00:01,000 --> 00:00:01,500\n¿Estás seguro?\n¿De verdad?\n\n".encode("utf-8")
+
+    (out_dir / "0.cue").unlink()
+    (out_dir / "1.cue").unlink()
+    content.write_text('["Solo uno"]', encoding="utf-8")
+    assert cue.main(["x", "batch-validate", str(content), "es-MX", str(out_dir), *paths]) == 3
+    assert capsys.readouterr().out.strip() == "item_count_1_of_2"
+    assert list(out_dir.iterdir()) == []
+
+
+def test_batch_validate_rejects_an_unencodable_item_and_keeps_the_rest(tmp_path, capsys):
+    # json.loads turns the model's "\ud83c" escape into a lone surrogate.
+    paths = write_chunks(tmp_path, ("1", "Where are you going?"), ("2", "Who are you?"), ("3", "Why not?"))
+    out_dir = tmp_path / "batch"
+    out_dir.mkdir()
+    content = tmp_path / "content.txt"
+    content.write_text('["¿A dónde vas?", "\\ud83c", "¿Por qué no?"]', encoding="utf-8")
+    assert cue.main(["x", "batch-validate", str(content), "es-MX", str(out_dir), *paths]) == 1
+    assert capsys.readouterr().out.strip() == "2/3 accepted; rejected cue(s) 2 (invalid_unicode)"
+    assert sorted(path.name for path in out_dir.iterdir()) == ["0.cue", "2.cue"]
+    assert (out_dir / "2.cue").read_bytes() == "3\n00:00:02,000 --> 00:00:02,500\n¿Por qué no?\n\n".encode("utf-8")

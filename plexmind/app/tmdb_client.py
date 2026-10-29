@@ -38,6 +38,15 @@ class TMDBMeta:
     original_language: str | None = None
 
 
+class TMDBError(RuntimeError):
+    """A failed TMDB request. Unlike httpx errors, the message never includes the
+    request URL, which carries the api_key query parameter."""
+
+    def __init__(self, path: str, exc: httpx.HTTPError):
+        self.status_code = exc.response.status_code if isinstance(exc, httpx.HTTPStatusError) else None
+        super().__init__(f"TMDB {path}: " + (f"HTTP {self.status_code}" if self.status_code else type(exc).__name__))
+
+
 async def _get(client: httpx.AsyncClient, path: str, params: dict | None = None) -> dict:
     params = params or {}
     params["api_key"] = TMDB_API_KEY
@@ -46,10 +55,13 @@ async def _get(client: httpx.AsyncClient, path: str, params: dict | None = None)
             resp = await client.get(f"{TMDB_BASE}{path}", params=params, timeout=10)
             resp.raise_for_status()
             return resp.json()
-        except (httpx.ConnectError, httpx.TimeoutException):
+        except (httpx.ConnectError, httpx.TimeoutException) as exc:
             if attempt == 2:
-                raise
+                raise TMDBError(path, exc) from None
             await asyncio.sleep(2 ** attempt)  # 1s, 2s backoff
+        except httpx.HTTPError as exc:
+            # "from None" also keeps httpx's message out of logged tracebacks.
+            raise TMDBError(path, exc) from None
 
 
 async def _search(client: httpx.AsyncClient, title: str, year: int | None, media_type: str) -> dict | None:

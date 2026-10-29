@@ -6,6 +6,7 @@ Also launches the subtitle backfill scripts on the configured daily schedule
 so PlexMind owns the timing and the sidecar scripts stay execution-only.
 """
 import asyncio
+import http.client
 import json as _json
 import logging
 import os
@@ -32,6 +33,10 @@ load_dotenv()
 
 GPU_THRESHOLD_PCT = int(os.getenv("GPU_THRESHOLD_PCT", "30"))
 GPU_BACKOFF_MINUTES = int(os.getenv("GPU_BACKOFF_MINUTES", "30"))
+# The GPU only counts as busy when this many readings, spaced this far apart,
+# are all at or above GPU_THRESHOLD_PCT.
+GPU_BUSY_SAMPLES = max(1, int(os.getenv("GPU_BUSY_SAMPLES", "3")))
+GPU_SAMPLE_INTERVAL_SECONDS = float(os.getenv("GPU_SAMPLE_INTERVAL_SECONDS", "5"))
 MIN_HISTORY_ITEMS = int(os.getenv("MIN_HISTORY_ITEMS", "3"))
 TRANSCRIBE_START_HOUR = int(os.getenv("TRANSCRIBE_START_HOUR", "5"))
 TRANSCRIBE_END_HOUR = int(os.getenv("TRANSCRIBE_END_HOUR", "12"))
@@ -46,6 +51,7 @@ scheduler = AsyncIOScheduler(timezone="UTC")
 _SCRIPT_LAST_WINDOW: dict[str, str] = {}
 SCHEDULE_STATE_PATH = DATA_DIR / "scheduler_state.json"
 _SCHEDULE_STATE_LOCK = threading.RLock()
+_DEFAULT_MONTHLY = {"day": 1, "hour": 3, "minute": 0}
 _SCRIPT_LAUNCHER = None
 _RECOMMENDATION_LAUNCHER = None
 
@@ -68,6 +74,12 @@ def _load_schedule_state() -> dict:
             data = _json.loads(SCHEDULE_STATE_PATH.read_text())
             if not isinstance(data, dict):
                 raise ValueError("scheduler state root is not an object")
+            monthly = data.get("monthly")
+            if monthly:  # start() feeds this straight into the cron trigger
+                CronTrigger(day=int(monthly["day"]), hour=int(monthly["hour"]),
+                            minute=int(monthly["minute"]), timezone="UTC")
+            if not isinstance(data.get("window_receipts") or {}, dict):
+                raise ValueError("window_receipts is not an object")
             return data
         except FileNotFoundError:
             return {}
@@ -77,10 +89,17 @@ def _load_schedule_state() -> dict:
             )
             try:
                 os.replace(SCHEDULE_STATE_PATH, quarantine)
-            except OSError:
-                pass
-            log.error("Scheduler state was quarantined as %s: %s", quarantine, exc)
-            return {"state_error": str(exc)}
+                kept = f"kept it as {quarantine}"
+            except OSError as move_exc:
+                kept = f"could not move it aside ({move_exc})"
+            log.error(
+                "Scheduler state %s is unreadable (%s); %s. Its saved settings are discarded, so the "
+                "monthly recommendation run reverts to the default (day %d, %02d:%02d UTC) unless it "
+                "is reconfigured.",
+                SCHEDULE_STATE_PATH, exc, kept,
+                _DEFAULT_MONTHLY["day"], _DEFAULT_MONTHLY["hour"], _DEFAULT_MONTHLY["minute"],
+            )
+            return {}
 
 
 def _save_schedule_state(data: dict) -> None:
@@ -226,6 +245,32 @@ def _script_window_key(now: datetime, start_hour: int, end_hour: int) -> str | N
     return None
 
 
+# Media jobs hold these (lib.sh acquire_lock) for their whole run, and a job
+# that finds one held exits 75 at once. Launching then would only spend the
+# window's receipt on a run that did nothing.
+_SCRIPT_LOCK_NAMES = ("plexmind_media_mutation.lock", "plexmind_gpu.lock")
+
+
+def _held_script_lock() -> str | None:
+    """Name of a media/GPU lock that another job holds, else None. Never
+    creates a lock file."""
+    for name in _SCRIPT_LOCK_NAMES:
+        try:
+            fd = os.open(DATA_DIR / name, os.O_RDONLY)
+        except OSError:
+            continue  # missing means free; unreadable cannot be told, so let the job decide
+        try:
+            # Any other open of the file conflicts: a script's flock, or the
+            # recommendation worker's run_all_users while it waits for the GPU.
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        except BlockingIOError:
+            return name
+        finally:
+            os.close(fd)
+    return None
+
+
 async def _script_window_tick(job: str, title: str, start_hour: int, end_hour: int) -> None:
     now = datetime.now(_script_schedule_timezone())
     window_key = _script_window_key(now, start_hour, end_hour)
@@ -241,7 +286,7 @@ async def _script_window_tick(job: str, title: str, start_hour: int, end_hour: i
         return
 
     # Defer if GPU is already busy — retry on next tick rather than stacking load
-    info = gpu_info()
+    info = await _sustained_gpu_info()
     if info["pct"] is None:
         log.warning("%s scheduled launch deferred — GPU telemetry unavailable: %s", title, info.get("probe_error"))
         return
@@ -250,6 +295,12 @@ async def _script_window_tick(job: str, title: str, start_hour: int, end_hour: i
             "%s scheduled launch deferred — GPU at %d%% (threshold %d%%).",
             title, info["pct"], GPU_THRESHOLD_PCT,
         )
+        return
+
+    # Right before the launch, so a lock taken during the GPU sampling counts.
+    held = _held_script_lock()
+    if held:
+        log.info("%s scheduled launch deferred — %s is held by another job.", title, held)
         return
 
     if _SCRIPT_LAUNCHER is None:
@@ -291,10 +342,13 @@ def _nvidia_info_from_broker() -> tuple[dict | None, str | None]:
     token = os.getenv("PLEXMIND_BROKER_TOKEN", "")
     if not broker:
         return None, "Docker broker is not configured"
-    names = [os.getenv("LLAMA_CPP_CONTAINER_NAME", "llama-cpp")]
-    names.extend(os.getenv("GPU_PROBE_CONTAINERS", "llama-cpp").split(","))
+    llama_name = os.getenv("LLAMA_CPP_CONTAINER_NAME", "llama-cpp").strip()
+    names = [llama_name, *os.getenv("GPU_PROBE_CONTAINERS", "llama-cpp").split(",")]
+    names = list(dict.fromkeys(n.strip() for n in names if n.strip()))
     errors: list[str] = []
-    for name in dict.fromkeys(n.strip() for n in names if n.strip()):
+    # Any failure falls through to the next container: a stopped (on-demand)
+    # llama.cpp refuses the exec, but an always-on Plex can still answer.
+    for name in names:
         request = urllib.request.Request(
             f"{broker}/containers/{name}/gpu",
             headers={"X-Broker-Token": token},
@@ -302,14 +356,16 @@ def _nvidia_info_from_broker() -> tuple[dict | None, str | None]:
         try:
             with urllib.request.urlopen(request, timeout=5) as response:
                 payload = _json.loads(response.read().decode("utf-8"))
-            pct = _parse_pct(payload.get("utilization_pct"))
+            pct = _parse_pct(payload.get("utilization_pct")) if isinstance(payload, dict) else None
             if pct is not None:
                 return {"vendor": "nvidia", "pct": pct, "source": f"broker:{name}", "probe_error": None,
                         "name": payload.get("name"), "memory_total_mb": payload.get("memory_total_mb"),
                         "memory_free_mb": payload.get("memory_free_mb")}, None
             errors.append(f"broker:{name} returned no utilization")
-        except (urllib.error.URLError, TimeoutError, OSError, ValueError) as exc:
+        except (urllib.error.URLError, http.client.HTTPException, TimeoutError, OSError, ValueError) as exc:
             errors.append(f"broker:{name} failed: {exc}")
+    if errors and names == [llama_name]:
+        errors.append("llama.cpp may be stopped; add e.g. Plex to GPU_PROBE_CONTAINERS")
     return None, _short_probe_error("; ".join(errors))
 
 
@@ -396,10 +452,33 @@ def gpu_utilization() -> int | None:
     return gpu_info()["pct"]
 
 
+async def _sustained_gpu_info() -> dict:
+    """
+    gpu_info(), re-sampled while it reads busy. Returns the lowest of up to
+    GPU_BUSY_SAMPLES readings spaced GPU_SAMPLE_INTERVAL_SECONDS apart, so only
+    load that persists counts as busy: a single reading can still catch the
+    tail of our own llama.cpp request, or its warm-up after an on-demand start.
+    """
+    info = await asyncio.to_thread(gpu_info)
+    first = info["pct"]
+    for _ in range(GPU_BUSY_SAMPLES - 1):
+        if info["pct"] is None or info["pct"] < GPU_THRESHOLD_PCT:
+            break
+        await asyncio.sleep(GPU_SAMPLE_INTERVAL_SECONDS)
+        sample = await asyncio.to_thread(gpu_info)
+        if sample["pct"] is None:
+            break  # keep the busy reading rather than fail on a flaky re-probe
+        if sample["pct"] < info["pct"]:
+            info = sample
+    if first is not None and first >= GPU_THRESHOLD_PCT > info["pct"]:
+        log.info("GPU read %d%% but dropped to %d%% within seconds — ignoring the spike.", first, info["pct"])
+    return info
+
+
 async def _wait_for_idle_gpu() -> None:
-    """Block until GPU utilisation drops below threshold (or GPU is not present)."""
+    """Block until GPU utilisation stays below threshold; raise if it cannot be read."""
     while True:
-        info = gpu_info()
+        info = await _sustained_gpu_info()
         util = info["pct"]
         vendor = info["vendor"]
         label = vendor.upper() if vendor else "GPU"
@@ -451,7 +530,9 @@ async def run_all_users(triggered_by: str = "scheduler", on_progress=None) -> di
     async with _run_lock:
         lock_path = DATA_DIR / "plexmind_gpu.lock"
         lock_path.parent.mkdir(parents=True, exist_ok=True)
-        with lock_path.open("w") as gpu_lock:
+        # flock needs no write access; the scripts container (root) may have
+        # created the file, so a write-mode open could raise PermissionError.
+        with os.fdopen(os.open(lock_path, os.O_RDONLY | os.O_CREAT, 0o644)) as gpu_lock:
             try:
                 fcntl.flock(gpu_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except BlockingIOError:
@@ -500,6 +581,7 @@ async def _do_run_all_users(triggered_by: str, on_progress=None) -> dict:
 
         users = plex_client.get_users()
         results: list[dict] = []
+        gpu_checked = True  # _wait_for_idle_gpu() above cleared the first LLM call
 
         await _emit({"type": "start", "total": len(users), "triggered_by": triggered_by})
 
@@ -524,16 +606,20 @@ async def _do_run_all_users(triggered_by: str, on_progress=None) -> dict:
                     await _emit({"type": "user", "index": i, **entry})
                     continue
 
+                # GPU check between users: right before the next LLM call rather
+                # than straight after the previous one, whose own llama.cpp load
+                # would still show up in the reading.
+                if not gpu_checked:
+                    info = await _sustained_gpu_info()
+                    if info["pct"] is not None and info["pct"] >= GPU_THRESHOLD_PCT:
+                        log.info("  GPU busy at %d%% before %s — pausing…", info["pct"], username)
+                        await _emit({"type": "gpu_wait", "user": username, "pct": info["pct"]})
+                        await _wait_for_idle_gpu()
+                gpu_checked = False
+
                 await _emit({"type": "user_start", "index": i, "user": username})
                 log.info("  Generating recs for %s (%d history items)…", username, len(history))
                 recs = await get_recommendations(uid, force=True)
-
-                # GPU check between users
-                util = gpu_utilization()
-                if util is not None and util >= GPU_THRESHOLD_PCT:
-                    log.info("  GPU spiked to %d%% after %s — pausing…", util, username)
-                    await _emit({"type": "gpu_wait", "user": username, "pct": util})
-                    await _wait_for_idle_gpu()
 
                 if recs:
                     sync_result = plex_sync.sync_to_plex(uid, username, recs,
@@ -603,7 +689,7 @@ def start(app=None) -> None:
     script_tz = _script_schedule_timezone()
     persisted = _load_schedule_state()
     _SCRIPT_LAST_WINDOW = dict(persisted.get("window_receipts") or {})
-    monthly = persisted.get("monthly") or {"day": 1, "hour": 3, "minute": 0}
+    monthly = persisted.get("monthly") or _DEFAULT_MONTHLY
     scheduler.add_job(
         _scheduled_run,
         CronTrigger(day=int(monthly["day"]), hour=int(monthly["hour"]),

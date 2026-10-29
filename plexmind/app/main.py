@@ -21,6 +21,7 @@ import re
 import secrets
 import time
 from pathlib import Path
+from urllib.parse import unquote_plus
 import httpx
 
 os.umask(0o077)
@@ -32,6 +33,38 @@ logging.basicConfig(
 # Prevent httpx/httpcore from logging full URLs (which contain TMDB api_key in query params)
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
+
+_QUERY_PARAM_RE = re.compile(r"(^|[?&])([^?&=\s]+)=[^&\s]*")
+_SECRET_PARAM_RE = re.compile(r"secret|token|api[_-]?key|password", re.IGNORECASE)
+
+
+def _redact_secrets(text: object) -> str:
+    """Mask the values of secret-looking query parameters (api_key, webhook_secret, X-Plex-Token...)."""
+    def _mask(match: re.Match) -> str:
+        if not _SECRET_PARAM_RE.search(unquote_plus(match.group(2))):
+            return match.group(0)
+        return f"{match.group(1)}{match.group(2)}=***"
+    return _QUERY_PARAM_RE.sub(_mask, str(text))
+
+
+class _SecretQueryFilter(logging.Filter):
+    """Redact secret query values from uvicorn's request lines.
+
+    Plex webhooks cannot send headers, so webhook_secret has to travel in the URL.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if isinstance(record.args, tuple):
+            record.args = tuple(_redact_secrets(arg) if isinstance(arg, str) else arg for arg in record.args)
+        if not record.args and isinstance(record.msg, str):
+            record.msg = _redact_secrets(record.msg)
+        return True
+
+
+# The uvicorn CLI configures its loggers before importing this module, and
+# dictConfig keeps logger filters. uvicorn.error carries WebSocket handshake URLs.
+logging.getLogger("uvicorn.access").addFilter(_SecretQueryFilter())
+logging.getLogger("uvicorn.error").addFilter(_SecretQueryFilter())
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -236,7 +269,7 @@ async def _require_webhook_key(request: Request) -> None:
     if not expected:
         raise HTTPException(status_code=503, detail="Webhook secret is not configured")
     provided = request.query_params.get("webhook_secret", "")
-    if not provided or not secrets.compare_digest(provided, expected):
+    if not provided or not secrets.compare_digest(provided.encode(), expected.encode()):
         raise HTTPException(status_code=403, detail="Invalid webhook secret")
 
 
@@ -916,7 +949,11 @@ async def trending(
     try:
         items = await tmdb_client.get_trending(media_type, time_window)
     except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"TMDB error: {exc}")
+        # httpx error text embeds the request URL, and TMDB's URL carries api_key.
+        logging.getLogger(__name__).warning("TMDB trending request failed: %s", _redact_secrets(exc))
+        status = exc.status_code if isinstance(exc, tmdb_client.TMDBError) else None
+        detail = f"TMDB request failed (HTTP {status})" if status else "TMDB request failed"
+        raise HTTPException(status_code=502, detail=detail)
     return {
         "media_type": media_type,
         "time_window": time_window,

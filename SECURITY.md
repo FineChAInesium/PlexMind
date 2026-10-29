@@ -48,7 +48,9 @@ and expire after 30 days by default (`PLEXMIND_SESSION_DAYS`). SSE uses the same
 
 Security implications:
 
-- Use HTTPS when accessing the dashboard through a reverse proxy.
+- Use HTTPS when accessing the dashboard through a reverse proxy, and set
+  `PLEXMIND_SECURE_COOKIE=1` so the session cookie is marked `Secure`. Leave it
+  at `0` for plain-HTTP LAN access, where browsers would drop a `Secure` cookie.
 - Avoid sharing authenticated browser profiles with untrusted users.
 - Usernames and streamed job details are HTML-escaped before rendering in the dashboard.
 
@@ -76,31 +78,48 @@ CORS is not an authentication boundary. Set `PLEXMIND_API_KEY`.
 Plex webhooks use the distinct `webhook_secret` query parameter configured by
 `PLEXMIND_WEBHOOK_SECRET`; never place the general API key in a webhook URL.
 
+PlexMind masks `webhook_secret` and other secret-looking query values (names
+containing `secret`, `token`, `api_key`, `apikey`, `api-key` or `password`) as `***` in
+uvicorn's access and error logs. The webhook URL itself still carries the
+secret, so keep the endpoint LAN-only and keep proxy access logs private.
+
 ### Network exposure
 
 In Docker Compose:
 
 - PlexMind publishes port `8000`.
-- llama.cpp publishes the configured `LLAMA_CPP_HOST_PORT` (default `11435`) on the host.
-- Whisper publishes the configured `WHISPER_HOST_PORT` (default `9001`) on the host.
+- llama.cpp publishes the configured `LLAMA_CPP_HOST_PORT` (default `11435`) on
+  `LLAMA_CPP_BIND_ADDRESS` (default `127.0.0.1`). llama.cpp has no API key; PlexMind
+  reaches it as `http://llama-cpp:8080` on the Docker network.
+- Whisper publishes the configured `WHISPER_HOST_PORT` (default `9001`) on
+  `WHISPER_BIND_ADDRESS` (default `127.0.0.1`); PlexMind uses `http://whisper:9000/asr`.
+  Set `0.0.0.0` only if Bazarr or another LAN client needs the Whisper API.
 
 The Unraid template expects an existing llama.cpp endpoint via `LLAMA_CPP_URL`, typically on the LAN.
+If that endpoint is the Compose llama.cpp service, its host port must be bound to a LAN-reachable address.
 
 ### Containers and privileges
 
 - The PlexMind API image runs as UID `1000`.
 - The scripts image no longer installs Docker CLI or mounts `/var/run/docker.sock`.
+- The scripts worker and Docker broker run with `no-new-privileges`. The scripts
+  worker keeps its default capabilities because `SUBTITLE_UID`/`SUBTITLE_GID` need `chown`.
 - Media folders are mounted into the scripts container so transcription, translation, and maintenance can write subtitle files.
 
 ### Destructive maintenance operations
 
-The maintenance scripts can delete files inside mounted media folders:
+The maintenance scripts can move or rewrite files inside mounted media folders:
 
-- `pgs-cleanup` deletes `.sup` files, and `.sub/.idx` pairs, only when language-compatible SRTs exist. Unknown-language image tracks are preserved unless explicitly opted in.
-- `dedup` removes duplicate `.srt` files after scoring cue count and size.
-- `encoding` rewrites SRT files after conversion to UTF-8.
+- `pgs-cleanup` moves `.sup` files, and `.sub/.idx` pairs, to `DATA_DIR/quarantine/pgs`
+  only when an SRT of the same title, language and kind replaces them: a forced or
+  SDH track counts as replaced only by a forced or SDH SRT. Unknown-language image
+  tracks are preserved unless explicitly opted in.
+- `dedup` moves duplicate `.srt` files to `DATA_DIR/quarantine/dedup` after scoring cue count and size.
+- `encoding` rewrites SRT files after conversion to UTF-8 and keeps the originals in
+  `DATA_DIR/quarantine/encoding-backups`.
+- Interrupted transcripts are moved to `DATA_DIR/quarantine/partials` instead of being published.
 
-Run `maintenance.sh audit` first and keep backups if your media library does not have snapshot/backup coverage.
+Quarantined files are never purged automatically. Run `maintenance.sh audit` first and keep backups if your media library does not have snapshot/backup coverage.
 
 ## Hardening Checklist
 
@@ -135,8 +154,8 @@ Recommended reverse-proxy settings:
 | Webhook | LAN check plus optional API key. API key required for proxied deployments. |
 | Docker socket | Not mounted after the current audit. |
 | Dashboard XSS | User and job-provided strings are escaped before dynamic rendering. |
-| Secrets in logs | `httpx`/`httpcore` set to WARNING to reduce TMDB query-key log leakage. |
-| File deletion | Limited to mounted media paths, but maintenance modes intentionally delete subtitle files. |
+| Secrets in logs | `httpx`/`httpcore` set to WARNING to reduce TMDB query-key log leakage; TMDB errors carry no URL; uvicorn logs mask secret query values. |
+| File deletion | Limited to mounted media paths; maintenance modes move replaced or duplicate subtitles to `DATA_DIR/quarantine` instead of deleting them. |
 
 ## Huntarr Comparison
 

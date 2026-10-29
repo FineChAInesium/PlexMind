@@ -10,7 +10,8 @@ RUN apk add --no-cache \
     && echo $TZ > /etc/timezone
 
 COPY lib.sh transcribe.sh translate.sh maintenance.sh watermark.sh stop-job.sh \
-     control_server.py fix_srt_ordering.py repair_srt_timestamps.py dedup_subs.py translation_cue.py entrypoint.sh ./
+     control_server.py fix_srt_ordering.py repair_srt_timestamps.py dedup_subs.py translation_cue.py entrypoint.sh \
+     pgs_cleanup.py srt_encoding.py ./
 
 RUN chmod +x *.sh
 

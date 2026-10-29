@@ -19,13 +19,17 @@ umask 077
 #   MIN_CUE_COUNT       MAX_AVG_CUE_DURATION   MAX_AVG_CUE_CHARS
 #   HALLUCINATION_REPEAT_THRESHOLD
 #   MAX_RETRIES_SOFT
-#   QUARANTINE_DIR      — where to log quarantined files
+#   QUARANTINE_DIR      — quarantine log plus moved-aside subtitles (pgs/,
+#                         partials/, encoding-backups/)
 #   REPORT_DIR          — where generate_report writes output
 # ==============================================================================
 
 # --- Defaults for optional config ---
 ENABLE_WATERMARK="${ENABLE_WATERMARK:-true}"
-WATERMARK_TEXT="${WATERMARK_TEXT:-{\\an8}<i>Brought to you by PlexMind</i>}"
+# Not ${WATERMARK_TEXT:-...}: the first unquoted } in the default would end the
+# expansion and append "<i>...</i>}" to every configured value.
+WATERMARK_TEXT="${WATERMARK_TEXT:-}"
+[ -n "$WATERMARK_TEXT" ] || WATERMARK_TEXT='{\an8}<i>Brought to you by PlexMind</i>'
 WATERMARK_SEARCH="${WATERMARK_SEARCH:-PlexMind}"
 MIN_CUE_COUNT="${MIN_CUE_COUNT:-5}"
 MAX_AVG_CUE_DURATION="${MAX_AVG_CUE_DURATION:-15}"
@@ -107,6 +111,69 @@ finalize_subtitle_permissions() {
     fi
 }
 
+# Path of a Python helper shipped next to lib.sh.
+script_helper() {
+    printf '%s/%s' "${SCRIPT_DIR:-$(dirname "${BASH_SOURCE[0]}")}" "$1"
+}
+
+# Map a container (ISO 639-2) or Whisper language tag to the ISO 639-1 code
+# used in subtitle names and Whisper requests. Whisper rejects other
+# three-letter codes, so an unmapped one comes back empty and the caller
+# detects the language instead. Anything else also comes back empty, so
+# untrusted media metadata never reaches a path or URL.
+normalize_lang_code() {
+    local code
+    code=$(printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]' | cut -d'-' -f1)
+    case "$code" in
+        eng|english) echo "en" ;;
+        jpn|jp|japanese) echo "ja" ;;
+        kor|korean) echo "ko" ;;
+        zho|chi|cmn|yue|chinese) echo "zh" ;;
+        por|portuguese) echo "pt" ;;
+        spa|spanish) echo "es" ;;
+        fre|fra|french) echo "fr" ;;
+        ger|deu|german) echo "de" ;;
+        ita|italian) echo "it" ;;
+        rus|russian) echo "ru" ;;
+        ara) echo "ar" ;;
+        ben) echo "bn" ;;
+        bul) echo "bg" ;;
+        cat) echo "ca" ;;
+        ces|cze) echo "cs" ;;
+        dan) echo "da" ;;
+        ell|gre) echo "el" ;;
+        fas|per) echo "fa" ;;
+        fin) echo "fi" ;;
+        heb) echo "he" ;;
+        hin) echo "hi" ;;
+        hrv) echo "hr" ;;
+        hun) echo "hu" ;;
+        ind) echo "id" ;;
+        mal) echo "ml" ;;
+        msa|may) echo "ms" ;;
+        nld|dut) echo "nl" ;;
+        nor|nob) echo "no" ;;
+        pol) echo "pl" ;;
+        ron|rum) echo "ro" ;;
+        slk|slo) echo "sk" ;;
+        srp) echo "sr" ;;
+        swe) echo "sv" ;;
+        tam) echo "ta" ;;
+        tel) echo "te" ;;
+        tgl|fil) echo "tl" ;;
+        tha) echo "th" ;;
+        tur) echo "tr" ;;
+        ukr) echo "uk" ;;
+        urd) echo "ur" ;;
+        vie) echo "vi" ;;
+        und|unk|unknown|none) echo "" ;;
+        *)
+            # haw is Whisper's only other three-letter code (yue maps to zh above).
+            if [[ "$code" =~ ^[a-z]{2}$ ]] || [ "$code" = "haw" ]; then echo "$code"; else echo ""; fi
+            ;;
+    esac
+}
+
 prepare_log_file() {
     [ -n "${LOG_FILE:-}" ] || return 0
 
@@ -130,16 +197,21 @@ prepare_log_file() {
     find "$archive_dir" -type f -name "${base}-*.log" -mtime +"$LOG_RETENTION_DAYS" -delete 2>/dev/null || true
 }
 
-# Acquire a lock file. Call early in the sourcing script.
+# Acquire a lock file. Call early in the sourcing script. A held lock exits 75
+# (EX_TEMPFAIL) before any work is done, so a launcher can tell "busy, retry
+# later" apart from a failed run.
 # Usage: acquire_lock "/tmp/my_script.lock"
 acquire_lock() {
     local LOCK="$1"
     local lock_fd
     mkdir -p "$(dirname "$LOCK")"
     exec {lock_fd}>"$LOCK"
+    # The file stays empty. umask 077 would make it unreadable to the API's
+    # scheduler (another user), which probes the shared locks before a launch.
+    chmod 644 "$LOCK" 2>/dev/null || true
     if ! flock -n "$lock_fd"; then
-        log "Another instance is already running (lock: $LOCK). Exiting."
-        exit 1
+        log "Another job already holds ${LOCK}. Exiting without doing any work."
+        exit 75
     fi
     PLEXMIND_LOCK_FDS="${PLEXMIND_LOCK_FDS:-} ${lock_fd}"
     echo "$$" > "${LOCK%.lock}.pid"
@@ -156,6 +228,18 @@ check_dependencies() {
         exit 1
     fi
     log "All dependencies available: ${required[*]}"
+}
+
+
+# Reason for a failed broker call, given curl's "<body>\n<status>" output:
+# Docker's .message, the broker's own .detail, or that nothing answered.
+broker_error_detail() {
+    local response="$1" status="${1##*$'\n'}"
+    if [ -z "$status" ] || [ "$status" = "000" ]; then
+        printf 'Docker broker unreachable'
+    elif [ "$response" != "$status" ]; then
+        printf '%s' "${response%$'\n'*}" | jq -r '.message // .detail // empty' 2>/dev/null | head -n 1 | cut -c1-200 || true
+    fi
 }
 
 
@@ -176,19 +260,29 @@ stop_docker_container() {
     fi
 
     local timeout="${CONTAINER_STOP_TIMEOUT_SECONDS:-30}"
-    local name status
+    if [[ "$timeout" =~ ^[0-9]{1,3}$ ]]; then timeout=$((10#$timeout)); else timeout=30; fi
+    local name response status detail
     for name in "$@"; do
         [ -n "${name:-}" ] || continue
         case " ${SIDECAR_OWNED_CONTAINERS} " in
             *" ${name} "*) ;;
             *) continue ;;
         esac
-        status=$(curl -sS -o /dev/null -w "%{http_code}" -H "X-Broker-Token: ${PLEXMIND_BROKER_TOKEN}" -X POST "${broker%/}/containers/${name}/stop?t=${timeout}" 2>/dev/null || true)
+        # Bounded: transcribe.sh ignores INT/TERM around this request, so a
+        # hung broker must not hold the job (and its locks) forever. Docker
+        # waits up to t seconds and the broker up to t+15 for Docker.
+        response=$(curl -sS --connect-timeout 10 --max-time $((timeout + 30)) -w '\n%{http_code}' -H "X-Broker-Token: ${PLEXMIND_BROKER_TOKEN}" -X POST "${broker%/}/containers/${name}/stop?t=${timeout}" 2>/dev/null || true)
+        status="${response##*$'\n'}"
         case "$status" in
             204) log "${service_name}: stopped container ${name}."; return 0 ;;
             304) log "${service_name}: container ${name} already stopped."; return 0 ;;
-            404) ;;
-            *) log "${service_name}: Docker stop request for ${name} returned HTTP ${status:-unknown}." ;;
+            404) log "${service_name}: job-owned container ${name} no longer exists."; return 0 ;;
+            *)
+                # Runs from EXIT traps: report it, but do not fail the caller.
+                detail=$(broker_error_detail "$response")
+                log "ERROR: ${service_name}: could not stop job-owned container ${name} (HTTP ${status:-unknown}${detail:+: ${detail}}); it may still be running."
+                return 0
+                ;;
         esac
     done
 
@@ -212,10 +306,11 @@ start_docker_container() {
         return 0
     fi
 
-    local name status
+    local name response status detail
     for name in "$@"; do
         [ -n "${name:-}" ] || continue
-        status=$(curl -sS -o /dev/null -w "%{http_code}" -H "X-Broker-Token: ${PLEXMIND_BROKER_TOKEN}" -X POST "${broker%/}/containers/${name}/start" 2>/dev/null || true)
+        response=$(curl -sS --connect-timeout 10 --max-time 60 -w '\n%{http_code}' -H "X-Broker-Token: ${PLEXMIND_BROKER_TOKEN}" -X POST "${broker%/}/containers/${name}/start" 2>/dev/null || true)
+        status="${response##*$'\n'}"
         case "$status" in
             204)
                 SIDECAR_OWNED_CONTAINERS="${SIDECAR_OWNED_CONTAINERS:+${SIDECAR_OWNED_CONTAINERS} }${name}"
@@ -224,7 +319,10 @@ start_docker_container() {
                 ;;
             304) log "${service_name}: container ${name} already running."; return 0 ;;
             404) ;;
-            *) log "${service_name}: Docker start request for ${name} returned HTTP ${status:-unknown}." ;;
+            *)
+                detail=$(broker_error_detail "$response")
+                log "${service_name}: Docker start request for ${name} returned HTTP ${status:-unknown}${detail:+: ${detail}}."
+                ;;
         esac
     done
 
@@ -265,7 +363,7 @@ wait_for_whisper_api() {
     local RETRY=0
     while [ $RETRY -lt "$MAX" ]; do
         local STATUS
-        STATUS=$(curl -s -o /dev/null -w "%{http_code}" --connect-timeout 10 "${WHISPER_API_URL}" 2>/dev/null)
+        STATUS=$(curl -s -o /dev/null -w "%{http_code}" --connect-timeout 10 --max-time 30 "${WHISPER_API_URL}" 2>/dev/null)
         if [ "$STATUS" -eq 200 ] || [ "$STATUS" -eq 405 ] || [ "$STATUS" -eq 422 ]; then
             log "Whisper API online (HTTP ${STATUS})."
             return 0
@@ -281,7 +379,9 @@ wait_for_whisper_api() {
 check_runtime() {
     [ "${MAX_RUNTIME_MINUTES:-0}" -gt 0 ] 2>/dev/null || return 0
     local now elapsed limit
-    now=$(date +%s)
+    # translate.sh checks once per file and language; EPOCHSECONDS (bash 5)
+    # saves a date fork per check.
+    now="${EPOCHSECONDS:-$(date +%s)}"
     elapsed=$((now - SCRIPT_STARTED_AT))
     limit=$((MAX_RUNTIME_MINUTES * 60))
     if [ "$elapsed" -ge "$limit" ]; then
@@ -294,42 +394,53 @@ check_runtime() {
 # FAILURE MARKERS & RETRY
 # ==============================================================================
 
+# Sets MARKER_REASON and MARKER_COUNT (failures so far) from a failure marker
+# without forking; a missing or malformed count reads as 0.
+read_failed_marker() {
+    local reason="" count=""
+    { IFS= read -r reason; IFS= read -r count; } 2>/dev/null < "$1" || true
+    MARKER_REASON="${reason//[[:space:]]/}"
+    count="${count//[[:space:]]/}"
+    # Arithmetic would evaluate anything else in the marker as an expression.
+    [[ "$count" =~ ^[0-9]+$ ]] || count=0
+    MARKER_COUNT=$((10#$count))
+}
+
 write_failed_marker() {
     local MARKER_FILE="$1"
     local REASON="$2"
+    local MARKER_REASON MARKER_COUNT=0
 
-    local EXISTING_COUNT=0
-    if [ -f "$MARKER_FILE" ]; then
-        EXISTING_COUNT=$(sed -n '2p' "$MARKER_FILE" 2>/dev/null | tr -d '[:space:]')
-        EXISTING_COUNT="${EXISTING_COUNT:-0}"
-    fi
-
-    printf '%s\n%s\n' "$REASON" "$((EXISTING_COUNT + 1))" > "$MARKER_FILE"
+    [ -f "$MARKER_FILE" ] && read_failed_marker "$MARKER_FILE"
+    printf '%s\n%s\n' "$REASON" "$((MARKER_COUNT + 1))" > "$MARKER_FILE"
 }
 
-retry_failed() {
-    local MARKER_FILE="$1"
-    [ ! -f "$MARKER_FILE" ] && return 1
-
-    local REASON
-    REASON=$(head -n1 "$MARKER_FILE" 2>/dev/null | tr -d '[:space:]')
-    local RETRY_COUNT
-    RETRY_COUNT=$(sed -n '2p' "$MARKER_FILE" 2>/dev/null | tr -d '[:space:]')
-    RETRY_COUNT="${RETRY_COUNT:-0}"
-
-    case "$REASON" in
-        "$FAIL_CURL_TIMEOUT"|"$FAIL_API_ERROR")
-            if [ "$RETRY_COUNT" -lt "$MAX_RETRIES_SOFT" ]; then
-                log "  RETRY: Transient failure (${REASON}), attempt $((RETRY_COUNT + 1))/${MAX_RETRIES_SOFT}."
-                rm -f "$MARKER_FILE"
-                return 0
-            else
-                log "  RETRY: ${REASON} exhausted ${MAX_RETRIES_SOFT} retries. Permanent skip."
-                return 1
-            fi
-            ;;
+# True for a transient failure (curl timeout, API error) with retries left
+# before MAX_RETRIES_SOFT. Sets MARKER_REASON and MARKER_COUNT.
+failed_marker_retryable() {
+    read_failed_marker "$1"
+    case "$MARKER_REASON" in
+        "$FAIL_CURL_TIMEOUT"|"$FAIL_API_ERROR") [ "$MARKER_COUNT" -lt "$MAX_RETRIES_SOFT" ] ;;
         *) return 1 ;;
     esac
+}
+
+# The marker stays in place during the retry, so a repeat failure counts up
+# towards MAX_RETRIES_SOFT; the caller removes it once the video succeeds.
+retry_failed() {
+    local MARKER_FILE="$1"
+    local MARKER_REASON MARKER_COUNT
+    [ ! -f "$MARKER_FILE" ] && return 1
+
+    if failed_marker_retryable "$MARKER_FILE"; then
+        log "  RETRY: Transient failure (${MARKER_REASON}), attempt $((MARKER_COUNT + 1))/${MAX_RETRIES_SOFT}."
+        return 0
+    fi
+    case "$MARKER_REASON" in
+        "$FAIL_CURL_TIMEOUT"|"$FAIL_API_ERROR")
+            log "  RETRY: ${MARKER_REASON} exhausted ${MAX_RETRIES_SOFT} retries. Permanent skip." ;;
+    esac
+    return 1
 }
 
 # ==============================================================================
@@ -385,10 +496,6 @@ print(f"ok|ok|{cue_count}|{avg_duration:.1f}|{avg_chars:.0f}")
 PYEOF
     )
     IFS='|' read -r STATUS REASON CUE_COUNT AVG_DUR AVG_CHARS <<< "$RESULT"
-    SRT_VALIDATION_REASON="${REASON:-unknown}"
-    SRT_VALIDATION_CUES="${CUE_COUNT:-0}"
-    SRT_VALIDATION_AVG_DURATION="${AVG_DUR:-0}"
-    SRT_VALIDATION_AVG_CHARS="${AVG_CHARS:-0}"
     if [ "$STATUS" != "ok" ]; then
         log "  VALIDATE: FAIL — ${REASON:-unknown} (cues ${CUE_COUNT:-0}, avg duration ${AVG_DUR:-0}s, avg text ${AVG_CHARS:-0} chars)."
         return 1
@@ -637,16 +744,40 @@ PYEOF
 # WATERMARK
 # ==============================================================================
 
+# Replace FILE with NEW_FILE, keeping FILE's mode and, where the worker is
+# permitted, its ownership. BusyBox chmod/chown have no --reference.
+replace_keeping_metadata() {
+    local new_file="$1" file="$2" mode owner
+    mode=$(stat -c %a "$file") && owner=$(stat -c %u:%g "$file") || return 1
+    chown "$owner" "$new_file" 2>/dev/null || true
+    chmod "$mode" "$new_file" && mv -f "$new_file" "$file"
+}
+
+# Prepend the watermark cue. WATERMARK_TMP_FILE names the temp file while it
+# exists so callers can remove it from an EXIT trap.
+prepend_watermark() {
+    local SUB_FILE="$1"
+    WATERMARK_TMP_FILE="${SUB_FILE}.tmp"
+    if { printf '0\n00:00:00,000 --> 00:00:05,000\n%s\n\n' "${WATERMARK_TEXT}" && cat "$SUB_FILE"; } > "$WATERMARK_TMP_FILE" \
+        && replace_keeping_metadata "$WATERMARK_TMP_FILE" "$SUB_FILE"; then
+        WATERMARK_TMP_FILE=""
+        return 0
+    fi
+    rm -f "$WATERMARK_TMP_FILE"
+    WATERMARK_TMP_FILE=""
+    log "  WATERMARK: Could not watermark ${SUB_FILE##*/}. Keeping original."
+    return 1
+}
+
 apply_watermark() {
     local SUB_FILE="$1"
     if [ "$ENABLE_WATERMARK" = true ] && [ -n "$WATERMARK_TEXT" ]; then
-        if ! head -n 15 "$SUB_FILE" | grep -qF "$WATERMARK_SEARCH"; then
-            printf '0\n00:00:00,000 --> 00:00:05,000\n%s\n\n' "${WATERMARK_TEXT}" \
-                | cat - "$SUB_FILE" > "${SUB_FILE}.tmp"
-            chmod --reference="$SUB_FILE" "${SUB_FILE}.tmp" || return 1
-            chown --reference="$SUB_FILE" "${SUB_FILE}.tmp" 2>/dev/null || true
-            mv "${SUB_FILE}.tmp" "$SUB_FILE"
-        fi
+        # Not `head | grep -q`: under pipefail grep's early exit fails head
+        # with SIGPIPE. The quoted pattern matches literally.
+        case "$(head -n 15 "$SUB_FILE")" in
+            *"$WATERMARK_SEARCH"*) ;;
+            *) prepend_watermark "$SUB_FILE" || return 1 ;;
+        esac
     fi
 }
 
@@ -659,7 +790,7 @@ health_check_api() {
     local MAX_WAIT="${2:-120}"
 
     local STATUS
-    STATUS=$(curl -s -o /dev/null -w "%{http_code}" --connect-timeout 5 "$API_URL" 2>/dev/null)
+    STATUS=$(curl -s -o /dev/null -w "%{http_code}" --connect-timeout 5 --max-time 30 "$API_URL" 2>/dev/null)
 
     if [ "$STATUS" -eq 200 ] || [ "$STATUS" -eq 405 ] || [ "$STATUS" -eq 422 ]; then
         return 0
@@ -671,7 +802,7 @@ health_check_api() {
     while [ $ELAPSED -lt "$MAX_WAIT" ]; do
         sleep 10
         ELAPSED=$((ELAPSED + 10))
-        STATUS=$(curl -s -o /dev/null -w "%{http_code}" --connect-timeout 5 "$API_URL" 2>/dev/null)
+        STATUS=$(curl -s -o /dev/null -w "%{http_code}" --connect-timeout 5 --max-time 30 "$API_URL" 2>/dev/null)
         if [ "$STATUS" -eq 200 ] || [ "$STATUS" -eq 405 ] || [ "$STATUS" -eq 422 ]; then
             log "HEALTH CHECK: API recovered after ${ELAPSED}s."
             return 0
@@ -682,49 +813,58 @@ health_check_api() {
     return 1
 }
 
+# Move FILE to QUARANTINE_DIR/CATEGORY, keeping its path relative to ROOT.
+quarantine_media_file() {
+    local file="$1" root="$2" category="$3" target
+    target="${QUARANTINE_DIR}/${category}/${file#"${root%/}"/}"
+    [ -e "$target" ] && target="${target}.$(date +%s)"
+    if mkdir -p "$(dirname "$target")" && mv -f "$file" "$target"; then
+        log "  QUARANTINE: ${file} -> ${target}"
+        return 0
+    fi
+    log "ERROR: Could not quarantine ${file}."
+    return 1
+}
+
+# transcribe.sh writes Title.ai.srt and renames it to Title.ai-<lang>.srt only
+# once it is validated, watermarked and encoding-checked. Only that finished
+# form is promoted (to Title.<lang>.srt, with the final subtitle permissions);
+# every other leftover of an interrupted run is quarantined.
 resume_partial() {
     local RECOVERED=0
-    local DELETED=0
+    local QUARANTINED=0
+    local DIR TEMP_FILE DIR_PATH BASENAME FINAL_PATH
 
     for DIR in "$@"; do
         while IFS= read -r -d '' TEMP_FILE; do
-            local DIR_PATH
-            DIR_PATH=$(dirname "$TEMP_FILE")
-            local BASENAME
-            BASENAME=$(basename "$TEMP_FILE")
-            local BASE_NO_AI="${BASENAME%.ai.srt}"
+            DIR_PATH="${TEMP_FILE%/*}"
+            BASENAME="${TEMP_FILE##*/}"
 
-            log "RESUME: Found partial file: ${BASENAME}"
-
-            if validate_srt "$TEMP_FILE" 2>/dev/null; then
-                local FINAL_NAME
-                if [[ "$BASE_NO_AI" =~ \.([a-z]{2,3})$ ]]; then
-                    FINAL_NAME="${BASE_NO_AI}.srt"
-                else
-                    FINAL_NAME="${BASE_NO_AI}.en.srt"
-                fi
-
-                local FINAL_PATH="${DIR_PATH}/${FINAL_NAME}"
-
-                if [ -f "$FINAL_PATH" ]; then
-                    log "  RESUME: Final file already exists. Deleting partial."
-                    rm -f "$TEMP_FILE"
-                    DELETED=$((DELETED + 1))
-                else
-                    apply_watermark "$TEMP_FILE"
-                    mv "$TEMP_FILE" "$FINAL_PATH"
-                    log "  RESUME: Promoted to ${FINAL_NAME}"
+            if [[ "$BASENAME" =~ ^(.+)\.ai-([A-Za-z]{2,3}(-[A-Za-z0-9]{2,8})?)\.srt$ ]]; then
+                FINAL_PATH="${DIR_PATH}/${BASH_REMATCH[1]}.${BASH_REMATCH[2]}.srt"
+                log "RESUME: Found finished transcript: ${BASENAME}"
+                if [ -e "$FINAL_PATH" ]; then
+                    log "  RESUME: ${FINAL_PATH##*/} already exists."
+                elif ! validate_srt "$TEMP_FILE"; then
+                    log "  RESUME: Failed validation."
+                elif finalize_subtitle_permissions "$TEMP_FILE" && mv "$TEMP_FILE" "$FINAL_PATH"; then
+                    log "  RESUME: Promoted to ${FINAL_PATH##*/}"
                     RECOVERED=$((RECOVERED + 1))
+                    continue
+                else
+                    log "  RESUME: Could not finalize ${BASENAME}; keeping it for the next run."
+                    continue
                 fi
+            elif [[ "$BASENAME" =~ \.(ai|translate_tmp)\.srt(\.(tmp|cleaned|readable|normalized|musicclean|enc_tmp))?$ ]]; then
+                log "RESUME: Found interrupted transcript: ${BASENAME}"
             else
-                log "  RESUME: Failed validation. Deleting."
-                rm -f "$TEMP_FILE"
-                DELETED=$((DELETED + 1))
+                continue
             fi
-        done < <(find "$DIR" -type f -name "*.ai.srt" -print0 2>/dev/null)
+            quarantine_media_file "$TEMP_FILE" "$DIR" partials && QUARANTINED=$((QUARANTINED + 1))
+        done < <(find "$DIR" -type f \( -name "*.ai.srt*" -o -name "*.ai-*.srt" -o -name "*.translate_tmp.srt*" \) -print0 2>/dev/null)
     done
 
-    log "RESUME: Recovered ${RECOVERED}, deleted ${DELETED} partial files."
+    log "RESUME: Recovered ${RECOVERED}, quarantined ${QUARANTINED} partial file(s)."
     echo "$RECOVERED"
 }
 
@@ -735,8 +875,7 @@ quarantine_video() {
     mkdir -p "$QUARANTINE_DIR"
 
     local QUARANTINE_LOG="${QUARANTINE_DIR}/quarantine.log"
-    local BASENAME
-    BASENAME=$(basename "$VIDEO_FILE")
+    local BASENAME="${VIDEO_FILE##*/}"
     local FILE_SIZE="unknown"
     local CODEC_INFO="unknown"
     local DURATION="unknown"
@@ -1113,120 +1252,54 @@ PYEOF
 # LIBRARY MANAGEMENT
 # ==============================================================================
 
+# Convert a subtitle to UTF-8 when needed (see srt_encoding.py: lossless only,
+# original backed up, atomic replace). Returns 1 when the file was converted.
 verify_encoding() {
     local SRT_FILE="$1"
+    local RESULT STATUS DETAIL
 
     if [ ! -f "$SRT_FILE" ]; then return 0; fi
 
-    local DETECTED
-    if command -v file >/dev/null 2>&1; then
-        DETECTED=$(file -bi "$SRT_FILE" 2>/dev/null | grep -oP 'charset=\K[^\s;]+')
-    fi
-    DETECTED="${DETECTED:-unknown}"
-
-    local HAS_BOM=false
-    if [ "$(xxd -l 3 -p "$SRT_FILE" 2>/dev/null)" = "efbbbf" ]; then
-        HAS_BOM=true
-    fi
-
-    # US-ASCII is a strict subset of UTF-8 and needs no conversion.
-    if { [ "$DETECTED" = "utf-8" ] || [ "$DETECTED" = "us-ascii" ]; } && [ "$HAS_BOM" = false ]; then
-        return 0
-    fi
-
-    if [ "$DETECTED" = "unknown" ]; then
-        log "  ENCODING: ${SRT_FILE##*/} encoding could not be detected. Keeping original."
-        return 0
-    fi
-
-    log "  ENCODING: ${SRT_FILE##*/} is ${DETECTED}$([ "$HAS_BOM" = true ] && echo ' with BOM'). Converting to UTF-8..."
-
-    local TEMP="${SRT_FILE}.enc_tmp"
-
-    if [ "$HAS_BOM" = true ]; then
-        tail -c +4 "$SRT_FILE" | iconv -f "${DETECTED}" -t UTF-8 -c > "$TEMP" 2>/dev/null
-    else
-        iconv -f "${DETECTED}" -t UTF-8 -c "$SRT_FILE" > "$TEMP" 2>/dev/null
-    fi
-
-    if [ -s "$TEMP" ]; then
-        mv "$TEMP" "$SRT_FILE"
-        return 1
-    else
-        log "  ENCODING: Conversion failed. Keeping original."
-        rm -f "$TEMP"
-        return 0
-    fi
+    RESULT=$(python3 "$(script_helper srt_encoding.py)" repair \
+        --backup-dir "${QUARANTINE_DIR}/encoding-backups" "$SRT_FILE") || true
+    IFS='|' read -r STATUS DETAIL <<< "$RESULT"
+    case "$STATUS" in
+        ok) return 0 ;;
+        converted)
+            log "  ENCODING: ${SRT_FILE##*/} converted to UTF-8 ${DETAIL}."
+            return 1
+            ;;
+        *)
+            log "  ENCODING: ${SRT_FILE##*/} ${DETAIL:-could not be checked}. Keeping original."
+            return 0
+            ;;
+    esac
 }
 
-matching_text_subtitles() {
-    local subtitle_dir="$1" base_no_ext="$2" normalized="$2" language=""
-    PGS_MATCHING_SRTS=()
-    while [[ "$normalized" =~ ^(.+)\.(forced|hi|sdh|cc)$ ]]; do
-        normalized="${BASH_REMATCH[1]}"
-    done
-    if [[ "$normalized" =~ ^(.+)\.([a-zA-Z]{2,3}(-[a-zA-Z]{2,4})?)$ ]]; then
-        normalized="${BASH_REMATCH[1]}"
-        language="${BASH_REMATCH[2]}"
-    elif [ "${PGS_CLEANUP_ALLOW_UNKNOWN:-0}" != "1" ]; then
-        return 0
-    fi
-    shopt -s nullglob nocaseglob
-    if [ -n "$language" ]; then
-        local exact_srt="${subtitle_dir}/${normalized}.${language}.srt"
-        [ -f "$exact_srt" ] && PGS_MATCHING_SRTS+=( "$exact_srt" )
-        PGS_MATCHING_SRTS+=( "${subtitle_dir}/${normalized}.${language}."*.srt )
-    else
-        PGS_MATCHING_SRTS+=( "${subtitle_dir}/${normalized}."*.srt )
-    fi
-    shopt -u nullglob nocaseglob
+# Run pgs_cleanup.py, which decides whether an SRT exactly replaces an image
+# subtitle (same title, language and forced/SDH kind).
+pgs_cleanup_helper() {
+    local args=()
+    [ "${PGS_CLEANUP_ALLOW_UNKNOWN:-0}" = "1" ] && args+=( --allow-unknown )
+    python3 "$(script_helper pgs_cleanup.py)" "${args[@]}" "$@"
 }
 
+# Moves replaced image subtitles to QUARANTINE_DIR/pgs. PGS_DELETED_COUNT
+# (name kept for callers) is the number of files moved.
 cleanup_pgs() {
-    local DELETED=0
+    local OUTPUT LINE RC=0
     PGS_DELETED_COUNT=0
 
-    for DIR in "$@"; do
-        while IFS= read -r -d '' PGS_FILE; do
-            local PGS_DIR
-            PGS_DIR=$(dirname "$PGS_FILE")
-            local PGS_BASE
-            PGS_BASE=$(basename "$PGS_FILE")
-            local BASE_NO_EXT="${PGS_BASE%.sup}"
+    OUTPUT=$(pgs_cleanup_helper --quarantine-dir "${QUARANTINE_DIR}/pgs" "$@" 2>&1) || RC=$?
+    while IFS= read -r LINE; do
+        case "$LINE" in
+            TOTAL:*) PGS_DELETED_COUNT="${LINE#TOTAL:}" ;;
+            ?*) log "$LINE" ;;
+        esac
+    done <<< "$OUTPUT"
 
-            matching_text_subtitles "$PGS_DIR" "$BASE_NO_EXT"
-            local SRT_FILES=( "${PGS_MATCHING_SRTS[@]}" )
-
-            if [ ${#SRT_FILES[@]} -gt 0 ]; then
-                log "PGS CLEANUP: Deleting ${PGS_BASE} (${#SRT_FILES[@]} SRT file(s) exist)"
-                rm -f "$PGS_FILE"
-                DELETED=$((DELETED + 1))
-            fi
-        done < <(find "$DIR" -type f -iname "*.sup" -print0 2>/dev/null)
-
-        while IFS= read -r -d '' SUB_FILE; do
-            local SUB_DIR
-            SUB_DIR=$(dirname "$SUB_FILE")
-            local SUB_BASE
-            SUB_BASE=$(basename "$SUB_FILE")
-            local IDX_FILE="${SUB_DIR}/${SUB_BASE%.sub}.idx"
-
-            if [ ! -f "$IDX_FILE" ]; then continue; fi
-
-            local BASE_NO_EXT="${SUB_BASE%.sub}"
-            matching_text_subtitles "$SUB_DIR" "$BASE_NO_EXT"
-            local SRT_FILES=( "${PGS_MATCHING_SRTS[@]}" )
-
-            if [ ${#SRT_FILES[@]} -gt 0 ]; then
-                log "PGS CLEANUP: Deleting ${SUB_BASE} + .idx (${#SRT_FILES[@]} SRT file(s) exist)"
-                rm -f "$SUB_FILE" "$IDX_FILE"
-                DELETED=$((DELETED + 2))
-            fi
-        done < <(find "$DIR" -type f -iname "*.sub" -print0 2>/dev/null)
-    done
-
-    log "PGS CLEANUP: Deleted ${DELETED} image-based subtitle file(s)."
-    PGS_DELETED_COUNT=$DELETED
+    log "PGS CLEANUP: Quarantined ${PGS_DELETED_COUNT} image-based subtitle file(s) in ${QUARANTINE_DIR}/pgs."
+    return "$RC"
 }
 
 # ---------------------------------------------------------------------------
@@ -1241,9 +1314,8 @@ cleanup_pgs() {
 # ---------------------------------------------------------------------------
 deduplicate_subs() {
     local SCAN_DIR="$1"
-    local helper="${SCRIPT_DIR:-$(dirname "${BASH_SOURCE[0]}")}/dedup_subs.py"
 
-    python3 "$helper" "$SCAN_DIR" 2>&1 | while IFS= read -r line; do log "$line"; done
+    python3 "$(script_helper dedup_subs.py)" "$SCAN_DIR" 2>&1 | while IFS= read -r line; do log "$line"; done
     local rc=${PIPESTATUS[0]}
 
     log "DEDUP: Scan of ${SCAN_DIR} complete."
@@ -1278,10 +1350,8 @@ audit_library() {
         echo ""
         while IFS= read -r -d '' VIDEO; do
             TOTAL_VIDEOS=$((TOTAL_VIDEOS + 1))
-            local VDIR
-            VDIR=$(dirname "$VIDEO")
-            local VBASE
-            VBASE=$(basename "$VIDEO")
+            local VDIR="${VIDEO%/*}"
+            local VBASE="${VIDEO##*/}"
             local VNAME="${VBASE%.*}"
 
             shopt -s nullglob nocaseglob
@@ -1302,10 +1372,8 @@ audit_library() {
         local TARGET_LANGS=("zh" "es-MX")
         while IFS= read -r -d '' SRT; do
             TOTAL_SRTS=$((TOTAL_SRTS + 1))
-            local SDIR
-            SDIR=$(dirname "$SRT")
-            local SBASE
-            SBASE=$(basename "$SRT")
+            local SDIR="${SRT%/*}"
+            local SBASE="${SRT##*/}"
             if [[ ! "$SBASE" =~ \.en(\.hi|\.sdh)?\.srt$ ]] && [[ ! "$SBASE" =~ \.(hi|sdh)\.en\.srt$ ]]; then
                 continue
             fi
@@ -1387,42 +1455,27 @@ for raw_path in sys.stdin.buffer.read().split(b"\0"):
 
         echo "## PGS/IMAGE SUBS WITH TEXT REPLACEMENTS AVAILABLE"
         echo ""
-        for DIR in "${DIRS[@]}"; do
-            while IFS= read -r -d '' PGS; do
-                local PDIR
-                PDIR=$(dirname "$PGS")
-                local PBASE
-                PBASE=$(basename "$PGS")
-                local PNAME="${PBASE%.sup}"
-                matching_text_subtitles "$PDIR" "$PNAME"
-                local SRTS=( "${PGS_MATCHING_SRTS[@]}" )
-                if [ ${#SRTS[@]} -gt 0 ]; then
-                    echo "  [CLEANABLE] ${PGS}"
-                    PGS_CLEANABLE=$((PGS_CLEANABLE + 1))
-                fi
-            done < <(find "$DIR" -type f -iname "*.sup" -print0 2>/dev/null)
-        done
+        local PGS
+        while IFS= read -r -d '' PGS; do
+            echo "  [CLEANABLE] ${PGS}"
+            PGS_CLEANABLE=$((PGS_CLEANABLE + 1))
+        done < <(pgs_cleanup_helper --list "${DIRS[@]}" 2>/dev/null)
         echo ""
         echo "  Total: ${PGS_CLEANABLE} PGS files replaceable"
         echo ""
 
         echo "## ENCODING ISSUES (sampled)"
         echo ""
-        local ENC_CHECKED=0
-        while IFS= read -r -d '' SRT; do
-            [ $ENC_CHECKED -ge 200 ] && break
-            ENC_CHECKED=$((ENC_CHECKED + 1))
-            local ENC
-            ENC=$(file -bi "$SRT" 2>/dev/null | grep -oP 'charset=\K[^\s;]+')
-            local BOM=""
-            if [ "$(xxd -l 3 -p "$SRT" 2>/dev/null)" = "efbbbf" ]; then
-                BOM=" +BOM"
+        local ENC_CHECKED=0 ENC
+        while IFS='|' read -r -d '' ENC SRT; do
+            if [ "$ENC" = "checked" ]; then
+                ENC_CHECKED="$SRT"
+                continue
             fi
-            if { [ "$ENC" != "utf-8" ] && [ "$ENC" != "us-ascii" ]; } || [ -n "$BOM" ]; then
-                echo "  [${ENC}${BOM}] ${SRT}"
-                ENCODING_ISSUES=$((ENCODING_ISSUES + 1))
-            fi
-        done < <(find "${DIRS[@]}" -type f -iname "*.srt" -print0 2>/dev/null)
+            echo "  [${ENC}] ${SRT}"
+            ENCODING_ISSUES=$((ENCODING_ISSUES + 1))
+        done < <(find "${DIRS[@]}" -type f -iname "*.srt" -print0 2>/dev/null \
+            | python3 "$(script_helper srt_encoding.py)" check --limit 200)
         echo ""
         echo "  Total: ${ENCODING_ISSUES} encoding issues (of ${ENC_CHECKED} checked)"
         echo ""
@@ -1539,15 +1592,13 @@ generate_report() {
 
         while IFS= read -r -d '' V; do
             V_TOTAL=$((V_TOTAL + 1))
-            local VD
-            VD=$(dirname "$V")
-            local VN
-            VN=$(basename "$V")
+            local VD="${V%/*}"
+            local VN="${V##*/}"
             VN="${VN%.*}"
             shopt -s nullglob nocaseglob
-            local S=( "${VD}/${VN}".*.srt )
+            local V_SUBS=( "${VD}/${VN}".*.srt )
             shopt -u nullglob nocaseglob
-            if [ ${#S[@]} -gt 0 ]; then
+            if [ ${#V_SUBS[@]} -gt 0 ]; then
                 V_WITH_SUBS=$((V_WITH_SUBS + 1))
             fi
         done < <(find "${MOVIE_DIR}" "${TV_DIR}" -type f \( -iname "*.mkv" -o -iname "*.mp4" -o -iname "*.avi" -o -iname "*.mov" -o -iname "*.wmv" -o -iname "*.m4v" \) -print0 2>/dev/null)

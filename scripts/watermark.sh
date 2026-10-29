@@ -31,9 +31,15 @@ log "========================================================="
 log "Starting Mass SRT Watermark Injection"
 log "========================================================="
 
+case "$WATERMARK_TEXT" in
+    *"$WATERMARK_SEARCH"*) ;;
+    *) log "ERROR: WATERMARK_TEXT must contain WATERMARK_SEARCH, or every run would add another watermark."; exit 2 ;;
+esac
+
 ALL_MEDIA_DIRS=("${MOVIE_DIR}" "${TV_DIR}")
 validate_media_directories || exit 1
 acquire_lock "${DATA_DIR}/plexmind_media_mutation.lock"
+trap '[ -z "${WATERMARK_TMP_FILE:-}" ] || rm -f "$WATERMARK_TMP_FILE"' EXIT
 
 for DIR in "${ALL_MEDIA_DIRS[@]}"; do
     if [ ! -d "$DIR" ]; then
@@ -46,28 +52,22 @@ for DIR in "${ALL_MEDIA_DIRS[@]}"; do
     while IFS= read -r -d $'\0' SUB_FILE; do
         FILES_SCANNED=$((FILES_SCANNED + 1))
 
-        if ! head -n 15 "$SUB_FILE" | grep -qF "$WATERMARK_SEARCH"; then
-            WATERMARK_BLOCK="0\n00:00:00,000 --> 00:00:05,000\n${WATERMARK_TEXT}\n\n"
+        # Not `head | grep -q`: once grep matches, head can die of SIGPIPE and
+        # pipefail would report the file as unmarked, stacking another cue.
+        case "$(head -n 15 "$SUB_FILE")" in
+            *"$WATERMARK_SEARCH"*) ALREADY_WATERMARKED=$((ALREADY_WATERMARKED + 1)) ;;
+            *)
+                # Writes WATERMARK_TEXT literally (like transcribe.sh), keeps the
+                # file's mode/owner and never leaves its temp file behind.
+                if ! prepend_watermark "$SUB_FILE"; then
+                    log "ERROR: Failed to watermark ${SUB_FILE}."
+                    exit 2
+                fi
 
-            if ! { printf '%b' "$WATERMARK_BLOCK"; cat "$SUB_FILE"; } > "${SUB_FILE}.tmp"; then
-                rm -f "${SUB_FILE}.tmp"
-                log "ERROR: Failed to prepare watermark for ${SUB_FILE}."
-                exit 2
-            fi
-            if ! grep -qF "$WATERMARK_SEARCH" "${SUB_FILE}.tmp" || ! grep -qF -- '-->' "${SUB_FILE}.tmp"; then
-                rm -f "${SUB_FILE}.tmp"
-                log "ERROR: Refusing invalid watermarked output for ${SUB_FILE}."
-                exit 2
-            fi
-            chmod --reference="$SUB_FILE" "${SUB_FILE}.tmp" || { rm -f "${SUB_FILE}.tmp"; log "ERROR: Could not preserve mode for ${SUB_FILE}."; exit 2; }
-            chown --reference="$SUB_FILE" "${SUB_FILE}.tmp" 2>/dev/null || true
-            mv -f "${SUB_FILE}.tmp" "$SUB_FILE" || { rm -f "${SUB_FILE}.tmp"; log "ERROR: Atomic watermark replacement failed for ${SUB_FILE}."; exit 2; }
-
-            log "INJECTED: $(basename "$SUB_FILE")"
-            WATERMARKS_ADDED=$((WATERMARKS_ADDED + 1))
-        else
-            ALREADY_WATERMARKED=$((ALREADY_WATERMARKED + 1))
-        fi
+                log "INJECTED: $(basename "$SUB_FILE")"
+                WATERMARKS_ADDED=$((WATERMARKS_ADDED + 1))
+                ;;
+        esac
 
     done < <(find "$DIR" -type f -name "*.srt" -print0 2>/dev/null)
 done

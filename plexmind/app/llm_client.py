@@ -164,7 +164,23 @@ def _extract_json(text: str) -> str:
     return text
 
 
-async def generate(prompt: str, system: str | None = None) -> str:
+def _is_model_output_error(exc: httpx.HTTPStatusError) -> bool:
+    """llama.cpp answers HTTP 500 when its chat parser rejects the model's output.
+
+    That is a bad sample ("does not match the expected peg-native format"),
+    not an outage, so it is resampled like unparseable JSON.
+    """
+    if exc.response.status_code != 500:
+        return False
+    try:
+        message = str(exc.response.json().get("error", {}).get("message", ""))
+    except (ValueError, AttributeError):
+        return False
+    return "peg-native" in message or "does not match the expected" in message
+
+
+async def generate(prompt: str, system: str | None = None, *,
+                   temperature: float = 0.2, seed: int | None = None) -> str:
     """Send a prompt to llama.cpp and return the raw text response."""
     messages = []
     if system:
@@ -175,10 +191,14 @@ async def generate(prompt: str, system: str | None = None) -> str:
         "model": LLAMA_CPP_MODEL,
         "messages": messages,
         "stream": False,
-        "temperature": 0.2,
+        "temperature": temperature,
         "top_p": 0.9,
         "max_tokens": MAX_TOKENS,
+        # Qwen3.5 thinks by default; the /no_think tag alone is not reliable.
+        "chat_template_kwargs": {"enable_thinking": False},
     }
+    if seed is not None:
+        payload["seed"] = seed
 
     async with llama_lifecycle.in_use(), httpx.AsyncClient(timeout=REQUEST_TIMEOUT) as client:
         resp = await client.post(f"{LLAMA_CPP_URL.rstrip('/')}/v1/chat/completions", json=payload)
@@ -193,17 +213,29 @@ async def generate_json(prompt: str, system: str | None = None) -> list | dict:
     Retries up to MAX_RETRIES times with a stricter reminder if parsing fails.
     """
     last_error: Exception | None = None
+    raw = ""
 
     for attempt in range(1, MAX_RETRIES + 2):
         retry_suffix = ""
+        temperature, seed = 0.2, None
         if attempt > 1:
             retry_suffix = (
                 '\n\nIMPORTANT: Your previous response could not be parsed as JSON. '
                 'Return ONLY a raw JSON array. Each element MUST be wrapped in curly braces {}. '
                 'Example: [{"title":"X","year":2024,"type":"movie","reason":"Because...","poster_url":null}]'
             )
+            # Resample (new seed, warmer) instead of replaying the same reply.
+            temperature, seed = round(min(0.2 + 0.1 * (attempt - 1), 0.5), 1), attempt
 
-        raw = await generate(prompt + retry_suffix, system=system)
+        try:
+            raw = await generate(prompt + retry_suffix, system=system, temperature=temperature, seed=seed)
+        except httpx.HTTPStatusError as exc:
+            if not _is_model_output_error(exc):
+                raise
+            log.warning("llama.cpp could not parse the model output on attempt %d/%d; resampling.",
+                        attempt, MAX_RETRIES + 1)
+            last_error = exc
+            continue
         extracted = _extract_json(raw)
         try:
             return json.loads(extracted)

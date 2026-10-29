@@ -1,10 +1,13 @@
 import importlib.util
+import io
 import os
 import subprocess
 import sys
 import tempfile
 import unittest
+from contextlib import redirect_stdout
 from pathlib import Path
+from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -22,6 +25,7 @@ ordering = load_module("ordering_under_test", ROOT / "scripts" / "fix_srt_orderi
 
 
 class SubtitleToolTests(unittest.TestCase):
+    @unittest.skipIf(os.name == "nt", "POSIX permission bits are not representable on Windows")
     def test_ordering_repair_is_atomic_backed_up_and_mode_preserving(self):
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
@@ -54,6 +58,37 @@ class SubtitleToolTests(unittest.TestCase):
             self.assertEqual(status, "error")
             self.assertIn("lossy", detail)
             self.assertEqual(subtitle.read_text(), original)
+
+    def _run_ordering_main(self, root, lock_held_env):
+        movies = root / "movies"
+        movies.mkdir()
+        (movies / "sample.es-MX.srt").write_text("1\n00:00:01,000 --> 00:00:02,000\nFirst\n", encoding="utf-8")
+        lock_file = root / "media.lock"
+        env = {"PLEXMIND_MEDIA_LOCK_HELD": "1"} if lock_held_env else {}
+        # The caller (translate.sh) holds the media lock on its own open file.
+        with lock_file.open("a+") as held, \
+                patch.object(ordering, "MEDIA_DIRS", [movies]), \
+                patch.object(ordering, "LOCK_FILE", lock_file), \
+                patch.dict(os.environ, env), \
+                redirect_stdout(io.StringIO()) as out:
+            if not lock_held_env:
+                os.environ.pop("PLEXMIND_MEDIA_LOCK_HELD", None)
+            ordering.fcntl.flock(held, ordering.fcntl.LOCK_EX | ordering.fcntl.LOCK_NB)
+            status = ordering.main()
+        return status, out.getvalue()
+
+    def test_ordering_runs_when_its_caller_holds_the_media_lock(self):
+        with tempfile.TemporaryDirectory() as raw:
+            status, output = self._run_ordering_main(Path(raw), lock_held_env=True)
+            self.assertEqual(status, 0, output)
+            self.assertIn("Found 1 translated SRT files", output)
+
+    @unittest.skipIf(os.name == "nt", "fcntl is a no-op shim on Windows")
+    def test_ordering_refuses_a_media_lock_held_elsewhere(self):
+        with tempfile.TemporaryDirectory() as raw:
+            status, output = self._run_ordering_main(Path(raw), lock_held_env=False)
+            self.assertEqual(status, 1)
+            self.assertIn("Another media mutation is running", output)
 
     def test_audit_repair_uses_configured_host_roots(self):
         with tempfile.TemporaryDirectory() as raw:

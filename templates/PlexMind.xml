@@ -61,13 +61,13 @@
       <Value>http://192.168.1.10:11435</Value>
       <Name>LLAMA_CPP_URL</Name>
       <Mode/>
-      <Description>llama.cpp API URL — use LAN IP of the host running llama.cpp, not localhost</Description>
+      <Description>llama.cpp API URL — use LAN IP of the host running llama.cpp, not localhost. The repository Compose llama.cpp binds 127.0.0.1 by default; set LLAMA_CPP_BIND_ADDRESS=0.0.0.0 in its .env for LAN access.</Description>
     </Variable>
     <Variable>
       <Value>http://192.168.1.10:9001/asr</Value>
       <Name>WHISPER_API_URL</Name>
       <Mode/>
-      <Description>Whisper ASR endpoint reachable from the PlexMind container</Description>
+      <Description>Whisper ASR endpoint reachable from the PlexMind container. The repository Compose Whisper binds 127.0.0.1 by default; set WHISPER_BIND_ADDRESS=0.0.0.0 in its .env for LAN access.</Description>
     </Variable>
     <Variable>
       <Value>qwen3.5-9b-q5_k_m</Value>

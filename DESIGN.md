@@ -108,8 +108,8 @@ Infrastructure
 | `maintenance.sh` | 121 | Audit, PGS cleanup, dedup, encoding repair, reports |
 | `lib.sh` | 800+ | Shared utilities: logging, locking, Docker socket API, SRT validation, hallucination cleaning |
 | `control_server.py` | ~200 | Optional Flask sidecar for script job HTTP API |
-| `fix_srt_ordering.py` | ~120 | SRT timestamp repair |
-| `watermark.sh` | ~80 | ASS-format watermark injection |
+| `fix_srt_ordering.py` | ~120 | SRT timestamp-order repair: given files, or a library sweep |
+| `watermark.sh` | ~80 | SRT watermark cue injection |
 
 ### API Endpoints (key ones)
 
@@ -237,21 +237,27 @@ Video file
 
 ```
 .en.srt file
-  → Split into CHUNK_SIZE=5 cue chunks
-  → Per chunk: build prompt with previous chunk as context
-  → llama.cpp chat → strip markdown → validate timestamps
-  → fix_srt_ordering.py
+  → Split into one chunk per cue; watermark cues are copied verbatim
+  → TRANSLATION_BATCH_CUES consecutive cues per request (JSON array, exact item count)
+  → Cues a batch does not deliver: one request per cue with the previous cue as context
+  → Validate each translation; rebuild the SRT envelope from the source cue
+  → Verify every source timestamp survived
+  → Final permissions, then publish <name>.<lang>.srt
+  → fix_srt_ordering.py on the files this run wrote
   → Unload model from VRAM on exit
 ```
+
+An unusable batch reply is logged as `Batch of cues X-Y unusable (reason=...)`, including llama.cpp's own error message (for example a `json_schema` it cannot convert), and saved as `DATA_DIR/translation-failures/<hash>-<lang>-batch-<NNNNN>.json`.
 
 ### Maintenance Modes (maintenance.sh)
 
 | Mode | Action |
 |---|---|
 | `audit` | Subtitle coverage report per library |
-| `pgs-cleanup` | Delete `.sup`, `.sub/.idx` image subtitle files |
-| `dedup` | Remove duplicate `.srt` files by cue count + size |
-| `encoding` | Convert non-UTF-8 SRTs |
+| `pgs-cleanup` | Move `.sup`, `.sub/.idx` image subtitles that an SRT of the same language and forced/SDH kind replaces to `DATA_DIR/quarantine/pgs` |
+| `dedup` | Move duplicate `.srt` files (by cue count + size) to `DATA_DIR/quarantine/dedup` |
+| `encoding` | Convert non-UTF-8 SRTs; originals kept in `DATA_DIR/quarantine/encoding-backups` |
+| `ordering` | Sort every `.es-MX.srt`/`.zh.srt` translation by start time; originals kept in `DATA_DIR/quarantine/srt-ordering-backups`. Run once after upgrading: translate.sh now checks only the files it writes |
 | `report` | Generate dashboard markdown from lifetime stats |
 | `all` | All of the above in sequence |
 
@@ -288,7 +294,7 @@ Video file
 - The scoped webhook secret is carried in the Plex webhook URL and can appear in proxy access logs
 - Browser session digests persist under the API data directory and survive restarts; sessions expire after the configured lifetime
 - Webhook LAN check is bypassable via reverse proxy
-- Destructive maintenance ops (`pgs-cleanup`, `dedup`) delete files without per-file confirmation
+- Destructive maintenance ops (`pgs-cleanup`, `dedup`) move files to `DATA_DIR/quarantine` without per-file confirmation; interrupted transcripts go to `DATA_DIR/quarantine/partials`
 
 ### Recommendations
 

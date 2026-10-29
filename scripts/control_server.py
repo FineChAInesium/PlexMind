@@ -29,31 +29,22 @@ JOBS = {
         "log": "/app/data/translation.log",
         "pid_file": "/tmp/translation_backfill.pid",
     },
-    "maintenance-audit": {
-        "cmd": ["/app/maintenance.sh", "audit"], "log": "/app/data/maintenance.log",
-        "pid_file": "/tmp/maintenance_audit.pid",
-    },
-    "maintenance-dupes": {
-        "cmd": ["/app/maintenance.sh", "dedup"], "log": "/app/data/maintenance.log",
-        "pid_file": "/tmp/maintenance_dupes.pid",
-    },
-    "maintenance-pgs": {
-        "cmd": ["/app/maintenance.sh", "pgs-cleanup"], "log": "/app/data/maintenance.log",
-        "pid_file": "/tmp/maintenance_pgs.pid",
-    },
-    "maintenance-all": {
-        "cmd": ["/app/maintenance.sh", "all"], "log": "/app/data/maintenance.log",
-        "pid_file": "/tmp/maintenance_all.pid",
-    },
+    "maintenance-audit": {"cmd": ["/app/maintenance.sh", "audit"], "log": "/app/data/maintenance.log"},
+    "maintenance-dupes": {"cmd": ["/app/maintenance.sh", "dedup"], "log": "/app/data/maintenance.log"},
+    "maintenance-pgs": {"cmd": ["/app/maintenance.sh", "pgs-cleanup"], "log": "/app/data/maintenance.log"},
+    "maintenance-all": {"cmd": ["/app/maintenance.sh", "all"], "log": "/app/data/maintenance.log"},
 }
 JOB_DETAILS = {
     "transcribe": ("Transcription", "subtitles", "transcribe", "Create missing SRT subtitles with Whisper ASR."),
     "translate": ("Translation", "subtitles", "translate", "Translate existing SRT subtitles with llama.cpp."),
     "maintenance-audit": ("Library Audit", "maintenance", "maintenance", "Scan media folders and write an audit report."),
-    "maintenance-dupes": ("Duplicate Cleanup", "maintenance", "maintenance", "Remove duplicate subtitle files."),
-    "maintenance-pgs": ("PGS Cleanup", "maintenance", "maintenance", "Delete image subtitles when matching SRT files exist."),
-    "maintenance-all": ("Full Maintenance", "maintenance", "maintenance", "Run encoding repair, duplicate and PGS cleanup, audit, and reporting."),
+    "maintenance-dupes": ("Duplicate Cleanup", "maintenance", "maintenance", "Quarantine duplicate subtitle files."),
+    "maintenance-pgs": ("PGS Cleanup", "maintenance", "maintenance", "Quarantine image subtitles that a matching SRT (same language and forced/SDH kind) replaces."),
+    "maintenance-all": ("Full Maintenance", "maintenance", "maintenance", "Run encoding and timestamp-order repair, duplicate and PGS cleanup, audit, and reporting."),
 }
+# 75 (EX_TEMPFAIL): lib.sh acquire_lock found another job holding a shared
+# lock and exited before doing any work.
+RETURNCODE_STATUS = {0: "completed", 2: "completed_with_errors", 75: "skipped_locked"}
 PROCS = {}
 LAST_RESULTS = {}
 CONTROL_TOKEN = os.environ.get("PLEXMIND_CONTROL_TOKEN", "")
@@ -133,15 +124,17 @@ def _proc(job):
     proc = PROCS.get(job)
     if proc and proc.poll() is not None:
         previous = _load_state().get(job) or {}
-        interrupted = previous.get("status") == "stopping" or proc.returncode < 0
+        if previous.get("status") == "stopping" or proc.returncode < 0:
+            status = "interrupted"
+        else:
+            status = RETURNCODE_STATUS.get(proc.returncode, "failed")
         LAST_RESULTS[job] = {"returncode": proc.returncode, "finished_at": time.time()}
-        _persist(job, status="interrupted" if interrupted else "completed_with_errors" if proc.returncode == 2 else "completed" if proc.returncode == 0 else "failed",
-                 returncode=proc.returncode, finished_at=time.time(), pid=None)
+        _persist(job, status=status, returncode=proc.returncode, finished_at=time.time(), pid=None)
         PROCS.pop(job, None)
-        pid_file = Path(JOBS[job]["pid_file"])
-        if pid_file.exists():
+        pid_file = JOBS[job].get("pid_file")
+        if pid_file and Path(pid_file).exists():
             try:
-                pid_file.unlink()
+                Path(pid_file).unlink()
             except OSError:
                 pass
         return None
@@ -149,8 +142,11 @@ def _proc(job):
 
 
 def _pid_from_file(job):
+    pid_file = JOBS[job].get("pid_file")
+    if not pid_file:
+        return None
     try:
-        raw = Path(JOBS[job]["pid_file"]).read_text().strip()
+        raw = Path(pid_file).read_text().strip()
         return int(raw) if raw else None
     except (OSError, ValueError):
         return None
@@ -178,12 +174,25 @@ def _running_pid(job):
     return None
 
 
-def _tail(path, lines):
-    p = Path(path)
-    if not p.exists():
-        return ""
-    data = p.read_text(errors="replace").splitlines()[-lines:]
-    return "\n".join(data)
+def _session_log_path(job):
+    # Mirror lib.sh prepare_log_file: on a day's first run the compatibility
+    # symlink still points at the last run's archive. The relink is best
+    # effort; the script relinks again once it rotates.
+    log_path = Path(JOBS[job]["log"])
+    archive_dir = Path(os.environ.get("LOG_ARCHIVE_DIR") or log_path.parent / "logs")
+    today_file = archive_dir / f"{log_path.name.removesuffix('.log')}-{time.strftime('%Y-%m-%d')}.log"
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    archive_dir.mkdir(parents=True, exist_ok=True)
+    if log_path.is_symlink() or not os.path.lexists(log_path):
+        tmp = log_path.with_name(f".{log_path.name}.tmp")
+        try:
+            if os.path.lexists(tmp):
+                tmp.unlink()
+            tmp.symlink_to(today_file)
+            os.replace(tmp, log_path)
+        except OSError:
+            pass
+    return today_file
 
 
 def _current_session_tail(path, job, lines):
@@ -264,8 +273,9 @@ def _status(job):
         "last_finished_at": last_result.get("finished_at"),
         "last_status": (
             "running" if pid else
-            last_result.get("status") if last_result.get("status") in ("interrupted", "completed_with_errors") else
+            last_result.get("status") if last_result.get("status") in ("interrupted", "completed_with_errors", "skipped_locked") else
             "completed_with_errors" if last_result.get("returncode") == 2 else
+            "skipped_locked" if last_result.get("returncode") == 75 else
             "failed" if last_result.get("returncode") not in (None, 0) else
             "completed" if last_result.get("returncode") == 0 else
             "never_run"
@@ -278,11 +288,13 @@ def _status(job):
 
 
 class Handler(BaseHTTPRequestHandler):
+    timeout = 30
+
     def _authorized(self):
         if not CONTROL_TOKEN:
             return False
         provided = self.headers.get("X-Control-Token", "")
-        return bool(provided) and secrets.compare_digest(provided, CONTROL_TOKEN)
+        return bool(provided) and secrets.compare_digest(provided.encode(), CONTROL_TOKEN.encode())
 
     def _json(self, code, payload):
         body = json.dumps(payload).encode()
@@ -299,8 +311,8 @@ class Handler(BaseHTTPRequestHandler):
             raise ValueError("Content-Length must be an integer") from exc
         if not length:
             return {}
-        if length > 65536:
-            raise ValueError("request body is too large")
+        if length < 0 or length > 65536:
+            raise ValueError("Content-Length must be 0-65536")
         try:
             payload = json.loads(self.rfile.read(length).decode())
         except (UnicodeDecodeError, json.JSONDecodeError) as exc:
@@ -359,20 +371,19 @@ class Handler(BaseHTTPRequestHandler):
         return self._json(404, {"detail": "not found"})
 
     def do_POST(self):
-        with MUTATION_LOCK:
-            return self._do_POST_locked()
-
-    def _do_POST_locked(self):
         if not self._authorized():
             return self._json(403, {"detail": "invalid control token"})
         _, parts = self._parts()
         if len(parts) != 3 or parts[0] != "jobs" or parts[1] not in JOBS:
             return self._json(404, {"detail": "not found"})
-        job, action = parts[1], parts[2]
         try:
             body = self._read_body()
         except ValueError as exc:
             return self._json(400, {"detail": str(exc)})
+        with MUTATION_LOCK:
+            return self._do_POST_locked(parts[1], parts[2], body)
+
+    def _do_POST_locked(self, job, action, body):
         request_key = self.headers.get("Idempotency-Key", "")
         if not request_key:
             return self._json(400, {"detail": "Idempotency-Key is required"})
@@ -390,8 +401,6 @@ class Handler(BaseHTTPRequestHandler):
             if pid:
                 return self._json(409, {**_status(job), "detail": "already running"})
             env = os.environ.copy()
-            job_token = os.urandom(24).hex()
-            env["PLEXMIND_JOB_TOKEN"] = job_token
             env["RUN_NOW"] = "1" if body.get("run_now", True) else "0"
             try:
                 max_runtime = int(body.get("max_runtime_minutes") or 0)
@@ -408,9 +417,7 @@ class Handler(BaseHTTPRequestHandler):
                 ):
                     return self._json(400, {"detail": "target_languages must be 1-10 comma-separated BCP-47 language tags"})
                 env["TARGET_LANGUAGES"] = ",".join(languages)
-            log_path = Path(JOBS[job]["log"])
-            log_path.parent.mkdir(parents=True, exist_ok=True)
-            with log_path.open("a", encoding="utf-8") as log:
+            with _session_log_path(job).open("a", encoding="utf-8") as log:
                 log.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} - Control API starting {job}; RUN_NOW={env.get('RUN_NOW','0')} MAX_RUNTIME_MINUTES={env.get('MAX_RUNTIME_MINUTES','0')}\n")
                 log.flush()
                 proc = subprocess.Popen(
@@ -424,7 +431,7 @@ class Handler(BaseHTTPRequestHandler):
             LAST_RESULTS.pop(job, None)
             _persist(
                 job, status="running", pid=proc.pid, start_ticks=_proc_start_ticks(proc.pid),
-                boot_id=_boot_id(), job_token=job_token, command=JOBS[job]["cmd"],
+                boot_id=_boot_id(), command=JOBS[job]["cmd"],
                 started_at=time.time(), returncode=None, finished_at=None,
             )
             payload = {**_status(job), "status": "started"}
