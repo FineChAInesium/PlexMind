@@ -1,7 +1,8 @@
 # Changelog
 
-## v0.8.21 - 2026-10-29
+## v0.8.22 - 2026-10-29
 
+- Rebase the API, scripts and broker images on `python:3.13.18-alpine`; the August base image failed the release vulnerability scan.
 - Translate up to `TRANSLATION_BATCH_CUES` (default 8) cues per llama.cpp request, falling back to per-cue requests for any cue the batch does not deliver.
 - Keep a cue in the source language instead of failing the whole file when it cannot be translated; fail only past `TRANSLATION_MAX_FALLBACK_PCT`. Skip the watermark cue and restate the target language for zh.
 - Retry llama.cpp "peg-native" output errors with a new seed instead of stopping the file.
@@ -13,6 +14,10 @@
 - Stop the whole job process group on stop, and stop Whisper before the cleanup report.
 - Bind llama.cpp and Whisper host ports to 127.0.0.1 by default (`LLAMA_CPP_BIND_ADDRESS`, `WHISPER_BIND_ADDRESS`); give Whisper its own tmp volume; add `no-new-privileges` to the scripts and broker services.
 - Fix watchlist ownership races, friend-account collection removal, session revocation, blocking Plex calls on the event loop, and permanent OMDb error caching.
+
+## v0.8.21 - 2026-10-29
+
+- Tagged but not published: the release image vulnerability scan failed on the old base image. Its changes ship in v0.8.22.
 
 ## v0.8.20 - 2026-08-15
 
