@@ -1,5 +1,19 @@
 # Changelog
 
+## v0.8.21 - 2026-10-29
+
+- Translate up to `TRANSLATION_BATCH_CUES` (default 8) cues per llama.cpp request, falling back to per-cue requests for any cue the batch does not deliver.
+- Keep a cue in the source language instead of failing the whole file when it cannot be translated; fail only past `TRANSLATION_MAX_FALLBACK_PCT`. Skip the watermark cue and restate the target language for zh.
+- Retry llama.cpp "peg-native" output errors with a new seed instead of stopping the file.
+- Start llama.cpp on demand and stop it after `LLAMA_IDLE_STOP_MINUTES` idle; `/health` reports it as standby; default `--parallel 1`.
+- Quarantine instead of deleting for PGS cleanup, leftover partial transcripts and encoding repair; stop forced/SDH SRTs counting as full replacements.
+- Fix watermarking and encoding detection under BusyBox, the transient-failure retry counter, and the SRT ordering fixer.
+- Redact secrets from access logs and TMDB/OMDb/TVDB errors; compare tokens as bytes.
+- Sample GPU load several times so batch runs do not back off on their own llama.cpp load; a held script lock no longer uses up the day's window.
+- Stop the whole job process group on stop, and stop Whisper before the cleanup report.
+- Bind llama.cpp and Whisper host ports to 127.0.0.1 by default (`LLAMA_CPP_BIND_ADDRESS`, `WHISPER_BIND_ADDRESS`); give Whisper its own tmp volume; add `no-new-privileges` to the scripts and broker services.
+- Fix watchlist ownership races, friend-account collection removal, session revocation, blocking Plex calls on the event loop, and permanent OMDb error caching.
+
 ## v0.8.20 - 2026-08-15
 
 - Route scheduled media work through the authenticated worker instead of the API-local runner.

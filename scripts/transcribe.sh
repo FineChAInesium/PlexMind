@@ -1,7 +1,7 @@
 #!/bin/bash
 # ==============================================================================
 # transcribe.sh — Library Transcription Backfill
-# Version: 0.8.20 — PlexMind release line
+# Version: 0.8.21 — PlexMind release line
 #
 # Scans Movies and TV directories, transcribes via Whisper ASR API.
 # Features: language profiling, bilingual VIP handling, hallucination
@@ -671,7 +671,7 @@ PYEOF
 # MAIN
 # ==============================================================================
 log "========================================================="
-log "Transcription Backfill v0.8.20 (containerized)"
+log "Transcription Backfill v0.8.21 (containerized)"
 log "Schedule: launched by PlexMind; max runtime: ${MAX_RUNTIME_MINUTES:-0}m; retention: ${LOG_RETENTION_DAYS}d; RUN_NOW=${RUN_NOW}"
 log "========================================================="
 check_dependencies curl ffmpeg ffprobe python3
