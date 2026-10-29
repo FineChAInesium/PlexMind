@@ -3,7 +3,7 @@
 **A local AI command center for Plex: taste-aware recommendations, Whisper subtitle backfills, llama.cpp translation, and library hygiene from one dashboard.**
 
 [![Live Demo](https://img.shields.io/badge/demo-interactive-blue?style=for-the-badge)](https://finechainesium.github.io/PlexMind/)
-[![Python 3.12](https://img.shields.io/badge/python-3.12-blue.svg)](https://www.python.org/)
+[![Python 3.13](https://img.shields.io/badge/python-3.13-blue.svg)](https://www.python.org/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-dashboard-green.svg)](https://fastapi.tiangolo.com/)
 [![llama.cpp](https://img.shields.io/badge/llama.cpp-local_LLM-orange.svg)](https://github.com/ggml-org/llama.cpp/)
 [![Whisper ASR](https://img.shields.io/badge/Whisper-ASR-purple.svg)](https://github.com/ahmetoner/whisper-asr-webservice)
@@ -51,6 +51,10 @@ Translate existing or newly generated SRTs with the same local LLM stack.
 - Uses llama.cpp OpenAI-compatible chat API through `LLAMA_CPP_API_URL`.
 - Defaults to `qwen3.5-9b-q5_k_m` in Docker Compose.
 - Targets `TARGET_LANGUAGES`, default `zh,es-MX`.
+- Sends up to `TRANSLATION_BATCH_CUES` (default 8) consecutive cues per request, so the model sees neighbouring lines and a file needs far fewer requests. Any cue a batch does not deliver is retried on its own.
+- A cue the model still cannot translate keeps its original line instead of failing the whole file; the file fails only if more than `TRANSLATION_MAX_FALLBACK_PCT` (default 10%) of its cues fall back.
+- Copies the PlexMind watermark cue verbatim instead of sending it to the model.
+- Saves progress after every cue, so a stopped or interrupted run resumes where it left off.
 - Uses the authenticated, allowlisted Docker broker when a dedicated sidecar must be started or stopped.
 
 ### 🧹 Library Maintenance
@@ -144,6 +148,14 @@ http://whisper:9000/asr
 ```
 
 The dashboard-owned script runner can start `whisper-asr-webservice` before transcription and stops it only when that job started it. The shared llama.cpp recommendation service stays externally managed by default.
+
+### On-demand llama.cpp
+
+To free the GPU when PlexMind is idle, set `LLAMA_ON_DEMAND=1`. Recommendations and translation then start the `llama-cpp` container through the Docker broker when they need it, and the recommendation worker stops it after `LLAMA_IDLE_STOP_MINUTES` (default 15) with no use. `/health` reports llama.cpp as `standby` while it is stopped, rather than as an outage.
+
+While llama.cpp is stopped it cannot answer the GPU-busy probe, so add an always-running GPU container (for example Plex) to `GPU_PROBE_CONTAINERS` and to the broker's `PLEXMIND_GPU_PROBE_CONTAINERS`. Otherwise scheduled jobs defer until llama.cpp is running.
+
+Compose starts llama.cpp with `--parallel ${LLAMA_CPP_PARALLEL:-1}`: PlexMind sends one request at a time, and each extra slot reserves more VRAM for its context.
 
 ---
 
@@ -303,6 +315,17 @@ when `WHISPER_MODEL` does not match a cached model artifact.
 | `WHISPER_BIND_ADDRESS` | Host address for that port. Set `0.0.0.0` if Bazarr or another LAN client uses Whisper. | `127.0.0.1` |
 | `WHISPER_TMP_DIR` | Whisper `/tmp` scratch space: a host directory, or blank for the `whisper-tmp` Docker volume. | `whisper-tmp` volume |
 | `TRANSLATION_BATCH_CUES` | Consecutive subtitle cues per llama.cpp translation request; `1` sends one cue per request. | `8` |
+| `TRANSLATION_MAX_FALLBACK_PCT` | Fail a file only if more than this percentage of its cues kept their original line. | `10` |
+| `CHUNK_RETRY_ATTEMPTS` | Attempts per cue before it keeps its original line (or, for llama.cpp errors, the file stops and resumes later). | `3` |
+| `FAILED_RETRY_HOURS` | Hours before a failed file is tried again. | `24` |
+| `LLAMA_ON_DEMAND` | Start llama.cpp when needed and stop it when idle. | `0` |
+| `LLAMA_IDLE_STOP_MINUTES` | Idle minutes before an on-demand llama.cpp is stopped. | `15` |
+| `LLAMA_STARTUP_TIMEOUT_SECONDS` | How long to wait for an on-demand llama.cpp to load its model. | `180` |
+| `LLAMA_CPP_PARALLEL` | llama.cpp request slots (`--parallel`). | `1` |
+| `GPU_PROBE_CONTAINERS` | Containers the GPU-busy check runs `nvidia-smi` in, in order. | `llama-cpp` |
+| `PLEXMIND_GPU_PROBE_CONTAINERS` | Extra containers the broker may run the fixed GPU probe in (broker only). | blank |
+| `PGS_CLEANUP_ALLOW_UNKNOWN` | Let PGS cleanup act on image subtitles with no language tag. | `0` |
+| `OMDB_NOT_FOUND_TTL_SECONDS` | How long an OMDb "not found" is cached. Errors and rate limits are never cached. | `604800` (7 days) |
 | `TARGET_LANGUAGES` | Comma-separated subtitle translation targets. | `zh,es-MX` |
 | `MAX_RECOMMENDATIONS` | Picks per user. | `10` |
 | `CANDIDATE_POOL_SIZE` | Prefiltered candidate count before LLM. | `40` |
@@ -329,6 +352,8 @@ when `WHISPER_MODEL` does not match a cached model artifact.
 | `TRANSCRIBE_START_HOUR` / `TRANSCRIBE_END_HOUR` | PlexMind launch window for transcription jobs. | `5` / `12` |
 | `TRANSLATE_START_HOUR` / `TRANSLATE_END_HOUR` | PlexMind launch window for translation jobs. | `23` / `3` |
 | `TZ` | Timezone used by the PlexMind script scheduler and logs. | `UTC` |
+
+`.env.example` documents the remaining settings (subtitle layout, watermark text, file permissions, transcription audio and Whisper upload limits).
 
 ---
 
@@ -380,7 +405,9 @@ http://<server>:8000/docs
 
 | Endpoint | Method | Purpose |
 |---|---|---|
-| `/health` | GET | API and LLM readiness. |
+| `/health` | GET | API and LLM readiness; `llm_state` is `ready`, `standby`, `starting` or `fault`. |
+| `/health/live` | GET | Liveness only. |
+| `/api/session` | POST/DELETE | Exchange the API key for a session cookie, or sign out. `DELETE ?everywhere=true` revokes every session. |
 | `/api/users` | GET | Plex users visible to the configured token. |
 | `/api/users/{id}/history` | GET | Deduplicated watch history. |
 | `/api/users/{id}/recommendations?force=true` | GET | Generate or fetch recommendations. |
@@ -475,10 +502,25 @@ Important details:
 - `/api/run-all`, recommendation generation, script starts, and webhooks are rate-limited.
 - `/webhook` rejects non-LAN clients, but reverse proxies can make internet traffic appear local. Use `PLEXMIND_API_KEY` if proxied.
 - Only the allowlisted Docker broker mounts `/var/run/docker.sock`; script jobs use its authenticated start/stop API.
-- Subtitle maintenance modes can delete `.sup`, `.sub/.idx`, and duplicate `.srt` files from mounted media folders. Run audits first and keep backups if your media library is not disposable.
+- Subtitle maintenance moves files it removes (duplicate `.srt`, replaced `.sup`/`.sub`/`.idx`, leftover partial transcripts, pre-repair encodings) into `/app/data/quarantine/` instead of deleting them. Purge that folder yourself once you are happy with the results, and run `maintenance.sh audit` first on a new library.
+- Secrets in query strings (the Plex webhook secret, API keys) are redacted from access logs and from TMDB/OMDb/TVDB error messages.
+- The scripts worker and Docker broker run with `no-new-privileges`.
 - The dashboard exchanges the API key for a persistent same-origin HttpOnly session cookie and never stores the raw key in browser storage. Session digests survive API restarts under the persistent data directory; the default lifetime is 30 days (`PLEXMIND_SESSION_DAYS`). Use HTTPS when accessing it through a reverse proxy.
 
 See [SECURITY.md](SECURITY.md) for the full security model and audit notes.
+
+---
+
+## ⬆️ Upgrading to v0.8.22
+
+See [CHANGELOG.md](CHANGELOG.md) for the full list. Things to check when upgrading from v0.8.20:
+
+- **llama.cpp and Whisper host ports now bind to `127.0.0.1`.** PlexMind reaches both over the Docker network, so nothing changes for it. If Bazarr or another LAN client uses them, set `LLAMA_CPP_BIND_ADDRESS` / `WHISPER_BIND_ADDRESS` to `0.0.0.0`.
+- **Translation batching is on by default** (`TRANSLATION_BATCH_CUES=8`). Set it to `1` for the old one-cue-per-request behaviour.
+- **Retry files that failed under the old validator.** Files marked failed by earlier versions are retried only after `FAILED_RETRY_HOURS`. To retry them on the next run, move the `*.es-MX.failed` / `*.zh.failed` markers out of the media folders.
+- **Rotate `PLEXMIND_WEBHOOK_SECRET` and the TMDB key** if your old container logs might have been read: earlier versions wrote both to the logs.
+- **Hand-made scripts worker containers** need `--stop-timeout=30` (see the Unraid section).
+- **Existing `.env` files:** blank `WHISPER_TMP_DIR` to stop mounting the host's `/tmp` into Whisper, and write `WATERMARK_TEXT='{\an8}<i>Brought to you by PlexMind</i>'` with single quotes and one backslash.
 
 ---
 
