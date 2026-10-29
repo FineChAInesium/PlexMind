@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Size each translation request's token budget to its cues instead of a flat 256 tokens per batched cue (768 per single cue), growing it on each retry. A reply that loops on sung lyrics now stops within seconds instead of running for about 40 s.
+
 ## v0.8.22 - 2026-10-29
 
 - Rebase the API, scripts and broker images on `python:3.13.18-alpine`; the August base image failed the release vulnerability scan.

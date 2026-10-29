@@ -223,6 +223,17 @@ is_model_output_error() {
     return 1
 }
 
+# --- TOKEN BUDGET ---
+# max_tokens for translating CHARS characters of English in ITEMS cues, scaled
+# by attempt and capped at CAP. A translation needs about one token per 3-4
+# source characters, so this leaves 3-4x headroom, while a reply that loops
+# (sung "pa-pa-pa..." lyrics) stops in seconds instead of running to the cap.
+token_budget() {
+    local chars="$1" items="$2" attempt="$3" cap="$4" budget
+    budget=$(( (16 + 24 * items + chars) * attempt ))
+    printf '%s' "$(( budget < cap ? budget : cap ))"
+}
+
 # --- TRANSLATE CHUNK ---
 # Appends the translated cue to $6. It never writes subtitle text to stdout,
 # so log() output (which echoes to stdout) cannot leak into the .srt.
@@ -260,7 +271,9 @@ translate_chunk() {
         if [ -n "$previous_dialogue" ]; then
             contextual_prompt+=$'\nThe previous source cue is context only. Do not translate or repeat it:\n'"${previous_dialogue}"
         fi
-        jq -n --arg model "$LLAMA_CPP_MODEL" --arg sys "$contextual_prompt" --arg user_msg "$user_message" --argjson max_tokens "$LLAMA_CPP_MAX_TOKENS" \
+        # Each retry gets a larger allowance, so a long cue cut short once can still succeed.
+        jq -n --arg model "$LLAMA_CPP_MODEL" --arg sys "$contextual_prompt" --arg user_msg "$user_message" \
+            --argjson max_tokens "$(token_budget "${#source_dialogue}" 1 "$attempt" "$LLAMA_CPP_MAX_TOKENS")" \
             --argjson temperature "$temperature" --argjson attempt "$attempt" \
             '{model: $model, stream: false, temperature: $temperature, max_tokens: $max_tokens, chat_template_kwargs: {enable_thinking: false}, messages: [{role: "system", content: $sys}, {role: "user", content: $user_msg}]}
              + (if $attempt > 1 then {seed: $attempt} else {} end)' \
@@ -363,11 +376,11 @@ translate_batch() {
         sys_prompt+=$'\nThe previous source cues are context only. Do not translate or repeat them:\n'"${context}"
     fi
     user_message=$(get_batch_user_message "$target_lang" "$count" "$sources")
-    # A cue needs a few dozen tokens; capping each cue's share keeps a
-    # runaway batch from generating for minutes.
+    # A batch that runs out of tokens is redone one cue per request, so the
+    # budget follows the batch's text (its JSON array) rather than a flat cap.
     per_cue_tokens=$(( LLAMA_CPP_MAX_TOKENS < 256 ? LLAMA_CPP_MAX_TOKENS : 256 ))
     jq -n --arg model "$LLAMA_CPP_MODEL" --arg sys "$sys_prompt" --arg user_msg "$user_message" \
-        --argjson max_tokens "$((per_cue_tokens * count))" --argjson count "$count" \
+        --argjson max_tokens "$(token_budget "${#sources}" "$count" 1 "$((per_cue_tokens * count))")" --argjson count "$count" \
         '{model: $model, stream: false, temperature: 0.1, max_tokens: $max_tokens, chat_template_kwargs: {enable_thinking: false},
           response_format: {type: "json_schema", json_schema: {name: "subtitle_translations",
               schema: {type: "array", items: {type: "string"}, minItems: $count, maxItems: $count}}},

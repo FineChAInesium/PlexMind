@@ -195,9 +195,13 @@ run_translate "$FIXTURE/movies/Batch" TARGET_LANGUAGES=es-MX TRANSLATION_BATCH_C
 [ "$(cat "$FIXTURE/count")" -eq 3 ] || fail "10 cues in batches of 4 took $(cat "$FIXTURE/count") requests"
 batch_translation "$FIXTURE/movies/Batch/Batch.en.srt" > "$FIXTURE/expected"
 diff -u "$FIXTURE/expected" "$FIXTURE/movies/Batch/Batch.es-MX.srt" >&2 || fail "batch output does not match the source cues"
-jq -se '[.[].min_items] == [4, 4, 2] and [.[].max_items] == [4, 4, 2] and [.[].max_tokens] == [1024, 1024, 512]
+jq -se '[.[].min_items] == [4, 4, 2] and [.[].max_items] == [4, 4, 2]
         and all(.[]; .thinking == false and .temperature == 0.1)' "$FIXTURE/batch-requests" >/dev/null \
   || fail "batch payloads do not pin the item count"
+# The token budget follows the batch's text: ample for ~34-character cues, far
+# below the old flat 256 tokens per cue that let a looping reply run for ~40 s.
+jq -se 'all(.[]; .max_tokens > 40 * .max_items and .max_tokens < 128 * .max_items)' "$FIXTURE/batch-requests" >/dev/null \
+  || fail "batch token budgets do not scale with the cues: $(jq -sc '[.[].max_tokens]' "$FIXTURE/batch-requests")"
 
 # A reply with the wrong item count is redone one cue per request; after three
 # unusable batches in a row the rest of the file is not batched.
@@ -254,6 +258,9 @@ grep -qF 'Cue 1 kept in the source language after 3 attempts (reason=unparseable
   || fail "peg-native fallback not logged"
 jq -se '[.[:3][] | .temperature] == [0.1, 0.3, 0.5] and [.[:3][] | .seed] == [null, 2, 3]' "$FIXTURE/peg-requests" >/dev/null \
   || fail "peg-native retries were not resampled"
+# A 33-character cue gets 73 tokens, and each retry a larger share, still under LLAMA_CPP_MAX_TOKENS.
+jq -se '[.[:3][] | .max_tokens] == [73, 146, 219]' "$FIXTURE/peg-requests" >/dev/null \
+  || fail "per-cue token budgets do not grow per attempt: $(jq -sc '[.[:3][] | .max_tokens]' "$FIXTURE/peg-requests")"
 
 # The same error on a batch sends its cues one per request, with no fallback.
 mkdir -p "$FIXTURE/movies/PegBatch"
