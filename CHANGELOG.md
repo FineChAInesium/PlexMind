@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.9.0 - Unreleased
+## v0.9.0 - 2026-11-01
 
 - Run PlexMind as one container: the dashboard/API, recommendation worker, scripts controller and Docker broker now share one `plexmind` image, started and restarted by `supervisor.py`. The `plexmind-scripts` and `plexmind-docker-broker` images are no longer published.
 - The scripts controller and Docker broker listen on 127.0.0.1 only; the API and recommendation worker still run as uid 1000.
