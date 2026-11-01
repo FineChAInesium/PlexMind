@@ -50,7 +50,7 @@ jobs:
       - uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5
         with:
           context: .
-          file: plexmind/Dockerfile
+          file: Dockerfile
           load: true
           tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.meta.outputs.version }}
 
@@ -64,75 +64,9 @@ jobs:
       - uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5
         with:
           context: .
-          file: plexmind/Dockerfile
+          file: Dockerfile
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          sbom: true
-          provenance: mode=max
-
-      - uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5
-        id: scripts-meta
-        with:
-          images: ${{ env.REGISTRY }}/finechainesium/plexmind-scripts
-          tags: |
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=raw,value=latest
-
-      - uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5
-        with:
-          context: scripts
-          file: scripts/Dockerfile
-          load: true
-          tags: ${{ env.REGISTRY }}/finechainesium/plexmind-scripts:${{ steps.scripts-meta.outputs.version }}
-
-      - uses: anchore/scan-action@1638637db639e0ade3258b51db49a9a137574c3e # v6
-        with:
-          image: ${{ env.REGISTRY }}/finechainesium/plexmind-scripts:${{ steps.scripts-meta.outputs.version }}
-          fail-build: true
-          severity-cutoff: high
-          only-fixed: true
-
-      - uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5
-        with:
-          context: scripts
-          file: scripts/Dockerfile
-          push: true
-          tags: ${{ steps.scripts-meta.outputs.tags }}
-          labels: ${{ steps.scripts-meta.outputs.labels }}
-          sbom: true
-          provenance: mode=max
-
-      - uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5
-        id: broker-meta
-        with:
-          images: ${{ env.REGISTRY }}/finechainesium/plexmind-docker-broker
-          tags: |
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=raw,value=latest
-
-      - uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5
-        with:
-          context: scripts
-          file: scripts/Dockerfile.broker
-          load: true
-          tags: ${{ env.REGISTRY }}/finechainesium/plexmind-docker-broker:${{ steps.broker-meta.outputs.version }}
-
-      - uses: anchore/scan-action@1638637db639e0ade3258b51db49a9a137574c3e # v6
-        with:
-          image: ${{ env.REGISTRY }}/finechainesium/plexmind-docker-broker:${{ steps.broker-meta.outputs.version }}
-          fail-build: true
-          severity-cutoff: high
-          only-fixed: true
-
-      - uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5
-        with:
-          context: scripts
-          file: scripts/Dockerfile.broker
-          push: true
-          tags: ${{ steps.broker-meta.outputs.tags }}
-          labels: ${{ steps.broker-meta.outputs.labels }}
           sbom: true
           provenance: mode=max

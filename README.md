@@ -93,8 +93,8 @@ PlexMind is a coordinator. The best results come from giving it the right local 
 | llama.cpp | Recommendations and subtitle translation | Compose default: `qwen3.5-9b-q5_k_m` |
 | Whisper ASR webservice | Speech-to-text subtitle generation | Digest-pinned in Compose and `.env.example` |
 | Whisper model | Transcription model loaded by the ASR service | `WHISPER_MODEL=turbo` |
-| FFmpeg / ffprobe | Audio extraction and media inspection | included in the PlexMind script images |
-| Docker broker | Allowlisted inspect/start/stop and fixed GPU telemetry | only the broker mounts `/var/run/docker.sock` |
+| FFmpeg / ffprobe | Audio extraction and media inspection | included in the PlexMind image |
+| Docker broker | Allowlisted inspect/start/stop and fixed GPU telemetry | runs inside the PlexMind container, on 127.0.0.1 only |
 | Optional metadata APIs | TMDB/TVDB/OMDB enrichment | leave blank if you want Plex-only metadata |
 
 ### llama.cpp Models
@@ -153,7 +153,7 @@ The dashboard-owned script runner can start `whisper-asr-webservice` before tran
 
 To free the GPU when PlexMind is idle, set `LLAMA_ON_DEMAND=1`. Recommendations and translation then start the `llama-cpp` container through the Docker broker when they need it, and the recommendation worker stops it after `LLAMA_IDLE_STOP_MINUTES` (default 15) with no use. `/health` reports llama.cpp as `standby` while it is stopped, rather than as an outage.
 
-While llama.cpp is stopped it cannot answer the GPU-busy probe, so add an always-running GPU container (for example Plex) to `GPU_PROBE_CONTAINERS` and to the broker's `PLEXMIND_GPU_PROBE_CONTAINERS`. Otherwise scheduled jobs defer until llama.cpp is running.
+While llama.cpp is stopped it cannot answer the GPU-busy probe, so add an always-running GPU container (for example Plex) to `GPU_PROBE_CONTAINERS` and to `PLEXMIND_GPU_PROBE_CONTAINERS`. Otherwise scheduled jobs defer until llama.cpp is running.
 
 Compose starts llama.cpp with `--parallel ${LLAMA_CPP_PARALLEL:-1}`: PlexMind sends one request at a time, and each extra slot reserves more VRAM for its context.
 
@@ -223,38 +223,39 @@ https://raw.githubusercontent.com/FineChAInesium/PlexMind/main/templates/PlexMin
 1. Open Community Applications.
 2. Use the template URL/folder option.
 3. Paste the template URL above.
-4. Deploy the repository Compose stack first; the safe API template intentionally does not recreate the worker and broker services.
-5. Set `PLEX_URL`, `PLEX_TOKEN`, and `LLAMA_CPP_URL`. The Compose llama.cpp and Whisper ports listen on `127.0.0.1` by default; to reach them by LAN IP from the template container (or from Bazarr), set `LLAMA_CPP_BIND_ADDRESS=0.0.0.0` / `WHISPER_BIND_ADDRESS=0.0.0.0` in the stack's `.env`.
-6. Generate four distinct `PLEXMIND_API_KEY`, `PLEXMIND_CONTROL_TOKEN`, `PLEXMIND_BROKER_TOKEN`, and `PLEXMIND_WEBHOOK_SECRET` values.
-7. Start the stack and open `http://[unraid-ip]:8000`.
+4. Set your Movies and TV Shows paths, `PLEX_URL`, `PLEX_TOKEN`, and `LLAMA_CPP_URL`. PlexMind must reach llama.cpp and Whisper: put all three containers on one custom Docker network and use the container names, or set `LLAMA_CPP_BIND_ADDRESS=0.0.0.0` / `WHISPER_BIND_ADDRESS=0.0.0.0` and use the LAN IP.
+5. Generate two distinct values for `PLEXMIND_API_KEY` and `PLEXMIND_WEBHOOK_SECRET` (`openssl rand -hex 32`).
+6. Start the container and open `http://[unraid-ip]:8000`.
 
-The API template mounts neither media nor the Docker socket. Media is writable only in the scripts worker; the raw Docker socket is mounted only in the narrow broker.
+PlexMind is one container. It mounts your media read-write and the Docker socket, which its built-in broker uses only to start and stop the Whisper and llama.cpp containers named in `PLEXMIND_ALLOWED_CONTAINERS`. Keep port 8000 on your LAN; do not forward it to the internet.
 
-If you create the scripts worker container by hand instead of from the Compose stack, add `--stop-timeout=30` to its Extra Parameters. Docker's default 10-second stop timeout is shorter than the worker's 20-second drain of running jobs, so stopping the container would otherwise kill a job before its cleanup (stopping Whisper, releasing llama.cpp) finishes. Compose sets this with `stop_grace_period: 30s`.
+The template sets `--stop-timeout=40` in Extra Parameters. Docker's default 10-second stop timeout is shorter than the 25 seconds PlexMind gives running jobs to finish their cleanup (stopping Whisper, releasing llama.cpp), so keep it if you create the container by hand. Compose sets this with `stop_grace_period: 40s`.
 
 ---
 
 ## 🏗️ Architecture
 
+One container runs four processes under `supervisor.py`, which restarts any that exit. Only the API listens beyond the container; the other three talk to each other on 127.0.0.1 with tokens generated at each start.
+
 ```text
 Browser Dashboard
-  -> FastAPI app (:8000)
+  -> FastAPI app (:8000, runs as uid 1000)
       -> Plex API for users, history, Watchlist, and playlists
       -> Durable recommendation queue and SSE status
-      -> Authenticated scripts worker for media jobs
-      -> Authenticated Docker broker for sidecar state and GPU telemetry
+      -> Scripts controller for media jobs (127.0.0.1:9010)
+      -> Docker broker for sidecar state and GPU telemetry (127.0.0.1:9020)
 
-Recommendation Worker
+Recommendation Worker (uid 1000)
   -> Claims durable jobs from /app/data
   -> llama.cpp for recommendation generation
   -> Plex API for one explicit transactional sync per user
 
-Scripts Worker
-  -> Owns writable /media/movies and /media/tv mounts
+Scripts Controller (root)
+  -> Runs the transcription, translation and maintenance scripts on /media/movies and /media/tv
   -> Serializes media/GPU writers with shared locks
 
-Docker Broker
-  -> Owns the only raw Docker socket mount
+Docker Broker (root)
+  -> The only process that uses the Docker socket
   -> Allows only named llama.cpp/Whisper inspect, start, stop, and fixed GPU probe
 
 AI Sidecars
@@ -323,7 +324,7 @@ when `WHISPER_MODEL` does not match a cached model artifact.
 | `LLAMA_STARTUP_TIMEOUT_SECONDS` | How long to wait for an on-demand llama.cpp to load its model. | `180` |
 | `LLAMA_CPP_PARALLEL` | llama.cpp request slots (`--parallel`). | `1` |
 | `GPU_PROBE_CONTAINERS` | Containers the GPU-busy check runs `nvidia-smi` in, in order. | `llama-cpp` |
-| `PLEXMIND_GPU_PROBE_CONTAINERS` | Extra containers the broker may run the fixed GPU probe in (broker only). | blank |
+| `PLEXMIND_GPU_PROBE_CONTAINERS` | Extra containers the broker may run the fixed GPU probe in. | blank |
 | `PGS_CLEANUP_ALLOW_UNKNOWN` | Let PGS cleanup act on image subtitles with no language tag. | `0` |
 | `OMDB_NOT_FOUND_TTL_SECONDS` | How long an OMDb "not found" is cached. Errors and rate limits are never cached. | `604800` (7 days) |
 | `TARGET_LANGUAGES` | Comma-separated subtitle translation targets. | `zh,es-MX` |
@@ -336,8 +337,8 @@ when `WHISPER_MODEL` does not match a cached model artifact.
 | `GPU_BUSY_SAMPLES` | Consecutive GPU readings that must all be at or above the threshold before work backs off. | `3` |
 | `GPU_SAMPLE_INTERVAL_SECONDS` | Seconds between those readings. | `5` |
 | `PLEXMIND_SCRIPT_MODE` | `remote` routes scripts through the authenticated worker. | `remote` |
-| `PLEXMIND_CONTROL_TOKEN` | Distinct API-to-scripts-worker secret. | required |
-| `PLEXMIND_BROKER_TOKEN` | Distinct client-to-Docker-broker secret. | required |
+| `PLEXMIND_CONTROL_TOKEN` | Internal API-to-scripts-controller secret. | generated at start |
+| `PLEXMIND_BROKER_TOKEN` | Internal client-to-Docker-broker secret. | generated at start |
 | `PLEXMIND_WEBHOOK_SECRET` | Distinct Plex webhook secret. | required |
 | `PLEXMIND_SECURE_COOKIE` | Mark the dashboard session cookie `Secure`. Set `1` only when the dashboard is reached over HTTPS. | `0` |
 | `SCRIPT_START_RATE_LIMIT` | Rate limit for script Start buttons. | `60/hour` |
@@ -379,10 +380,10 @@ For production image changes:
 
 ```bash
 docker compose build plexmind
-docker compose up -d plexmind recommendation-worker scripts docker-broker
+docker compose up -d plexmind
 ```
 
-For rapid local API iteration without rebuilding the image, bind-mount the app and run uvicorn with reload. Do not add media or Docker-socket mounts to the API:
+For rapid local API iteration without rebuilding the image, bind-mount the app and run uvicorn with reload on its own:
 
 ```yaml
 services:
@@ -450,29 +451,29 @@ The dashboard owns script jobs by default, but the shell scripts can still be ru
 
 ```bash
 # Transcribe missing subtitles during the configured window, default 05:00-12:00 local
-docker exec plexmind-scripts /app/transcribe.sh
+docker exec plexmind /app/transcribe.sh
 
 # Run transcription immediately with a 60-minute cap
-docker exec -e RUN_NOW=1 -e MAX_RUNTIME_MINUTES=60 plexmind-scripts /app/transcribe.sh
+docker exec -e RUN_NOW=1 -e MAX_RUNTIME_MINUTES=60 plexmind /app/transcribe.sh
 
 # Stop an active transcription run
-docker exec plexmind-scripts /app/stop-job.sh transcribe
+docker exec plexmind /app/stop-job.sh transcribe
 
 # Translate SRTs to TARGET_LANGUAGES during the configured window, default 23:00-03:00 local
-docker exec plexmind-scripts /app/translate.sh
+docker exec plexmind /app/translate.sh
 
 # Run translation immediately with a 60-minute cap
-docker exec -e RUN_NOW=1 -e MAX_RUNTIME_MINUTES=60 plexmind-scripts /app/translate.sh
+docker exec -e RUN_NOW=1 -e MAX_RUNTIME_MINUTES=60 plexmind /app/translate.sh
 
 # Stop an active translation run
-docker exec plexmind-scripts /app/stop-job.sh translate
+docker exec plexmind /app/stop-job.sh translate
 
 # Maintenance jobs
-docker exec plexmind-scripts /app/maintenance.sh audit
-docker exec plexmind-scripts /app/maintenance.sh dedup
-docker exec plexmind-scripts /app/maintenance.sh pgs-cleanup
-docker exec plexmind-scripts /app/maintenance.sh ordering
-docker exec plexmind-scripts /app/maintenance.sh all
+docker exec plexmind /app/maintenance.sh audit
+docker exec plexmind /app/maintenance.sh dedup
+docker exec plexmind /app/maintenance.sh pgs-cleanup
+docker exec plexmind /app/maintenance.sh ordering
+docker exec plexmind /app/maintenance.sh all
 ```
 
 `translate.sh` repairs timestamp order only in the translations it writes. After upgrading, run `maintenance.sh ordering` once to sweep older and Bazarr-supplied `.es-MX.srt`/`.zh.srt` files; originals are backed up under `/app/data/quarantine/srt-ordering-backups`. `maintenance.sh all` includes this step.
@@ -501,15 +502,24 @@ Important details:
 - API key comparison uses constant-time comparison.
 - `/api/run-all`, recommendation generation, script starts, and webhooks are rate-limited.
 - `/webhook` rejects non-LAN clients, but reverse proxies can make internet traffic appear local. Use `PLEXMIND_API_KEY` if proxied.
-- Only the allowlisted Docker broker mounts `/var/run/docker.sock`; script jobs use its authenticated start/stop API.
+- Only the Docker broker process uses `/var/run/docker.sock`, and only to inspect, start and stop the containers in `PLEXMIND_ALLOWED_CONTAINERS`. It listens on 127.0.0.1 inside the container. The socket is still mounted in the container the API runs in, so a compromised API could reach it: keep port 8000 off the internet.
 - Subtitle maintenance moves files it removes (duplicate `.srt`, replaced `.sup`/`.sub`/`.idx`, leftover partial transcripts, pre-repair encodings) into `/app/data/quarantine/` instead of deleting them. Purge that folder yourself once you are happy with the results, and run `maintenance.sh audit` first on a new library.
 - Secrets in query strings (the Plex webhook secret, API keys) are redacted from access logs and from TMDB/OMDb/TVDB error messages.
-- The scripts worker and Docker broker run with `no-new-privileges`.
+- The container runs with `no-new-privileges`; the API and recommendation worker run as uid 1000.
 - The dashboard exchanges the API key for a persistent same-origin HttpOnly session cookie and never stores the raw key in browser storage. Session digests survive API restarts under the persistent data directory; the default lifetime is 30 days (`PLEXMIND_SESSION_DAYS`). Use HTTPS when accessing it through a reverse proxy.
 
 See [SECURITY.md](SECURITY.md) for the full security model and audit notes.
 
 ---
+
+## ⬆️ Upgrading to v0.9.0
+
+v0.9.0 replaces the four PlexMind containers (`plexmind`, `plexmind-recommendation-worker`, `plexmind-scripts`, `plexmind-docker-broker`) with one `plexmind` container.
+
+- **Compose:** `docker compose up -d --remove-orphans` creates the new container and removes the old ones.
+- **Unraid template or hand-made containers:** stop and remove the four old containers, then create `plexmind` from the template with the old scripts worker's media mounts, the Docker socket and `--stop-timeout=40`. Keep the same `/app/data` folder; the queue, history and job state carry over.
+- **`PLEXMIND_CONTROL_TOKEN` and `PLEXMIND_BROKER_TOKEN`** are now optional and generated at each start. `SCRIPTS_API_URL` and `DOCKER_BROKER_URL` are ignored.
+- **`docker exec plexmind-scripts ...`** becomes `docker exec plexmind ...`.
 
 ## ⬆️ Upgrading to v0.8.22 or later
 
@@ -519,7 +529,7 @@ See [CHANGELOG.md](CHANGELOG.md) for the full list. Things to check when upgradi
 - **Translation batching is on by default** (`TRANSLATION_BATCH_CUES=8`). Set it to `1` for the old one-cue-per-request behaviour.
 - **Retry files that failed under the old validator.** Files marked failed by earlier versions are retried only after `FAILED_RETRY_HOURS`. To retry them on the next run, move the `*.es-MX.failed` / `*.zh.failed` markers out of the media folders.
 - **Rotate `PLEXMIND_WEBHOOK_SECRET` and the TMDB key** if your old container logs might have been read: earlier versions wrote both to the logs.
-- **Hand-made scripts worker containers** need `--stop-timeout=30` (see the Unraid section).
+- **Hand-made scripts worker containers** need `--stop-timeout=30`.
 - **Existing `.env` files:** blank `WHISPER_TMP_DIR` to stop mounting the host's `/tmp` into Whisper, and write `WATERMARK_TEXT='{\an8}<i>Brought to you by PlexMind</i>'` with single quotes and one backslash.
 
 ---

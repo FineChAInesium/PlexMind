@@ -148,7 +148,7 @@ limiter = Limiter(key_func=get_remote_address)
 app = FastAPI(
     title="PlexMind",
     description="llama.cpp powered movie/TV recommendation engine for Plex",
-    version="0.8.23",
+    version="0.9.0",
     lifespan=lifespan,
 )
 app.state.limiter = limiter
@@ -373,7 +373,7 @@ class ScriptJobRequest(BaseModel):
 
 
 _SCRIPT_JOB_NAMES = {"transcribe", "translate", "maintenance-audit", "maintenance-dupes", "maintenance-pgs", "maintenance-all"}
-_SCRIPTS_API_URL = os.getenv("SCRIPTS_API_URL", "http://scripts:9010").rstrip("/")
+_SCRIPTS_API_URL = os.getenv("SCRIPTS_API_URL", "http://127.0.0.1:9010").rstrip("/")
 _SCRIPT_MODE = os.getenv("PLEXMIND_SCRIPT_MODE", "remote").lower()
 
 

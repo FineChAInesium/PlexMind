@@ -25,7 +25,7 @@ ENV_MODEL="$(sed -n 's/^LLAMA_CPP_MODEL_ALIAS=//p' "$ROOT/.env" | tail -n1)"
 RUNTIME_MODEL="$(docker inspect plexmind --format '{{range .Config.Env}}{{println .}}{{end}}' 2>/dev/null | sed -n 's/^LLAMA_CPP_MODEL=//p' | tail -n1)"
 
 MAIN_MOUNTS="$(docker inspect plexmind --format '{{range .Mounts}}{{println .Destination}}{{end}}' 2>/dev/null || true)"
-SCRIPTS_MOUNTS="$(docker inspect plexmind-scripts --format '{{range .Mounts}}{{println .Destination}}{{end}}' 2>/dev/null || true)"
+SCRIPTS_MOUNTS="$(docker inspect plexmind --format '{{range .Mounts}}{{println .Destination}}{{end}}' 2>/dev/null || true)"
 
 SOURCE_MAIN_SHA="$(sha256sum "$ROOT/plexmind/app/main.py" 2>/dev/null | awk '{print $1}')"
 RUNTIME_MAIN_SHA="$(docker exec plexmind sha256sum /app/app/main.py 2>/dev/null | awk '{print $1}')"
@@ -55,10 +55,10 @@ RUNTIME_UI_SHA="$(docker exec plexmind sha256sum /app/app/static/index.html 2>/d
     [ "$SOURCE_UI_SHA" = "$RUNTIME_UI_SHA" ] && status PASS "Running GUI matches the workspace." || status FAIL "Running GUI differs from the workspace image."
     echo ""
     echo "### Mount and path contracts"
-    printf '%s\n' "$SCRIPTS_MOUNTS" | grep -qx '/media/movies' && status PASS "Scripts worker has the movies mount." || status FAIL "Scripts worker is missing /media/movies."
-    printf '%s\n' "$SCRIPTS_MOUNTS" | grep -qx '/media/tv' && status PASS "Scripts worker has the TV mount." || status FAIL "Scripts worker is missing /media/tv."
+    printf '%s\n' "$SCRIPTS_MOUNTS" | grep -qx '/media/movies' && status PASS "PlexMind has the movies mount." || status FAIL "PlexMind is missing /media/movies."
+    printf '%s\n' "$SCRIPTS_MOUNTS" | grep -qx '/media/tv' && status PASS "PlexMind has the TV mount." || status FAIL "PlexMind is missing /media/tv."
     if [ "$API_TOTAL" -ge $(( MEDIA_TOTAL * 9 / 10 )) ]; then
-        status PASS "PlexMind obtains media capacity through the least-privilege scripts API."
+        status PASS "PlexMind obtains media capacity through its scripts controller."
     elif printf '%s\n' "$MAIN_MOUNTS" | grep -qx '/media/movies'; then
         status PASS "PlexMind API has a media mount available for storage reporting."
     else

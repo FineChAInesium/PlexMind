@@ -178,4 +178,5 @@ class Handler(BaseHTTPRequestHandler):
 
 
 if __name__ == "__main__":
-    ThreadingHTTPServer(("0.0.0.0", 9020), Handler).serve_forever()
+    # Loopback only: the API, worker and scripts controller share its container.
+    ThreadingHTTPServer(("127.0.0.1", 9020), Handler).serve_forever()

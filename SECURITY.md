@@ -28,8 +28,8 @@ The following values are read from environment variables and are not returned by
 
 ### Authentication
 
-`PLEXMIND_API_KEY` is required. Startup also requires distinct control, broker,
-and webhook secrets.
+`PLEXMIND_API_KEY` and a distinct `PLEXMIND_WEBHOOK_SECRET` are required. The
+internal control and broker tokens are generated at each start unless set.
 
 Non-health endpoints require either:
 
@@ -95,16 +95,32 @@ In Docker Compose:
   `WHISPER_BIND_ADDRESS` (default `127.0.0.1`); PlexMind uses `http://whisper:9000/asr`.
   Set `0.0.0.0` only if Bazarr or another LAN client needs the Whisper API.
 
-The Unraid template expects an existing llama.cpp endpoint via `LLAMA_CPP_URL`, typically on the LAN.
-If that endpoint is the Compose llama.cpp service, its host port must be bound to a LAN-reachable address.
+The scripts controller (`127.0.0.1:9010`) and the Docker broker (`127.0.0.1:9020`)
+listen on loopback inside the PlexMind container and are not published.
+
+The Unraid template expects an existing llama.cpp endpoint via `LLAMA_CPP_URL`: the
+container name on a shared custom Docker network, or a LAN address if its host port
+is bound to one.
 
 ### Containers and privileges
 
-- The PlexMind API image runs as UID `1000`.
-- The scripts image no longer installs Docker CLI or mounts `/var/run/docker.sock`.
-- The scripts worker and Docker broker run with `no-new-privileges`. The scripts
-  worker keeps its default capabilities because `SUBTITLE_UID`/`SUBTITLE_GID` need `chown`.
-- Media folders are mounted into the scripts container so transcription, translation, and maintenance can write subtitle files.
+PlexMind is one container. `supervisor.py` runs four processes in it:
+
+- The API and the recommendation worker run as UID `1000`.
+- The scripts controller and the Docker broker run as root. The scripts need
+  write access to the media folders, and `chown` for `SUBTITLE_UID`/`SUBTITLE_GID`,
+  so the container keeps Docker's default capabilities.
+- The container mounts the media folders read-write and `/var/run/docker.sock`. Only
+  the broker uses the socket, and only for the containers in `PLEXMIND_ALLOWED_CONTAINERS`
+  (start, stop, inspect) and the fixed GPU probe. The Docker CLI is not installed.
+- The container runs with `no-new-privileges`.
+
+Trade-off: earlier releases split these into four containers so that the
+internet-facing risk (the API) never shared a container with the Docker socket or
+writable media. In one container, a remote-code-execution bug in the API, or a
+compromised dependency, could reach both. Docker socket access is effectively root
+on the host. Keep port 8000 on a trusted LAN, do not publish it through a reverse
+proxy or port forward, and set `PLEXMIND_API_KEY`.
 
 ### Destructive maintenance operations
 

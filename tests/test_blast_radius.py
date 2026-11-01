@@ -13,11 +13,16 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class BlastRadiusTests(unittest.TestCase):
-    def test_broker_exposes_a_container_healthcheck(self):
-        source = (ROOT / "scripts/docker_broker.py").read_text()
-        dockerfile = (ROOT / "scripts/Dockerfile.broker").read_text()
-        self.assertIn('urlparse(self.path).path == "/health"', source)
+    def test_container_healthcheck_and_loopback_only_internal_services(self):
+        broker = (ROOT / "scripts/docker_broker.py").read_text()
+        controller = (ROOT / "scripts/control_server.py").read_text()
+        dockerfile = (ROOT / "Dockerfile").read_text()
+        self.assertIn('urlparse(self.path).path == "/health"', broker)
         self.assertIn("HEALTHCHECK", dockerfile)
+        # Only the API listens beyond the container; the broker holds the Docker socket.
+        self.assertIn('ThreadingHTTPServer(("127.0.0.1", 9020)', broker)
+        self.assertIn('ThreadingHTTPServer(("127.0.0.1", port)', controller)
+        self.assertNotIn('"0.0.0.0"', broker + controller)
     def test_remote_dispatch_has_one_upstream_request(self):
         source = (ROOT / "plexmind/app/main.py").read_text()
         block = source.split("async def _scripts_request", 1)[1].split("# ---------------------------------------------------------------------------", 1)[0]
@@ -60,16 +65,16 @@ class BlastRadiusTests(unittest.TestCase):
         setup = (ROOT / "setup.sh").read_text()
         self.assertNotIn("linuxserver/ffmpeg:latest", compose)
         self.assertNotIn("openai-whisper-asr-webservice:latest", setup)
-        for dockerfile in (ROOT / "plexmind/Dockerfile", ROOT / "scripts/Dockerfile", ROOT / "scripts/Dockerfile.broker"):
-            first = dockerfile.read_text().splitlines()[0]
-            self.assertIn("@sha256:", first)
+        first = (ROOT / "Dockerfile").read_text().splitlines()[0]
+        self.assertIn("@sha256:", first)
 
-    def test_release_publishes_all_custom_images(self):
+    def test_release_builds_scans_and_publishes_the_one_image(self):
         workflow = (ROOT / ".github/workflows/docker-publish.yml").read_text()
-        self.assertIn("plexmind-scripts", workflow)
-        self.assertIn("plexmind-docker-broker", workflow)
-        self.assertEqual(workflow.count("docker/build-push-action@"), 6)
-        self.assertEqual(workflow.count("anchore/scan-action@"), 3)
+        self.assertNotIn("plexmind-scripts", workflow)
+        self.assertNotIn("plexmind-docker-broker", workflow)
+        self.assertEqual(workflow.count("file: Dockerfile"), 2)
+        self.assertEqual(workflow.count("docker/build-push-action@"), 2)
+        self.assertEqual(workflow.count("anchore/scan-action@"), 1)
 
     def test_broker_exposes_only_fixed_gpu_probe(self):
         source = (ROOT / "scripts/docker_broker.py").read_text()
@@ -79,7 +84,7 @@ class BlastRadiusTests(unittest.TestCase):
 
     def test_api_compose_has_no_gpu_device_request(self):
         compose = (ROOT / "docker-compose.yml").read_text()
-        api_block = compose.split("  plexmind:\n", 1)[1].split("  recommendation-worker:\n", 1)[0]
+        api_block = compose.split("\n  plexmind:\n", 1)[1].split("\n  ffmpeg:\n", 1)[0]
         self.assertNotIn("capabilities: [gpu]", api_block)
 
     def test_recommendation_generation_does_not_implicitly_sync(self):

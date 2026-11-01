@@ -1,22 +1,5 @@
-# PlexMind release line: v0.8.23
+# PlexMind release line: v0.9.0
 services:
-  docker-broker:
-    build:
-      context: ./scripts
-      dockerfile: Dockerfile.broker
-    image: plexmind-docker-broker:0.8.23
-    restart: unless-stopped
-    read_only: true
-    security_opt:
-      - no-new-privileges:true
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
-    environment:
-      - PLEXMIND_BROKER_TOKEN=${PLEXMIND_BROKER_TOKEN}
-      - PLEXMIND_ALLOWED_CONTAINERS=${WHISPER_CONTAINER_NAME:-whisper-asr-webservice},${LLAMA_CPP_CONTAINER_NAME:-llama-cpp}
-      # GPU-probe-only containers: the broker may run its fixed nvidia-smi query
-      # in these, nothing else (no start/stop/inspect).
-      - PLEXMIND_GPU_PROBE_CONTAINERS=${PLEXMIND_GPU_PROBE_CONTAINERS:-}
   # ---------------------------------------------------------------------------
   # llama.cpp — Local LLM server (recommendations + translation)
   # ---------------------------------------------------------------------------
@@ -85,24 +68,37 @@ services:
     profiles: ["whisper"]
 
   # ---------------------------------------------------------------------------
-  # PlexMind — AI recommendation engine (FastAPI)
+  # PlexMind — dashboard/API, recommendation worker, subtitle scripts and the
+  # Docker broker in one container (scripts/supervisor.py runs all four).
   # ---------------------------------------------------------------------------
   plexmind:
     build:
       context: .
-      dockerfile: plexmind/Dockerfile
-    image: plexmind:0.8.23
+      dockerfile: Dockerfile
+    image: plexmind:0.9.0
     container_name: plexmind
     restart: unless-stopped
+    # Must exceed supervisor.py's 25 s drain plus 5 s for the broker, so the
+    # scripts' cleanup traps (Whisper stop, llama.cpp lease) finish before SIGKILL.
+    stop_grace_period: 40s
+    # Default capabilities stay: SUBTITLE_UID/GID ownership changes need CAP_CHOWN.
+    security_opt:
+      - no-new-privileges:true
     ports:
-      - "8000:8000"
+      - "${PLEXMIND_BIND_ADDRESS:-0.0.0.0}:${PLEXMIND_HOST_PORT:-8000}:8000"
     labels:
       net.unraid.docker.managed: "dockerman"
       net.unraid.docker.webui: "http://[IP]:[PORT:8000]/"
       net.unraid.docker.icon: "https://raw.githubusercontent.com/FineChAInesium/PlexMind/main/templates/icon.png"
+    env_file:
+      - .env
     volumes:
       - ./data:/app/data
+      - "${MOVIES_HOST_PATH:-${MOVIES_DIR:-/mnt/data/media/Movies}}:/media/movies"
+      - "${TV_HOST_PATH:-${TV_DIR:-/mnt/data/media/TV Shows}}:/media/tv"
       - "${WHISPER_CACHE_DIR:-./data/whisper-cache}:/whisper-cache:ro"
+      # The broker inside starts/stops only the Whisper and llama.cpp containers.
+      - /var/run/docker.sock:/var/run/docker.sock
     environment:
       - DATA_DIR=/app/data
       - PLEX_URL=${PLEX_URL:-http://host.docker.internal:32400}
@@ -111,16 +107,26 @@ services:
       - PLEXMIND_SESSION_DAYS=${PLEXMIND_SESSION_DAYS:-30}
       - PLEXMIND_SECURE_COOKIE=${PLEXMIND_SECURE_COOKIE:-0}
       - PLEXMIND_WEBHOOK_SECRET=${PLEXMIND_WEBHOOK_SECRET}
-      - PLEXMIND_CONTROL_TOKEN=${PLEXMIND_CONTROL_TOKEN}
-      - DOCKER_BROKER_URL=http://docker-broker:9020
-      - PLEXMIND_BROKER_TOKEN=${PLEXMIND_BROKER_TOKEN}
+      # Internal tokens; generated at each start when left empty.
+      - PLEXMIND_CONTROL_TOKEN=${PLEXMIND_CONTROL_TOKEN:-}
+      - PLEXMIND_BROKER_TOKEN=${PLEXMIND_BROKER_TOKEN:-}
+      - PLEXMIND_ALLOWED_CONTAINERS=${WHISPER_CONTAINER_NAME:-whisper-asr-webservice},${LLAMA_CPP_CONTAINER_NAME:-llama-cpp}
+      # GPU-probe-only containers: the broker may run its fixed nvidia-smi query
+      # in these, nothing else (no start/stop/inspect).
+      - PLEXMIND_GPU_PROBE_CONTAINERS=${PLEXMIND_GPU_PROBE_CONTAINERS:-}
       - CORS_ORIGINS=${CORS_ORIGINS:-}
       - TMDB_API_KEY=${TMDB_API_KEY:-}
       - TVDB_API_KEY=${TVDB_API_KEY:-}
       - OMDB_API_KEY=${OMDB_API_KEY:-}
       - LLAMA_CPP_URL=${LLAMA_CPP_URL:-http://llama-cpp:8080}
+      - LLAMA_CPP_API_URL=${LLAMA_CPP_API_URL:-}
       - LLAMA_CPP_MODEL=${LLAMA_CPP_MODEL_ALIAS:-qwen3.5-9b-q5_k_m}
       - LLAMA_CPP_MAX_TOKENS=${LLAMA_CPP_MAX_TOKENS:-768}
+      - LLAMA_CPP_CONTAINER_NAME=${LLAMA_CPP_CONTAINER_NAME:-llama-cpp}
+      - MANAGE_LLAMA_CPP_CONTAINER=${MANAGE_LLAMA_CPP_CONTAINER:-0}
+      - LLAMA_ON_DEMAND=${LLAMA_ON_DEMAND:-0}
+      - LLAMA_IDLE_STOP_MINUTES=${LLAMA_IDLE_STOP_MINUTES:-15}
+      - LLAMA_STARTUP_TIMEOUT_SECONDS=${LLAMA_STARTUP_TIMEOUT_SECONDS:-180}
       - MAX_RECOMMENDATIONS=${MAX_RECOMMENDATIONS:-10}
       - CANDIDATE_POOL_SIZE=${CANDIDATE_POOL_SIZE:-40}
       - ENRICH_PROVIDER_TIMEOUT_SECONDS=${ENRICH_PROVIDER_TIMEOUT_SECONDS:-45}
@@ -131,13 +137,14 @@ services:
       - GPU_BACKOFF_MINUTES=${GPU_BACKOFF_MINUTES:-30}
       - GPU_BUSY_SAMPLES=${GPU_BUSY_SAMPLES:-3}
       - GPU_SAMPLE_INTERVAL_SECONDS=${GPU_SAMPLE_INTERVAL_SECONDS:-5}
+      - GPU_PROBE_CONTAINERS=${GPU_PROBE_CONTAINERS:-llama-cpp}
       - FEEDBACK_FILE=/app/data/feedback.json
       - SHOWN_RECS_FILE=/app/data/shown_recs.json
       - WATCHLIST_TRACK_FILE=/app/data/watchlist_track.json
       - REC_HISTORY_FILE=/app/data/recommendation_history.json
-      - PLEXMIND_SCRIPT_MODE=${PLEXMIND_SCRIPT_MODE:-remote}
-      - SCRIPTS_API_URL=${SCRIPTS_API_URL:-http://scripts:9010}
+      - PLEXMIND_SCRIPT_MODE=remote
       - SCRIPT_START_RATE_LIMIT=${SCRIPT_START_RATE_LIMIT:-60/hour}
+      - SCRIPTS_API_PORT=9010
       - WHISPER_API_URL=${WHISPER_API_URL:-http://whisper:9000/asr}
       - WHISPER_HOST_PORT=${WHISPER_HOST_PORT:-9001}
       - WHISPER_CONTAINER_NAME=${WHISPER_CONTAINER_NAME:-whisper-asr-webservice}
@@ -145,119 +152,11 @@ services:
       - WHISPER_MODEL_CACHE_DIR=/whisper-cache
       - START_SIDECAR_CONTAINERS=${START_SIDECAR_CONTAINERS:-1}
       - STOP_SIDECAR_CONTAINERS=${STOP_SIDECAR_CONTAINERS:-1}
-      - TRANSCRIBE_AUDIO_EXT=${TRANSCRIBE_AUDIO_EXT:-mp3}
-      - TRANSCRIBE_AUDIO_CODEC=${TRANSCRIBE_AUDIO_CODEC:-libmp3lame}
-      - TRANSCRIBE_AUDIO_BITRATE=${TRANSCRIBE_AUDIO_BITRATE:-64k}
-      - WHISPER_UPLOAD_SPLIT_MB=${WHISPER_UPLOAD_SPLIT_MB:-50}
-      - WHISPER_SEGMENT_SECONDS=${WHISPER_SEGMENT_SECONDS:-600}
-      - SUBTITLE_MAX_LINE_CHARS=${SUBTITLE_MAX_LINE_CHARS:-42}
-      - SUBTITLE_MAX_LINES=${SUBTITLE_MAX_LINES:-2}
-      - SUBTITLE_MAX_CPS=${SUBTITLE_MAX_CPS:-20}
-      - SUBTITLE_MIN_CUE_SECONDS=${SUBTITLE_MIN_CUE_SECONDS:-1.0}
-      - SUBTITLE_MAX_CUE_SECONDS=${SUBTITLE_MAX_CUE_SECONDS:-7.0}
-      - SUBTITLE_MIN_GAP_SECONDS=${SUBTITLE_MIN_GAP_SECONDS:-0.04}
-      - LLAMA_CPP_API_URL=${LLAMA_CPP_API_URL:-}
-      - LLAMA_CPP_CONTAINER_NAME=${LLAMA_CPP_CONTAINER_NAME:-llama-cpp}
-      - MANAGE_LLAMA_CPP_CONTAINER=${MANAGE_LLAMA_CPP_CONTAINER:-0}
-      - LLAMA_ON_DEMAND=${LLAMA_ON_DEMAND:-0}
-      - LLAMA_STARTUP_TIMEOUT_SECONDS=${LLAMA_STARTUP_TIMEOUT_SECONDS:-180}
-      - GPU_PROBE_CONTAINERS=${GPU_PROBE_CONTAINERS:-llama-cpp}
-      - MOVIE_DIR=/media/movies
-      - MOVIES_DIR=/media/movies
-      - TV_DIR=/media/tv
-      - DATA_DIR=/app/data
-      - STORAGE_PATH=/media/movies
-      - ALLOW_EMPTY_MEDIA_ROOTS=${ALLOW_EMPTY_MEDIA_ROOTS:-0}
-      - TARGET_LANGUAGES=${TARGET_LANGUAGES:-zh,es-MX}
-      - TRANSCRIBE_START_HOUR=${TRANSCRIBE_START_HOUR:-5}
-      - TRANSCRIBE_END_HOUR=${TRANSCRIBE_END_HOUR:-12}
-      - TRANSLATE_START_HOUR=${TRANSLATE_START_HOUR:-23}
-      - TRANSLATE_END_HOUR=${TRANSLATE_END_HOUR:-3}
-      - LOG_RETENTION_DAYS=${LOG_RETENTION_DAYS:-7}
-      - TZ=${TZ:-UTC}
-    depends_on:
-      - llama-cpp
-      - scripts
-      - recommendation-worker
-
-  recommendation-worker:
-    build:
-      context: .
-      dockerfile: plexmind/Dockerfile
-    image: plexmind:0.8.23
-    restart: unless-stopped
-    stop_grace_period: 6h
-    command: ["python", "-m", "app.recommendation_worker"]
-    env_file:
-      - .env
-    volumes:
-      - ./data:/app/data
-    environment:
-      - DATA_DIR=/app/data
-      - PLEX_URL=${PLEX_URL:-http://host.docker.internal:32400}
-      - LLAMA_CPP_URL=${LLAMA_CPP_URL:-http://llama-cpp:8080}
-      - LLAMA_CPP_MODEL=${LLAMA_CPP_MODEL_ALIAS:-qwen3.5-9b-q5_k_m}
-      - TMDB_API_KEY=${TMDB_API_KEY:-}
-      - TVDB_API_KEY=${TVDB_API_KEY:-}
-      - OMDB_API_KEY=${OMDB_API_KEY:-}
-      - FEEDBACK_FILE=/app/data/feedback.json
-      - SHOWN_RECS_FILE=/app/data/shown_recs.json
-      - WATCHLIST_TRACK_FILE=/app/data/watchlist_track.json
-      - REC_HISTORY_FILE=/app/data/recommendation_history.json
-      - DOCKER_BROKER_URL=http://docker-broker:9020
-      - PLEXMIND_BROKER_TOKEN=${PLEXMIND_BROKER_TOKEN}
-      - GPU_THRESHOLD_PCT=${GPU_THRESHOLD_PCT:-30}
-      - GPU_BACKOFF_MINUTES=${GPU_BACKOFF_MINUTES:-30}
-      - GPU_BUSY_SAMPLES=${GPU_BUSY_SAMPLES:-3}
-      - GPU_SAMPLE_INTERVAL_SECONDS=${GPU_SAMPLE_INTERVAL_SECONDS:-5}
-      - GPU_PROBE_CONTAINERS=${GPU_PROBE_CONTAINERS:-llama-cpp}
-      - LLAMA_CPP_CONTAINER_NAME=${LLAMA_CPP_CONTAINER_NAME:-llama-cpp}
-      - LLAMA_ON_DEMAND=${LLAMA_ON_DEMAND:-0}
-      - LLAMA_IDLE_STOP_MINUTES=${LLAMA_IDLE_STOP_MINUTES:-15}
-      - LLAMA_STARTUP_TIMEOUT_SECONDS=${LLAMA_STARTUP_TIMEOUT_SECONDS:-180}
-      - TZ=${TZ:-UTC}
-    depends_on:
-      - llama-cpp
-      - docker-broker
-
-  # ---------------------------------------------------------------------------
-  # Scripts — Transcription, translation, maintenance pipeline
-  # ---------------------------------------------------------------------------
-  scripts:
-    build:
-      context: ./scripts
-      dockerfile: Dockerfile
-    image: plexmind-scripts:0.8.23
-    container_name: plexmind-scripts
-    restart: unless-stopped
-    # Must exceed control_server's 20 s child-job drain, so cleanup traps
-    # (Whisper stop, llama.cpp lease) finish before Docker sends SIGKILL.
-    stop_grace_period: 30s
-    # Default capabilities stay: SUBTITLE_UID/GID ownership changes need CAP_CHOWN.
-    security_opt:
-      - no-new-privileges:true
-    volumes:
-      - "${MOVIES_HOST_PATH:-${MOVIES_DIR:-/mnt/data/media/Movies}}:/media/movies"
-      - "${TV_HOST_PATH:-${TV_DIR:-/mnt/data/media/TV Shows}}:/media/tv"
-      - ./data:/app/data
-    environment:
-      - WHISPER_API_URL=${WHISPER_API_URL:-http://whisper:9000/asr}
-      - WHISPER_HOST_PORT=${WHISPER_HOST_PORT:-9001}
-      - WHISPER_CONTAINER_NAME=${WHISPER_CONTAINER_NAME:-whisper-asr-webservice}
-      - LLAMA_CPP_URL=${LLAMA_CPP_URL:-http://llama-cpp:8080}
-      - LLAMA_CPP_API_URL=${LLAMA_CPP_API_URL:-}
-      - LLAMA_CPP_CONTAINER_NAME=${LLAMA_CPP_CONTAINER_NAME:-llama-cpp}
-      - MANAGE_LLAMA_CPP_CONTAINER=${MANAGE_LLAMA_CPP_CONTAINER:-0}
-      - LLAMA_ON_DEMAND=${LLAMA_ON_DEMAND:-0}
-      - LLAMA_CPP_MODEL=${LLAMA_CPP_MODEL_ALIAS:-qwen3.5-9b-q5_k_m}
-      - LLAMA_CPP_MAX_TOKENS=${LLAMA_CPP_MAX_TOKENS:-768}
-      - SCRIPTS_API_URL=${SCRIPTS_API_URL:-http://scripts:9010}
       - CHUNK_RETRY_ATTEMPTS=${CHUNK_RETRY_ATTEMPTS:-3}
       - CHUNK_RETRY_DELAY_SECONDS=${CHUNK_RETRY_DELAY_SECONDS:-2}
       - FAILED_RETRY_HOURS=${FAILED_RETRY_HOURS:-24}
       - TRANSLATION_MAX_FALLBACK_PCT=${TRANSLATION_MAX_FALLBACK_PCT:-10}
       - TRANSLATION_BATCH_CUES=${TRANSLATION_BATCH_CUES:-8}
-      - WHISPER_MODEL=${WHISPER_MODEL:-turbo}
       - TRANSCRIBE_AUDIO_EXT=${TRANSCRIBE_AUDIO_EXT:-mp3}
       - TRANSCRIBE_AUDIO_CODEC=${TRANSCRIBE_AUDIO_CODEC:-libmp3lame}
       - TRANSCRIBE_AUDIO_BITRATE=${TRANSCRIBE_AUDIO_BITRATE:-64k}
@@ -272,9 +171,8 @@ services:
       - MOVIE_DIR=/media/movies
       - MOVIES_DIR=/media/movies
       - TV_DIR=/media/tv
+      - STORAGE_PATH=/media/movies
       - ALLOW_EMPTY_MEDIA_ROOTS=${ALLOW_EMPTY_MEDIA_ROOTS:-0}
-      - START_SIDECAR_CONTAINERS=${START_SIDECAR_CONTAINERS:-1}
-      - STOP_SIDECAR_CONTAINERS=${STOP_SIDECAR_CONTAINERS:-1}
       - TARGET_LANGUAGES=${TARGET_LANGUAGES:-zh,es-MX}
       - KNOWN_BILINGUAL_TITLES=${KNOWN_BILINGUAL_TITLES:-90 Day Fiancé,Shogun,Shōgun,Squid Game}
       - KNOWN_ENGLISH_REALITY_TITLES=${KNOWN_ENGLISH_REALITY_TITLES:-Summer House,Vanderpump Rules}
@@ -285,17 +183,15 @@ services:
       - SUBTITLE_UID=${SUBTITLE_UID:-}
       - SUBTITLE_GID=${SUBTITLE_GID:-}
       - PGS_CLEANUP_ALLOW_UNKNOWN=${PGS_CLEANUP_ALLOW_UNKNOWN:-0}
+      - TRANSCRIBE_START_HOUR=${TRANSCRIBE_START_HOUR:-5}
+      - TRANSCRIBE_END_HOUR=${TRANSCRIBE_END_HOUR:-12}
+      - TRANSLATE_START_HOUR=${TRANSLATE_START_HOUR:-23}
+      - TRANSLATE_END_HOUR=${TRANSLATE_END_HOUR:-3}
       - LOG_RETENTION_DAYS=${LOG_RETENTION_DAYS:-7}
       - MAX_RUNTIME_MINUTES=${MAX_RUNTIME_MINUTES:-0}
-      - SCRIPTS_API_PORT=${SCRIPTS_API_PORT:-9010}
-      - PLEXMIND_CONTROL_TOKEN=${PLEXMIND_CONTROL_TOKEN}
-      - DOCKER_BROKER_URL=http://docker-broker:9020
-      - PLEXMIND_BROKER_TOKEN=${PLEXMIND_BROKER_TOKEN}
-      - GPU_THRESHOLD_PCT=${GPU_THRESHOLD_PCT:-30}
       - TZ=${TZ:-UTC}
     depends_on:
       - llama-cpp
-      - docker-broker
 
   # ---------------------------------------------------------------------------
   # FFmpeg — GPU-accelerated media processing

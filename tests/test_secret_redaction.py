@@ -123,8 +123,8 @@ def _free_port() -> int:
 
 
 def test_container_uvicorn_command_keeps_webhook_secret_out_of_logs(tmp_path):
-    dockerfile = (ROOT / "plexmind" / "Dockerfile").read_text(encoding="utf-8")
-    command = json.loads(re.search(r"^CMD (\[.*\])\s*$", dockerfile, re.MULTILINE).group(1))
+    supervisor = (ROOT / "scripts" / "supervisor.py").read_text(encoding="utf-8")
+    command = json.loads(re.search(r'^    \("api", (\[.*\]), False\),$', supervisor, re.MULTILINE).group(1))
     assert command[:2] == ["uvicorn", "app.main:app"]
     port = _free_port()
     args = command[1:]

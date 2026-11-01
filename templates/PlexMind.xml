@@ -1,7 +1,7 @@
 <?xml version="1.0"?>
 <Container version="2">
   <Name>PlexMind</Name>
-  <Repository>ghcr.io/finechainesium/plexmind:0.8.23</Repository>
+  <Repository>ghcr.io/finechainesium/plexmind:0.9.0</Repository>
   <Registry>https://github.com/FineChAInesium/PlexMind/pkgs/container/plexmind</Registry>
   <Network>bridge</Network>
   <Shell>bash</Shell>
@@ -15,9 +15,9 @@
   <WebUI>http://[IP]:[PORT:8000]/</WebUI>
   <TemplateURL>https://raw.githubusercontent.com/FineChAInesium/PlexMind/main/templates/PlexMind.xml</TemplateURL>
   <Icon>https://raw.githubusercontent.com/FineChAInesium/PlexMind/main/templates/icon.png</Icon>
-  <ExtraParams/>
+  <ExtraParams>--stop-timeout=40</ExtraParams>
   <Description>
-    PlexMind API/dashboard component. Version line: v0.8.23. This safe template does not mount media or the Docker socket. Deploy the authenticated PlexMind scripts worker, recommendation worker, and Docker broker from the repository Compose stack before using jobs or schedules.
+    PlexMind in one container. Version line: v0.9.0. Runs the dashboard/API, the recommendation worker, the subtitle scripts and a narrow Docker broker. It mounts your media read-write and the Docker socket (used only to start and stop the Whisper and llama.cpp containers), so do not expose port 8000 to the internet.
   </Description>
 
   <Networking>
@@ -38,9 +38,24 @@
       <Mode>rw</Mode>
     </Volume>
     <Volume>
+      <HostDir>/mnt/user/data/media/Movies</HostDir>
+      <ContainerDir>/media/movies</ContainerDir>
+      <Mode>rw</Mode>
+    </Volume>
+    <Volume>
+      <HostDir>/mnt/user/data/media/TV Shows</HostDir>
+      <ContainerDir>/media/tv</ContainerDir>
+      <Mode>rw</Mode>
+    </Volume>
+    <Volume>
       <HostDir>/mnt/cache/appdata/whisper-asr-webservice/cache</HostDir>
       <ContainerDir>/whisper-cache</ContainerDir>
       <Mode>ro</Mode>
+    </Volume>
+    <Volume>
+      <HostDir>/var/run/docker.sock</HostDir>
+      <ContainerDir>/var/run/docker.sock</ContainerDir>
+      <Mode>rw</Mode>
     </Volume>
   </Data>
 
@@ -89,39 +104,21 @@
     </Variable>
     <Variable>
       <Value/>
-      <Name>PLEXMIND_CONTROL_TOKEN</Name>
-      <Mode/>
-      <Description>Required scripts-worker token; must differ from every other PlexMind secret.</Description>
-    </Variable>
-    <Variable>
-      <Value/>
-      <Name>PLEXMIND_BROKER_TOKEN</Name>
-      <Mode/>
-      <Description>Required Docker-broker token; must differ from every other PlexMind secret.</Description>
-    </Variable>
-    <Variable>
-      <Value/>
       <Name>PLEXMIND_WEBHOOK_SECRET</Name>
       <Mode/>
-      <Description>Required scoped Plex webhook secret; must differ from every other PlexMind secret.</Description>
+      <Description>Required scoped Plex webhook secret; must differ from PLEXMIND_API_KEY.</Description>
     </Variable>
     <Variable>
-      <Value>remote</Value>
-      <Name>PLEXMIND_SCRIPT_MODE</Name>
+      <Value>zh,es-MX</Value>
+      <Name>TARGET_LANGUAGES</Name>
       <Mode/>
-      <Description>Must remain remote for the least-privilege worker topology.</Description>
+      <Description>Subtitle translation targets, comma-separated</Description>
     </Variable>
     <Variable>
-      <Value>http://plexmind-scripts:9010</Value>
-      <Name>SCRIPTS_API_URL</Name>
+      <Value>whisper-asr-webservice,llama-cpp</Value>
+      <Name>PLEXMIND_ALLOWED_CONTAINERS</Name>
       <Mode/>
-      <Description>Authenticated scripts-worker control URL.</Description>
-    </Variable>
-    <Variable>
-      <Value>http://plexmind-docker-broker:9020</Value>
-      <Name>DOCKER_BROKER_URL</Name>
-      <Mode/>
-      <Description>Authenticated narrow Docker-broker URL.</Description>
+      <Description>The only containers the built-in Docker broker may start and stop: your Whisper and llama.cpp container names</Description>
     </Variable>
     <Variable>
       <Value>10</Value>

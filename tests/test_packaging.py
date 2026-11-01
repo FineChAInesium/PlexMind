@@ -21,28 +21,23 @@ class PackagingTests(unittest.TestCase):
         self.assertTrue((ROOT / "scripts" / "lib.sh").is_file())
         self.assertFalse((ROOT / "plexmind" / "scripts" / "lib.sh").exists())
 
-    def test_scripts_image_ships_every_script(self):
-        dockerfile = (ROOT / "scripts" / "Dockerfile").read_text(encoding="utf-8")
+    def test_image_ships_every_script(self):
+        dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
         copied = set()
         for instruction in re.findall(r"(?m)^COPY ((?:[^\n]*\\\n)*[^\n]*)", dockerfile):
-            copied.update(instruction.replace("\\\n", " ").split()[:-1])
-        # docker_broker.py ships in the broker image instead.
-        shipped = {p.name for p in (ROOT / "scripts").iterdir() if p.suffix in (".sh", ".py")} - {"docker_broker.py"}
+            copied.update(Path(src).name for src in instruction.replace("\\\n", " ").split()[:-1])
+        shipped = {p.name for p in (ROOT / "scripts").iterdir() if p.suffix in (".sh", ".py")}
         self.assertEqual(shipped - copied, set())
-        self.assertIn("COPY docker_broker.py", (ROOT / "scripts" / "Dockerfile.broker").read_text(encoding="utf-8"))
+        self.assertIn('CMD ["python3", "/app/supervisor.py"]', dockerfile)
 
-    def test_api_image_does_not_package_media_mutation_scripts(self):
-        dockerfile = (ROOT / "plexmind" / "Dockerfile").read_text()
-        self.assertNotIn("COPY scripts/ ./scripts/", dockerfile)
-        self.assertNotIn("ffmpeg", dockerfile)
-
-    def test_unraid_api_template_preserves_least_privilege_boundary(self):
-        template = (ROOT / "templates" / "PlexMind.xml").read_text()
-        self.assertNotIn("<ContainerDir>/media/movies</ContainerDir>", template)
-        self.assertNotIn("<ContainerDir>/media/tv</ContainerDir>", template)
-        self.assertNotIn("<ContainerDir>/var/run/docker.sock</ContainerDir>", template)
-        self.assertIn("<Name>SCRIPTS_API_URL</Name>", template)
-        self.assertIn("<Name>DOCKER_BROKER_URL</Name>", template)
+    def test_unraid_template_is_the_whole_single_container(self):
+        template = (ROOT / "templates" / "PlexMind.xml").read_text(encoding="utf-8")
+        for path in ("/app/data", "/media/movies", "/media/tv", "/var/run/docker.sock"):
+            self.assertIn(f"<ContainerDir>{path}</ContainerDir>", template)
+        # The internal URLs and tokens are set by supervisor.py, not the user.
+        for name in ("SCRIPTS_API_URL", "DOCKER_BROKER_URL", "PLEXMIND_CONTROL_TOKEN", "PLEXMIND_BROKER_TOKEN"):
+            self.assertNotIn(f"<Name>{name}</Name>", template)
+        self.assertIn("<ExtraParams>--stop-timeout=40</ExtraParams>", template)
 
     def test_dashboard_api_key_is_not_persisted_in_browser_storage(self):
         dashboard = (ROOT / "plexmind" / "app" / "static" / "index.html").read_text(encoding="utf-8")
@@ -80,16 +75,10 @@ class PackagingTests(unittest.TestCase):
     def test_new_runtime_settings_reach_their_services(self):
         compose = (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
         env_example = (ROOT / ".env.example").read_text(encoding="utf-8")
-        expectations = {
-            ("plexmind", "recommendation-worker"): ("PLEXMIND_SECURE_COOKIE", "GPU_BUSY_SAMPLES", "GPU_SAMPLE_INTERVAL_SECONDS"),
-            ("recommendation-worker", "scripts"): ("GPU_BUSY_SAMPLES", "GPU_SAMPLE_INTERVAL_SECONDS"),
-            ("scripts", "ffmpeg"): ("TRANSLATION_BATCH_CUES",),
-        }
-        for (service, following), keys in expectations.items():
-            block = compose_service(compose, service, following)
-            for key in keys:
-                self.assertIn(f"- {key}=${{{key}:-", block, f"{key} not passed to {service}")
-                self.assertIn(f"\n{key}=", env_example, f"{key} not documented in .env.example")
+        block = compose_service(compose, "plexmind", "ffmpeg")
+        for key in ("PLEXMIND_SECURE_COOKIE", "GPU_BUSY_SAMPLES", "GPU_SAMPLE_INTERVAL_SECONDS", "TRANSLATION_BATCH_CUES"):
+            self.assertIn(f"- {key}=${{{key}:-", block, f"{key} not passed to plexmind")
+            self.assertIn(f"\n{key}=", env_example, f"{key} not documented in .env.example")
 
     def test_compose_keeps_sidecar_ports_and_privileges_narrow(self):
         compose = (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
@@ -101,19 +90,22 @@ class PackagingTests(unittest.TestCase):
         self.assertIn("\nWHISPER_BIND_ADDRESS=127.0.0.1\n", env_example)
         self.assertNotIn(":-/tmp}:/tmp", compose)
         self.assertNotIn("\nWHISPER_TMP_DIR=/tmp\n", env_example)
-        for service, following in (("docker-broker", "llama-cpp"), ("scripts", "ffmpeg")):
-            self.assertIn("- no-new-privileges:true", compose_service(compose, service, following))
-        # SUBTITLE_UID/GID ownership changes need CAP_CHOWN in the scripts worker.
-        self.assertNotIn("cap_drop", compose_service(compose, "scripts", "ffmpeg"))
+        self.assertIn("- no-new-privileges:true", compose_service(compose, "plexmind", "ffmpeg"))
+        # SUBTITLE_UID/GID ownership changes need CAP_CHOWN for the scripts.
+        self.assertNotIn("cap_drop", compose_service(compose, "plexmind", "ffmpeg"))
 
-    def test_scripts_worker_outlasts_the_controller_drain(self):
+    def test_container_outlasts_the_supervisor_and_controller_drains(self):
         compose = (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
         controller = (ROOT / "scripts" / "control_server.py").read_text(encoding="utf-8")
+        supervisor = (ROOT / "scripts" / "supervisor.py").read_text(encoding="utf-8")
         drain = int(re.search(r"deadline = time\.time\(\) \+ (\d+)", controller).group(1))
-        grace = re.search(r"\n    stop_grace_period: (\d+)s\n", compose_service(compose, "scripts", "ffmpeg"))
-        self.assertIsNotNone(grace, "scripts service has no stop_grace_period")
-        self.assertGreater(int(grace.group(1)), drain)
-        self.assertIn("--stop-timeout=30", (ROOT / "README.md").read_text(encoding="utf-8"))
+        supervisor_drain = int(re.search(r"(?m)^DRAIN_SECONDS = (\d+)", supervisor).group(1))
+        broker_stop = int(re.search(r"(?m)^BROKER_STOP_SECONDS = (\d+)", supervisor).group(1))
+        grace = re.search(r"\n    stop_grace_period: (\d+)s\n", compose_service(compose, "plexmind", "ffmpeg"))
+        self.assertIsNotNone(grace, "plexmind service has no stop_grace_period")
+        self.assertGreater(supervisor_drain, drain)
+        self.assertGreater(int(grace.group(1)), supervisor_drain + broker_stop)
+        self.assertIn("--stop-timeout=40", (ROOT / "README.md").read_text(encoding="utf-8"))
 
     def test_security_docs_match_http_only_session_contract(self):
         docs = "\n".join(

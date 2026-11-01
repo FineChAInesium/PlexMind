@@ -462,8 +462,9 @@ if __name__ == "__main__":
     if not os.getenv("DOCKER_BROKER_URL", "") or not os.getenv("PLEXMIND_BROKER_TOKEN", ""):
         raise RuntimeError("Scripts worker requires the authenticated Docker broker")
     port = int(os.environ.get("SCRIPTS_API_PORT", "9010"))
-    print(f"PlexMind scripts control API listening on :{port}")
-    server = ThreadingHTTPServer(("0.0.0.0", port), Handler)
+    print(f"PlexMind scripts control API listening on 127.0.0.1:{port}")
+    # Loopback only: the API that calls it shares its container.
+    server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
 
     def shutdown(signum, frame):
         print("PlexMind scripts controller draining child jobs before shutdown")
