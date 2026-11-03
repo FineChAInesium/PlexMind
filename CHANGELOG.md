@@ -1,11 +1,18 @@
 # Changelog
 
+## Unreleased
+
+- Pause a running translation for the transcription window and the monthly recommendation batch instead of letting its backlog block both; it resumes from its checkpoint afterwards. A stop from the dashboard is not resumed.
+- Stop an idle on-demand llama.cpp before transcription so Whisper gets the GPU memory.
+- Retry a skipped or failed monthly recommendation batch hourly (`MONTHLY_RETRY_HOURS`, `MONTHLY_RETRY_LIMIT`) instead of waiting a month.
+
 ## v0.9.0 - 2026-11-01
 
 - Run PlexMind as one container: the dashboard/API, recommendation worker, scripts controller and Docker broker now share one `plexmind` image, started and restarted by `supervisor.py`. The `plexmind-scripts` and `plexmind-docker-broker` images are no longer published.
 - The scripts controller and Docker broker listen on 127.0.0.1 only; the API and recommendation worker still run as uid 1000.
 - `PLEXMIND_CONTROL_TOKEN` and `PLEXMIND_BROKER_TOKEN` are generated at each start when blank; `SCRIPTS_API_URL` and `DOCKER_BROKER_URL` are set internally.
 - The Unraid template is now the whole PlexMind: it mounts media and the Docker socket and sets `--stop-timeout=40`. Keep port 8000 off the internet (see SECURITY.md).
+
 ## v0.8.23 - 2026-10-29
 
 - Size each translation request's token budget to its cues instead of a flat 256 tokens per batched cue (768 per single cue), growing it on each retry. A reply that loops on sung lyrics now stops within seconds instead of running for about 40 s.

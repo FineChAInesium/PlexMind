@@ -27,7 +27,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from dotenv import load_dotenv
 
-from app import llama_lifecycle
+from app import llama_lifecycle, recommendation_jobs
 
 load_dotenv()
 
@@ -53,13 +53,30 @@ SCHEDULE_STATE_PATH = DATA_DIR / "scheduler_state.json"
 _SCHEDULE_STATE_LOCK = threading.RLock()
 _DEFAULT_MONTHLY = {"day": 1, "hour": 3, "minute": 0}
 _SCRIPT_LAUNCHER = None
+_SCRIPT_STOPPER = None
+_SCRIPT_STATUS = None
 _RECOMMENDATION_LAUNCHER = None
+# A translation run asked to pause must release its locks within this long.
+PAUSE_TIMEOUT_SECONDS = 90
+# A paused translation resumes after this long even if its pauser never ran.
+PAUSE_MAX_SECONDS = 24 * 3600
+# A monthly recommendation batch that was skipped or failed is retried hourly,
+# at most MONTHLY_RETRY_LIMIT times within MONTHLY_RETRY_HOURS of being due.
+MONTHLY_RETRY_HOURS = int(os.getenv("MONTHLY_RETRY_HOURS", "72"))
+MONTHLY_RETRY_LIMIT = int(os.getenv("MONTHLY_RETRY_LIMIT", "12"))
 
 
 def set_script_launcher(launcher) -> None:
     """Install the authoritative script launcher supplied by the API control plane."""
     global _SCRIPT_LAUNCHER
     _SCRIPT_LAUNCHER = launcher
+
+
+def set_script_controls(stopper, status) -> None:
+    """Install the control plane's job stop and status calls, used to pause the
+    translation backlog for transcription and recommendation runs."""
+    global _SCRIPT_STOPPER, _SCRIPT_STATUS
+    _SCRIPT_STOPPER, _SCRIPT_STATUS = stopper, status
 
 
 def set_recommendation_launcher(launcher) -> None:
@@ -271,7 +288,110 @@ def _held_script_lock() -> str | None:
     return None
 
 
-async def _script_window_tick(job: str, title: str, start_hour: int, end_hour: int) -> None:
+# ---------------------------------------------------------------------------
+# Translation pauses
+# ---------------------------------------------------------------------------
+# A translation run works through the whole backlog, which can take weeks, so
+# it would otherwise hold the media/GPU locks through every transcription
+# window and monthly recommendation run. Those pause it instead; it resumes
+# from its checkpoint once the job it paused for has had its turn.
+
+async def _translation_running() -> bool:
+    if _SCRIPT_STATUS is None:
+        return False
+    try:
+        return bool((await _SCRIPT_STATUS("translate")).get("running"))
+    except Exception as exc:
+        log.warning("Could not read the translation job status: %s", exc)
+        return False
+
+
+def _record_pause(paused: dict | None) -> None:
+    state = _load_schedule_state()
+    if paused is None:
+        state.pop("translation_paused", None)
+    else:
+        state["translation_paused"] = paused
+    _save_schedule_state(state)
+
+
+def clear_translation_pause() -> None:
+    """Forget a pause, so a translation the user stopped is not resumed."""
+    if _load_schedule_state().get("translation_paused"):
+        _record_pause(None)
+
+
+async def _pause_translation(reason: dict) -> bool:
+    """Stop a running translation for the job REASON describes. True once it
+    has stopped and released its locks."""
+    if _SCRIPT_STOPPER is None or not await _translation_running():
+        return False
+    _record_pause({**reason, "at": time.time()})
+    try:
+        await _SCRIPT_STOPPER("translate")
+    except Exception as exc:
+        log.error("Could not pause translation for %s: %s", reason["for"], exc)
+        _record_pause(None)
+        return False
+    deadline = time.monotonic() + PAUSE_TIMEOUT_SECONDS
+    while _held_script_lock():
+        if time.monotonic() > deadline:
+            log.warning("Translation was asked to pause for %s but still holds its lock after %d s.",
+                        reason["for"], PAUSE_TIMEOUT_SECONDS)
+            return False
+        await asyncio.sleep(2)
+    log.info("Translation paused for %s; it resumes from its checkpoint afterwards.", reason["for"])
+    return True
+
+
+def _pause_over(paused: dict, now: datetime) -> bool:
+    """Whether the job translation was paused for has had its turn."""
+    if time.time() - (paused.get("at") or 0) > PAUSE_MAX_SECONDS:
+        return True
+    if paused.get("for") == "transcribe":
+        window = paused.get("window")
+        return (_SCRIPT_LAST_WINDOW.get("transcribe") == window
+                or _script_window_key(now, TRANSCRIBE_START_HOUR, TRANSCRIBE_END_HOUR) != window)
+    if paused.get("for") == "recommendations":
+        if not paused.get("job"):
+            return False  # the job is being queued right now
+        job = recommendation_jobs.get(paused["job"])
+        return not job or job.get("status") not in ("pending", "running")
+    return True
+
+
+async def _resume_paused_translation() -> bool:
+    """Relaunch a paused translation once its pauser is done and the locks and
+    GPU are free. True while a pause is recorded, whether or not it resumed."""
+    paused = _load_schedule_state().get("translation_paused")
+    if not paused:
+        return False
+    if not _pause_over(paused, datetime.now(_script_schedule_timezone())):
+        return True
+    if Path(SENTINEL_PATH).exists() or _held_script_lock():
+        return True
+    info = await _sustained_gpu_info()
+    if info["pct"] is None or info["pct"] >= GPU_THRESHOLD_PCT:
+        log.info("Paused translation not resumed yet — GPU %s.",
+                 "telemetry unavailable" if info["pct"] is None else f"at {info['pct']}%")
+        return True
+    try:
+        result = await _SCRIPT_LAUNCHER("translate")
+    except Exception as exc:
+        log.error("Paused translation could not be resumed: %s", exc)
+        return True
+    if result.get("status") in ("started", "already_running"):
+        _record_pause(None)
+        log.info("Translation resumed after the pause for %s.", paused.get("for"))
+    else:
+        log.warning("Paused translation did not resume: %s", result.get("detail", "unknown"))
+    return True
+
+
+async def _script_window_tick(job: str, title: str, start_hour: int, end_hour: int,
+                              pauses_translation: bool = False) -> None:
+    if job == "translate" and await _resume_paused_translation():
+        return
     now = datetime.now(_script_schedule_timezone())
     window_key = _script_window_key(now, start_hour, end_hour)
     if window_key is None:
@@ -284,6 +404,11 @@ async def _script_window_tick(job: str, title: str, start_hour: int, end_hour: i
     if Path(SENTINEL_PATH).exists():
         log.info("%s scheduled launch deferred — recommendation batch is in progress.", title)
         return
+
+    # Before the GPU check: a running translation's own load would defer us.
+    if pauses_translation and _held_script_lock() and await _pause_translation({"for": job, "window": window_key}):
+        # Whisper needs the GPU memory an idle llama.cpp still holds.
+        await asyncio.to_thread(llama_lifecycle.reap_if_idle, None, 0)
 
     # Defer if GPU is already busy — retry on next tick rather than stacking load
     info = await _sustained_gpu_info()
@@ -709,7 +834,15 @@ def start(app=None) -> None:
             "title": "Transcription",
             "start_hour": TRANSCRIBE_START_HOUR,
             "end_hour": int(os.getenv("TRANSCRIBE_END_HOUR", "12")),
+            "pauses_translation": True,
         },
+    )
+    scheduler.add_job(
+        _monthly_retry_tick,
+        CronTrigger(minute="40", timezone="UTC"),
+        id="monthly_recs_retry",
+        replace_existing=True,
+        misfire_grace_time=900,
     )
     scheduler.add_job(
         _script_window_tick,
@@ -739,8 +872,42 @@ def stop() -> None:
         scheduler.shutdown(wait=False)
 
 
-async def _scheduled_run() -> None:
+async def _scheduled_run(triggered_by: str = "monthly_cron") -> None:
     if _RECOMMENDATION_LAUNCHER is None:
         log.error("Monthly recommendation run was not queued: no durable launcher configured")
         return
-    _RECOMMENDATION_LAUNCHER("monthly_cron")
+    # The batch needs the GPU lock a running translation holds.
+    if _held_script_lock():
+        await _pause_translation({"for": "recommendations"})
+    job_id = _RECOMMENDATION_LAUNCHER(triggered_by)
+    # Translation resumes once this job is done, even if the pause timed out.
+    state = _load_schedule_state()
+    paused = state.get("translation_paused") or {}
+    if paused.get("for") == "recommendations" and not paused.get("job"):
+        paused["job"] = job_id
+        _save_schedule_state(state)
+
+
+def _monthly_retry_due(jobs: list[dict]) -> bool:
+    """Whether the latest monthly batch needs another try: it and every retry
+    since were skipped or failed, nothing is queued, and retries remain."""
+    due = [job for job in jobs if job.get("triggered_by") == "monthly_cron"]
+    if not due:
+        return False
+    since = max(job["created_at"] for job in due)
+    cycle = [job for job in jobs if job["created_at"] >= since]
+    if any(job.get("status") in ("pending", "running", "completed") for job in cycle):
+        return False
+    return sum(job.get("triggered_by") == "monthly_retry" for job in cycle) < MONTHLY_RETRY_LIMIT
+
+
+async def _monthly_retry_tick() -> None:
+    jobs = recommendation_jobs.created_since(time.time() - MONTHLY_RETRY_HOURS * 3600)
+    if not _monthly_retry_due(jobs):
+        return
+    # Transcription or maintenance holds the locks: wait for the next hour
+    # rather than spend a retry on a batch that would skip again.
+    if Path(SENTINEL_PATH).exists() or (_held_script_lock() and not await _translation_running()):
+        return
+    log.info("Monthly recommendation batch was skipped or failed; queueing a retry.")
+    await _scheduled_run("monthly_retry")

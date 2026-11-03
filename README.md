@@ -350,8 +350,9 @@ when `WHISPER_MODEL` does not match a cached model artifact.
 | `ALLOW_EMPTY_MEDIA_ROOTS` | Permit intentionally empty media roots. Leave disabled in production. | `0` |
 | `LOG_RETENTION_DAYS` | Retain dated script logs under `/app/data/logs`. | `7` |
 | `MAX_RUNTIME_MINUTES` | Optional per-run cap for scripts. `0` means no cap. | `0` |
-| `TRANSCRIBE_START_HOUR` / `TRANSCRIBE_END_HOUR` | PlexMind launch window for transcription jobs. | `5` / `12` |
-| `TRANSLATE_START_HOUR` / `TRANSLATE_END_HOUR` | PlexMind launch window for translation jobs. | `23` / `3` |
+| `TRANSCRIBE_START_HOUR` / `TRANSCRIBE_END_HOUR` | Window in which PlexMind starts transcription. A running translation is paused for it and resumes afterwards. | `5` / `12` |
+| `TRANSLATE_START_HOUR` / `TRANSLATE_END_HOUR` | Window in which PlexMind starts translation. A run keeps going through the backlog after the window closes (set `MAX_RUNTIME_MINUTES` to cap it), pausing for transcription and the monthly recommendation batch. | `23` / `3` |
+| `MONTHLY_RETRY_HOURS` / `MONTHLY_RETRY_LIMIT` | A monthly recommendation batch that was skipped or failed is retried hourly, up to this many times within this many hours. | `72` / `12` |
 | `TZ` | Timezone used by the PlexMind script scheduler and logs. | `UTC` |
 
 `.env.example` documents the remaining settings (subtitle layout, watermark text, file permissions, transcription audio and Whisper upload limits).

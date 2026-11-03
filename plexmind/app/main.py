@@ -134,7 +134,14 @@ async def lifespan(app: FastAPI):
     async def _launch_scheduled_script(job: str) -> dict:
         return await _scripts_request("POST", f"/jobs/{job}/start", json={"run_now": True})
 
+    async def _stop_scheduled_script(job: str) -> dict:
+        return await _scripts_request("POST", f"/jobs/{job}/stop")
+
+    async def _scheduled_script_status(job: str) -> dict:
+        return await _scripts_request("GET", f"/jobs/{job}")
+
     scheduler.set_script_launcher(_launch_scheduled_script)
+    scheduler.set_script_controls(_stop_scheduled_script, _scheduled_script_status)
     scheduler.set_recommendation_launcher(
         lambda triggered_by: recommendation_jobs.create(triggered_by)
     )
@@ -759,6 +766,8 @@ async def script_job_start(request: Request, job: str, body: ScriptJobRequest):
 async def script_job_stop(job: str):
     """Stop a transcription or translation job in the scripts container."""
     job = _validate_script_job(job)
+    if job == "translate":
+        scheduler.clear_translation_pause()  # a stop by the user is not resumed
     return await _scripts_request("POST", f"/jobs/{job}/stop")
 
 

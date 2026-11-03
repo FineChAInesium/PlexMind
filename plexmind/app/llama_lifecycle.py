@@ -114,10 +114,11 @@ async def in_use():
         handle.close()  # releases the shared lock
 
 
-def reap_if_idle(now: float | None = None) -> bool:
-    """Stop llama.cpp if nobody holds it and it has been idle long enough.
+def reap_if_idle(now: float | None = None, idle_seconds: int | None = None) -> bool:
+    """Stop llama.cpp if nobody holds it and it has been idle for IDLE_SECONDS
+    (default IDLE_STOP_SECONDS; 0 frees the GPU at once for Whisper).
 
-    Synchronous; the worker calls it from a thread. Returns True if stopped.
+    Synchronous; callers run it in a thread. Returns True if stopped.
     """
     if not ON_DEMAND:
         return False
@@ -133,7 +134,7 @@ def reap_if_idle(now: float | None = None) -> bool:
         except FileNotFoundError:
             touch_activity()  # start the idle countdown from now
             return False
-        if now - last_used < IDLE_STOP_SECONDS:
+        if now - last_used < (IDLE_STOP_SECONDS if idle_seconds is None else idle_seconds):
             return False
         url, headers = _broker()
         with httpx.Client(timeout=30) as client:

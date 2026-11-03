@@ -92,6 +92,18 @@ def active() -> tuple[str, dict] | None:
         return job_id, dict(job)
 
 
+def created_since(timestamp: float) -> list[dict]:
+    """Jobs created at or after TIMESTAMP, oldest first."""
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    with LOCK_FILE.open("a+") as lock:
+        fcntl.flock(lock, fcntl.LOCK_SH)
+        jobs = [
+            {"id": job_id, **job} for job_id, job in _read_unlocked().items()
+            if isinstance(job, dict) and (job.get("created_at") or 0) >= timestamp
+        ]
+    return sorted(jobs, key=lambda job: job["created_at"])
+
+
 def claim_next(owner: str) -> tuple[str, dict] | None:
     def claim(jobs):
         pending = sorted(
