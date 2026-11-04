@@ -67,20 +67,25 @@ def _extract_json(text: str) -> str:
     if start != -1 and (end == -1 or end <= start):
         # Try to close the truncated array
         truncated = text[start:]
-        # Find last complete object (ends with `}` or `null`)
+        # Keep the complete objects: cut after the last `}` first, so a
+        # `null` inside the half-written object after it is not a cut point.
+        # Then try after the last `null`, for arrays written without braces.
         last_null = truncated.rfind("null")
         last_brace = truncated.rfind("}")
-        cut_at = max(last_null + 4 if last_null != -1 else -1,
-                     last_brace + 1 if last_brace != -1 else -1)
-        if cut_at > 0:
-            truncated = truncated[:cut_at].rstrip(", \n\t") + "]"
+        cuts = [last_brace + 1 if last_brace != -1 else -1, last_null + 4 if last_null != -1 else -1]
+        for cut_at in cuts:
+            if cut_at <= 0:
+                continue
+            closed = truncated[:cut_at].rstrip(", \n\t") + "]"
             try:
-                json.loads(truncated)
-                return truncated
+                json.loads(closed)
+                return closed
             except json.JSONDecodeError:
-                # Will fall through to repair logic below
-                text = truncated
-                end = len(text) - 1
+                pass
+        if max(cuts) > 0:
+            # Will fall through to repair logic below
+            text = truncated[:max(cuts)].rstrip(", \n\t") + "]"
+            end = len(text) - 1
 
     if start != -1 and end > start:
         candidate = text[start:end + 1]

@@ -53,8 +53,16 @@ async def run_job(job_id: str, record: dict) -> None:
             triggered_by=record.get("triggered_by") or f"worker/{job_id}",
             on_progress=progress,
         )
-        status = "skipped" if result.get("skipped_reason") else "completed"
-        recommendation_jobs.finish(job_id, status, result.get("summary"))
+        summary = result.get("summary") or {}
+        if result.get("skipped_reason"):
+            recommendation_jobs.finish(job_id, "skipped", summary)
+        elif summary.get("errors") and not summary.get("ok"):
+            # Every user that was tried failed (llama.cpp or Plex down, say):
+            # report it, and let the monthly retry try again.
+            recommendation_jobs.finish(job_id, "failed", summary,
+                                       error=f"all {summary['errors']} user(s) that were tried failed")
+        else:
+            recommendation_jobs.finish(job_id, "completed", summary)
     except Exception as exc:
         recommendation_jobs.append_event(job_id, {"type": "error", "error": str(exc)})
         recommendation_jobs.finish(job_id, "failed", error=str(exc))

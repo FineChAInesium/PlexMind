@@ -145,9 +145,10 @@ def _save_shown(data: dict) -> None:
 
 
 def get_shown_recs(user_id: str) -> dict[str, float]:
-    """Return {title_lower: timestamp} for titles recently shown to this user."""
+    """Return {title_lower: timestamp} for titles shown to this user within SUPPRESSION_DAYS."""
+    cutoff = time.time() - SUPPRESSION_DAYS * 86400
     with _lock:
-        return _load_shown().get(str(user_id), {})
+        return {t: ts for t, ts in _load_shown().get(str(user_id), {}).items() if ts > cutoff}
 
 
 def mark_shown_recs(user_id: str, titles: list[str]) -> None:

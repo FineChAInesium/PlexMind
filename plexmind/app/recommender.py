@@ -81,6 +81,17 @@ def _normalise(title: str) -> str:
     return t.strip()
 
 
+def _llm_title_key(title: str) -> str:
+    """Key matching an LLM-returned title to a candidate, tolerating the
+    " (2019)" and " [movie]" suffixes models add despite the prompt."""
+    return _normalise(re.sub(r"\s*\[(?:movie|tv|show)\]$", "", str(title).casefold().strip()))
+
+
+def _feedback_excluded(feedback: list[dict]) -> set[str]:
+    """Lowercase titles the user marked watched or disliked: never recommended."""
+    return {fb["title"].lower() for fb in feedback if fb.get("rating") in ("watched", "dislike")}
+
+
 # ---------------------------------------------------------------------------
 # Library helpers
 # ---------------------------------------------------------------------------
@@ -385,15 +396,24 @@ def _prefilter(
     meta_by_title = {e["title"].lower(): e for e in history_meta}
     bad_genres = _disliked_genres(user_id, meta_by_title)
 
-    # Suppression: exclude titles shown recently that have no positive feedback
-    feedback_liked = {fb["title"].lower() for fb in cache.get_user_feedback(user_id)
-                      if fb["rating"] in ("like", "watched")}
-    suppressed = {t for t, ts in shown_recs.items() if t not in feedback_liked}
+    # Titles the user marked watched or disliked are never candidates; liked
+    # titles may come back. Other recently shown titles are suppressed.
+    feedback = cache.get_user_feedback(user_id)
+    excluded = _feedback_excluded(feedback)
+    feedback_liked = {fb["title"].lower() for fb in feedback if fb["rating"] == "like"}
+    suppressed = {t for t in shown_recs if t not in feedback_liked}
 
+    candidates = [c for c in candidates if c["title"].lower() not in excluded]
     active = [c for c in candidates if c["title"].lower() not in suppressed]
     if len(active) < n:
-        active = candidates  # fall back if suppression would leave too few
+        # Too few left: bring back the longest-ago shown titles, not all of them.
+        oldest_first = sorted((c for c in candidates if c["title"].lower() in suppressed),
+                              key=lambda c: shown_recs.get(c["title"].lower(), 0))
+        active += oldest_first[:n - len(active)]
 
+    # The prompt shows only MAX_CANDIDATE_PROMPT_ITEMS, movies first; a larger
+    # pool would cut the shows off and leave a movie-heavy user no TV picks.
+    pool_size = min(pool_size, MAX_CANDIDATE_PROMPT_ITEMS)
     # Preserve proportional movie/TV ratio from history
     history_types = [h["media_type"] for h in history_meta]
     movie_ratio = history_types.count("movie") / max(len(history_types), 1)
@@ -694,44 +714,61 @@ async def get_recommendations(user_id: str, force: bool = False) -> list[dict]:
 
     # 10. Post-process LLM recs
     meta_by_identity = {
-        (e["title"].casefold().strip(), e.get("year"), e.get("media_type")): e
+        (_llm_title_key(e["title"]), e.get("year"), e.get("media_type")): e
         for e in candidates
     }
     title_candidates: dict[str, list[dict]] = {}
     for candidate in candidates:
-        title_candidates.setdefault(candidate["title"].casefold().strip(), []).append(candidate)
-    disliked = {fb["title"].lower() for fb in feedback if fb["rating"] == "dislike"}
+        title_candidates.setdefault(_llm_title_key(candidate["title"]), []).append(candidate)
+    excluded = _feedback_excluded(feedback)
     recs: list[dict] = []
     seen: set[str] = set()
 
-    for rec in raw_recs:
-        if not isinstance(rec, dict):
-            continue
-        title_lower = str(rec.get("title", "")).casefold().strip()
-        if title_lower in seen or title_lower in disliked:
-            continue
-        seen.add(title_lower)
-        rec_type = "show" if rec.get("type") in ("tv", "show") else "movie"
-        meta = meta_by_identity.get((title_lower, rec.get("year"), rec_type))
-        if meta is None:
-            matches = title_candidates.get(title_lower, [])
-            meta = matches[0] if len(matches) == 1 else None
-        if not meta:
-            log.warning("Discarding LLM title outside candidate allowlist: %r", rec.get("title"))
-            continue
-        canonical = {
+    def _canonical(meta: dict, reason) -> dict:
+        return {
             "title": meta["title"],
             "year": meta.get("year"),
             "type": "movie" if meta.get("media_type") == "movie" else "tv",
-            "reason": str(rec.get("reason") or "Selected from your highest-scoring library matches.")[:500],
+            "reason": str(reason or "Selected from your highest-scoring library matches.")[:500],
             "poster_url": meta.get("poster_url"),
             "_rating_key": meta.get("rating_key"),
             "_imdb_rating": meta.get("imdb_rating"),
             "_tmdb_rating": meta.get("tmdb_rating"),
         }
-        recs.append(canonical)
+
+    for rec in raw_recs:
+        if not isinstance(rec, dict):
+            continue
+        key = _llm_title_key(rec.get("title", ""))
+        rec_type = "show" if rec.get("type") in ("tv", "show") else "movie"
+        meta = meta_by_identity.get((key, rec.get("year"), rec_type))
+        if meta is None:
+            matches = title_candidates.get(key, [])
+            meta = matches[0] if len(matches) == 1 else None
+        if not meta:
+            log.warning("Discarding LLM title outside candidate allowlist: %r", rec.get("title"))
+            continue
+        title_lower = meta["title"].lower()
+        if title_lower in seen or title_lower in excluded:
+            continue
+        seen.add(title_lower)
+        recs.append(_canonical(meta, rec.get("reason")))
         if len(recs) >= llm_n:
             break
+
+    # Too few usable picks (titles outside the pool, a cut-off reply): top up
+    # from the best-scoring candidates rather than sync a near-empty set that
+    # would replace the user's whole Plex list.
+    if len(recs) < llm_n:
+        log.warning("LLM gave %d usable picks of %d for %s; topping up from the best candidates",
+                    len(recs), llm_n, user_id)
+        for meta in candidates:
+            if len(recs) >= llm_n:
+                break
+            title_lower = meta["title"].lower()
+            if title_lower not in seen and title_lower not in excluded:
+                seen.add(title_lower)
+                recs.append(_canonical(meta, None))
 
     # 10b. Deep cut — pick one hidden gem the LLM wouldn't normally choose
     dominant_langs = {lang for lang, _ in lang_counts.most_common(3)} - {"en"}
@@ -739,10 +776,12 @@ async def get_recommendations(user_id: str, force: bool = False) -> list[dict]:
     deep_cut = _pick_deep_cut(
         library_meta, genre_weights, kw_weights, lang_counts,
         bad_genres, trending_titles, dominant_langs,
-        exclude_titles=seen | {t for t, _ in shown_recs.items()},
+        exclude_titles=seen | set(shown_recs) | excluded | watched_titles,
     )
     if deep_cut:
         recs.append(deep_cut)
+    if not recs:
+        return []  # nothing to show: keep the previous cache and Plex set
 
     await asyncio.to_thread(cache.cache_set, user_id, recs)
 

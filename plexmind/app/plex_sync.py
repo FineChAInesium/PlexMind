@@ -284,14 +284,6 @@ def _sync_playlist(token: str, user_key: str, recs: list[dict]) -> dict:
             pl.editTitle(final_title)
         for pl, _ in backups:
             pl.delete()
-        for pl in existing:
-            if pl.title == "PlexMind Picks" or (
-                pl.title in (PLAYLIST_MOVIES, PLAYLIST_TV)
-                and pl.title not in final_titles
-            ):
-                pl.delete()
-        for pl in stale_pending:
-            pl.delete()
     except Exception:
         for pl, original in backups:
             try:
@@ -304,6 +296,16 @@ def _sync_playlist(token: str, user_key: str, recs: list[dict]) -> dict:
             except Exception:
                 pass
         raise
+
+    # The new playlists are live and the backups gone, so a failure here must
+    # not roll back: that would delete the new ones and leave the user none.
+    leftovers = [pl for pl in existing if pl.title == "PlexMind Picks" or (
+        pl.title in (PLAYLIST_MOVIES, PLAYLIST_TV) and pl.title not in final_titles)]
+    for pl in leftovers + list(stale_pending):
+        try:
+            pl.delete()
+        except Exception as exc:
+            log.warning("Could not delete old PlexMind playlist %r: %s", pl.title, exc)
 
     # Track for cleanup
     with _ownership_lock():

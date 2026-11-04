@@ -182,9 +182,11 @@ def get_watch_history(user_id: str) -> list[WatchedItem]:
         try:
             account = server.myPlexAccount()
             managed = {str(u.id): u for u in account.users()}
-            if user_id in managed:
-                token = account.user(managed[user_id].title).get_token(server.machineIdentifier)
-                server = PlexServer(PLEX_URL, token)
+            if user_id not in managed:
+                # Otherwise the admin token stays in use and this user gets the admin's history.
+                raise LookupError("not a managed or shared user of this server")
+            token = account.user(managed[user_id].title).get_token(server.machineIdentifier)
+            server = PlexServer(PLEX_URL, token)
         except Exception as exc:
             raise RuntimeError(f"Cannot obtain token for user {user_id}: {exc}") from exc
 

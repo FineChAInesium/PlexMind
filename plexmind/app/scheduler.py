@@ -766,9 +766,10 @@ async def _do_run_all_users(triggered_by: str, on_progress=None) -> dict:
                 await _emit({"type": "user", "index": i, **entry})
 
             except RuntimeError as exc:
-                # Token errors and Plex access errors — expected for shared-friend accounts
+                # Token errors and denied access are expected for shared-friend
+                # accounts; any other failure (Plex unreachable, say) is an error.
                 msg = str(exc)
-                if "Cannot obtain token" in msg or "401" in msg or "Failed to fetch" in msg:
+                if "Cannot obtain token" in msg or "401" in msg:
                     log.info("  Skipping %s — no token access: %s", username, msg.split(":")[0])
                     entry = {"user": username, "status": "skipped", "reason": "no_token"}
                 else:
