@@ -267,6 +267,36 @@ def get_watch_history(user_id: str) -> list[WatchedItem]:
     return list(seen.values())
 
 
+def get_watched_rating_keys(user_id: str) -> set[str]:
+    """Rating keys of library items this user has watched, from Plex's own
+    per-user play state: any view of a movie, any watched episode of a show.
+    The history feed is capped at HISTORY_LIMIT entries (each episode is one),
+    so a title watched long ago falls off it and was recommended again."""
+    server = _get_server()
+    if user_id != "admin":
+        token = get_user_token(user_id)
+        if not token:
+            log.warning("No Plex token for user %s; watched state comes from history only", user_id)
+            return set()
+        server = PlexServer(PLEX_URL, token)
+    keys: set[str] = set()
+    for section in server.library.sections():
+        kind = getattr(section, "type", "")
+        if kind not in ("movie", "show"):
+            continue
+        try:
+            for item in section.all():
+                if kind == "movie":
+                    watched = (getattr(item, "viewCount", 0) or 0) > 0
+                else:
+                    watched = (getattr(item, "viewedLeafCount", 0) or 0) > 0
+                if watched:
+                    keys.add(str(item.ratingKey))
+        except Exception as exc:
+            log.warning("Could not read watched state of section %s: %s", getattr(section, "title", "?"), exc)
+    return keys
+
+
 def get_in_progress_titles(user_id: str) -> set[str]:
     """
     Return lowercase titles of items currently in progress (started but not finished).

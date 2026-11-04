@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Never recommend a title Plex marks as watched for the user (any view of a movie, any watched episode of a show). Watched titles were only taken from the last `HISTORY_LIMIT` history entries, where every episode is one entry, so a title watched long ago was recommended again.
+
 ## v0.9.2 - 2026-11-03
 
 - Remove an old watchlist pick that has left the library (watched and deleted, say) by finding it on the watchlist itself; before, it could not be resolved and stayed on the watchlist for good. New picks are tracked by their Plex GUID, which still identifies them after they leave the library.

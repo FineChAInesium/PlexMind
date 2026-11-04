@@ -127,16 +127,19 @@ def _fetch_full_library() -> list[dict]:
 def _get_unwatched_library(
     watched_titles: set[str],
     in_progress: set[str],
+    watched_keys: set[str] = frozenset(),
 ) -> list[dict]:
     """
     Return dicts with title, year, media_type, and plex_genres for library items
     the user hasn't watched and isn't currently in the middle of watching.
+    WATCHED_KEYS are rating keys Plex marks as watched for this user.
     Plex genres are used for the lightweight pre-score before API enrichment.
     """
     normalised_watched = {_normalise(t) for t in watched_titles | in_progress}
     return [
         item for item in _fetch_full_library()
         if _normalise(item["title"]) not in normalised_watched
+        and item.get("rating_key") not in watched_keys
     ]
 
 
@@ -654,8 +657,14 @@ async def get_recommendations(user_id: str, force: bool = False) -> list[dict]:
     # 2. In-progress titles (exclude from candidates)
     in_progress = await asyncio.to_thread(plex_client.get_in_progress_titles, user_id)
 
-    # 3. Unwatched library candidates (excludes watched + in-progress)
-    library_items = await asyncio.to_thread(_get_unwatched_library, watched_titles, in_progress)
+    # 3. Unwatched library candidates (excludes watched + in-progress). Plex's
+    # play state covers watches too old to still be in the capped history.
+    try:
+        watched_keys = await asyncio.to_thread(plex_client.get_watched_rating_keys, user_id)
+    except Exception as exc:
+        log.warning("Could not read Plex watched state for %s; using history only: %s", user_id, exc)
+        watched_keys = set()
+    library_items = await asyncio.to_thread(_get_unwatched_library, watched_titles, in_progress, watched_keys)
     if not library_items:
         return []
 

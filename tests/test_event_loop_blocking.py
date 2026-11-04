@@ -35,6 +35,7 @@ def test_recommendation_plex_io_runs_off_the_event_loop():
     with patch.object(cache, "cache_get", side_effect=blocking("cache_get", None)), \
             patch.object(plex_client, "get_watch_history", side_effect=blocking("history", [])), \
             patch.object(plex_client, "get_in_progress_titles", side_effect=blocking("in_progress", set())), \
+            patch.object(plex_client, "get_watched_rating_keys", return_value=set()), \
             patch.object(recommender, "_get_unwatched_library", side_effect=blocking("library", [])):
         result, ticks = asyncio.run(scenario())
 

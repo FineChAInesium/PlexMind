@@ -64,6 +64,7 @@ def test_unusable_llm_picks_are_topped_up_and_suffixed_titles_match():
             patch.object(cache, "cache_get", return_value=None), \
             patch.object(plex_client, "get_watch_history", return_value=[]), \
             patch.object(plex_client, "get_in_progress_titles", return_value=set()), \
+            patch.object(plex_client, "get_watched_rating_keys", return_value=set()), \
             patch.object(recommender, "_get_unwatched_library", return_value=shortlist), \
             patch.object(recommender, "_prescore_by_plex_genres", return_value=shortlist), \
             patch.object(recommender.tmdb_client, "get_trending", AsyncMock(return_value=[])), \
@@ -107,3 +108,21 @@ def test_unknown_user_does_not_get_the_admin_history():
         with pytest.raises(RuntimeError, match="Cannot obtain token"):
             plex_client.get_watch_history("12345")
     server.library.history.assert_not_called()
+
+
+def test_titles_plex_marks_watched_are_not_candidates():
+    library = [{"title": "Beetlejuice Beetlejuice", "rating_key": "11"}, {"title": "Fresh", "rating_key": "12"}]
+    with patch.object(recommender, "_fetch_full_library", return_value=library):
+        # The 2024 watch is too old for the capped history, but Plex knows it.
+        result = recommender._get_unwatched_library(set(), set(), {"11"})
+    assert [item["title"] for item in result] == ["Fresh"]
+
+
+def test_watched_state_counts_any_movie_view_and_any_watched_episode():
+    movies = SimpleNamespace(type="movie", title="Movies", all=lambda: [
+        SimpleNamespace(ratingKey=1, viewCount=2), SimpleNamespace(ratingKey=2, viewCount=0)])
+    shows = SimpleNamespace(type="show", title="TV", all=lambda: [
+        SimpleNamespace(ratingKey=3, viewedLeafCount=5), SimpleNamespace(ratingKey=4, viewedLeafCount=0)])
+    server = SimpleNamespace(library=SimpleNamespace(sections=lambda: [movies, shows]))
+    with patch.object(plex_client, "_get_server", return_value=server):
+        assert plex_client.get_watched_rating_keys("admin") == {"1", "3"}
