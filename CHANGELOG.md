@@ -5,6 +5,14 @@
 - Pause a running translation for the transcription window and the monthly recommendation batch instead of letting its backlog block both; it resumes from its checkpoint afterwards. A stop from the dashboard is not resumed.
 - Stop an idle on-demand llama.cpp before transcription so Whisper gets the GPU memory.
 - Retry a skipped or failed monthly recommendation batch hourly (`MONTHLY_RETRY_HOURS`, `MONTHLY_RETRY_LIMIT`) instead of waiting a month.
+- Transcribe the English audio track when a file has one, even when it is not the first track. Files with a Japanese track first and an English dub (Cyberpunk: Edgerunners) were transcribed from the Japanese track: the ffmpeg track specifier the script relied on does not parse on ffmpeg 8. The profiler, extraction and confidence check now all use the same track.
+- Trust an English audio tag instead of profiling, and decide a file's language by a majority of the profiler's samples rather than the first non-English one; a sample Whisper could not answer no longer counts as English.
+- Retry a permanently failed transcription after `TRANSCRIBE_FAILED_RETRY_DAYS` (default 30).
+- Keep the first cue's timing when collapsing a repeated-line hallucination instead of stretching one cue over the whole run.
+- Accept an audio chunk with no speech in a long video instead of failing the file; stop, without marking the video failed, when Whisper itself is down; check ffmpeg's exit status before transcribing extracted audio.
+- Count only a full subtitle as "already subtitled": a forced-only track, an unfinished `.ai.srt` or a sibling video's file no longer skip a video, and an untagged `Title.srt` now does.
+- Remove a stale recommendation sentinel instead of waiting on it forever.
+- Recommendations: match LLM titles that carry a year or type suffix and top up a short reply from the best candidates; repair a cut-off reply at the last complete pick; never recommend titles marked watched or disliked; apply `SUPPRESSION_DAYS` when reading shown titles; keep TV candidates in the prompt for movie-heavy users; report a batch where every user failed as failed; refuse an unknown user ID instead of using the admin's history; keep a friend's new playlists when deleting old ones fails.
 
 ## v0.9.0 - 2026-11-01
 

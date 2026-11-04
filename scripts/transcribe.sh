@@ -96,7 +96,9 @@ EOF
     log "Hallucinations:${HALLUCINATIONS_CLEANED} Skip-Exist:${SKIPPED_EXISTING} New-Fail:${FAILED_THIS_RUN} Deferred-Fail:${SKIPPED_FAILED} Skip-Size:${SKIPPED_SIZE}"
     log "========================================================="
 
-    rm -f "$TEMP_AUDIO_FILE" "${WATERMARK_TMP_FILE:-}" /tmp/transcription_backfill.pid 2>/dev/null
+    rm -f "$TEMP_AUDIO_FILE" "${WATERMARK_TMP_FILE:-}" /tmp/transcription_backfill.pid \
+        /tmp/sample_*_$$.wav /tmp/profile_*_$$.json 2>/dev/null
+    rm -rf "/tmp/plexmind-whisper-segments-$$" 2>/dev/null
     # Before the library-wide report, which a container stop may SIGKILL.
     stop_docker_container "Whisper" "${WHISPER_CONTAINER_NAME:-whisper-asr-webservice}"
     trap - INT TERM
@@ -122,10 +124,7 @@ calculate_pending_jobs() {
         [ -f "${DIR_PATH}/${BASENAME_NO_EXT}.ai.failed" ] \
             && ! failed_marker_retryable "${DIR_PATH}/${BASENAME_NO_EXT}.ai.failed" && continue
 
-        shopt -s nullglob nocaseglob
-        local EXISTING_SUBS=( "${DIR_PATH}/${BASENAME_NO_EXT}".*.srt )
-        shopt -u nullglob nocaseglob
-        [ ${#EXISTING_SUBS[@]} -eq 0 ] && TEMP_PENDING=$((TEMP_PENDING+1))
+        has_full_subtitle "${DIR_PATH}/${BASENAME_NO_EXT}" || TEMP_PENDING=$((TEMP_PENDING+1))
     done < <(find "${ALL_MEDIA_DIRS[@]}" -type f \( -iname "*.mkv" -o -iname "*.mp4" -o -iname "*.avi" -o -iname "*.mov" -o -iname "*.wmv" -o -iname "*.m4v" \) -print0 2>/dev/null)
 
     log "LIBRARY: ${TEMP_TOTAL} videos, ${TEMP_PENDING} pending"
@@ -155,19 +154,12 @@ extract_audio() {
 extract_bilingual_audio() {
     local VIDEO_FILE="$1"
     local OUTPUT_FILE="$2"
-    local _bil_lang
+    local _bil_index _bil_lang
 
     rm -f "${OUTPUT_FILE}" 2>/dev/null
-    for _bil_lang in kor jpn zho cmn yue ara fra deu spa ita por rus; do
-        extract_audio "${VIDEO_FILE}" "0:a:m:language:${_bil_lang}:0" "${OUTPUT_FILE}" 2>/dev/null
-        if [ -s "${OUTPUT_FILE}" ]; then
-            log "  Audio: found [${_bil_lang}] track."
-            return 0
-        fi
-        rm -f "${OUTPUT_FILE}" 2>/dev/null
-    done
-
-    extract_audio "${VIDEO_FILE}" "0:a:0" "${OUTPUT_FILE}"
+    read -r _bil_index _bil_lang <<< "$(pick_audio_track "${VIDEO_FILE}" foreign)"
+    extract_audio "${VIDEO_FILE}" "0:${_bil_index:-a:0}" "${OUTPUT_FILE}"
+    [ -s "${OUTPUT_FILE}" ] && log "  Audio: using track ${_bil_index:-a:0} [${_bil_lang:--}]."
     [ -s "${OUTPUT_FILE}" ]
 }
 
@@ -247,7 +239,7 @@ upload_whisper_audio() {
             return 2
         fi
 
-        local CHUNK CHUNK_OUT HTTP_STATUS CURL_EXIT
+        local CHUNK CHUNK_OUT HTTP_STATUS CURL_EXIT SPOKEN_CHUNKS=0
         for CHUNK in "${SEGMENT_DIR}"/chunk_*.${TRANSCRIBE_AUDIO_EXT}; do
             [ -f "$CHUNK" ] || continue
             CHUNK_OUT="${CHUNK%.*}.srt"
@@ -266,13 +258,16 @@ upload_whisper_audio() {
                 WHISPER_UPLOAD_RESULT="$HTTP_STATUS"
                 return 20
             fi
-            if [ ! -s "$CHUNK_OUT" ] || ! grep -qF -- '-->' "$CHUNK_OUT"; then
-                rm -rf "$SEGMENT_DIR"
-                return 30
+            # An answered chunk with no cues is a stretch without speech
+            # (end credits, a short last chunk), not a failed file.
+            if [ -s "$CHUNK_OUT" ] && grep -qF -- '-->' "$CHUNK_OUT"; then
+                SPOKEN_CHUNKS=$((SPOKEN_CHUNKS + 1))
+            else
+                log "  Chunk ${CHUNK##*/} has no speech."
             fi
         done
 
-        if ! stitch_segment_srts "$SEGMENT_DIR" "$OUTPUT_FILE" "$WHISPER_SEGMENT_SECONDS"; then
+        if [ "$SPOKEN_CHUNKS" -eq 0 ] || ! stitch_segment_srts "$SEGMENT_DIR" "$OUTPUT_FILE" "$WHISPER_SEGMENT_SECONDS"; then
             rm -rf "$SEGMENT_DIR"
             return 30
         fi
@@ -300,6 +295,13 @@ upload_whisper_audio() {
 # is quarantined once, by the failure that uses up its last retry.
 record_transient_failure() {
     local VIDEO_FILE="$1" MARKER_FILE="$2" REASON="$3" MARKER_REASON MARKER_COUNT
+    # A failure while Whisper itself is down says nothing about this video:
+    # stop instead of spending its retries (and those of the videos after it).
+    if ! health_check_api; then
+        log "FATAL: Whisper API unrecoverable; ${VIDEO_FILE##*/} is not marked failed."
+        exit 1
+    fi
+    FILES_SINCE_HEALTH_CHECK=0
     write_failed_marker "$MARKER_FILE" "$REASON"; FAILED_THIS_RUN=$((FAILED_THIS_RUN+1))
     read_failed_marker "$MARKER_FILE"
     if [ "$MARKER_COUNT" -ge "$MAX_RETRIES_SOFT" ]; then
@@ -325,10 +327,7 @@ process_video() {
     # --- EXISTING SUBS CHECK ---
     # A subtitle (from an earlier run, or from Bazarr) settles the video, so
     # a failure marker left beside it is stale.
-    shopt -s nullglob nocaseglob
-    local EXISTING_SUBS=( "${DIR_PATH}/${BASENAME_NO_EXT}".*.srt )
-    shopt -u nullglob nocaseglob
-    if [ ${#EXISTING_SUBS[@]} -gt 0 ]; then
+    if has_full_subtitle "${DIR_PATH}/${BASENAME_NO_EXT}"; then
         rm -f "$FAILED_MARKER_FILE"
         SKIPPED_EXISTING=$((SKIPPED_EXISTING+1)); return
     fi
@@ -365,6 +364,12 @@ process_video() {
         done
     fi
 
+    # The track every step below uses (global: score_confidence samples it too).
+    local AUDIO_INDEX AUDIO_TAG
+    read -r AUDIO_INDEX AUDIO_TAG <<< "$(pick_audio_track "${VIDEO_FILE}")"
+    AUDIO_MAP="0:${AUDIO_INDEX:-a:0}"
+    [ "${AUDIO_TAG:--}" = "-" ] && AUDIO_TAG=""
+
     if [ "$IS_BIL" = true ]; then
         log "Step 1/5: Bilingual VIP!"; PROCESSING_MODE="BILINGUAL_VIP"
     elif [ "$IS_REAL" = true ]; then
@@ -372,11 +377,12 @@ process_video() {
     else
         # --- LANGUAGE PROFILER ---
         local PRIMARY_AUDIO_LANG
-        PRIMARY_AUDIO_LANG=$(ffprobe -v error -select_streams a:0 -show_entries stream_tags=language \
-            -of default=noprint_wrappers=1:nokey=1 "${VIDEO_FILE}" | head -n1)
-        PRIMARY_AUDIO_LANG=$(normalize_lang_code "$PRIMARY_AUDIO_LANG")
+        PRIMARY_AUDIO_LANG=$(normalize_lang_code "$AUDIO_TAG")
 
-        if [ -n "$PRIMARY_AUDIO_LANG" ] && [ "$PRIMARY_AUDIO_LANG" != "en" ]; then
+        if [ "$PRIMARY_AUDIO_LANG" = "en" ]; then
+            log "Step 1/5: Audio track ${AUDIO_INDEX} tagged [en]"
+            log "Verdict: ENGLISH"
+        elif [ -n "$PRIMARY_AUDIO_LANG" ]; then
             log "Step 1/5: Audio metadata language [${PRIMARY_AUDIO_LANG}]"
             log "Verdict: FOREIGN [${PRIMARY_AUDIO_LANG}]"
             PROCESSING_MODE="FOREIGN"
@@ -388,13 +394,15 @@ process_video() {
                 -of default=noprint_wrappers=1:nokey=1 "${VIDEO_FILE}" | awk '{print int($1)}')
 
             if [ -n "$DURATION" ] && [ "$DURATION" -gt 300 ]; then
-                local FOREIGN_VOTES=0
+                # Each sample votes; a sample that could not be transcribed
+                # does not. A song or one foreign scene must not decide the file.
+                local FOREIGN_VOTES=0 ENGLISH_VOTES=0
                 for PERCENT in 15 30 50 70 85; do
                     local ST=$(( DURATION * PERCENT / 100 ))
-                    local TS="/tmp/sample_${PERCENT}.wav"
+                    local TS="/tmp/sample_${PERCENT}_$$.wav"
                     local JSON_FILE="/tmp/profile_${PERCENT}_$$.json"
                     ffmpeg -nostdin -ss "$ST" -i "${VIDEO_FILE}" \
-                        -map 0:a:0 -t 30 -vn -acodec pcm_s16le -ar 16000 -ac 1 \
+                        -map "$AUDIO_MAP" -t 30 -vn -acodec pcm_s16le -ar 16000 -ac 1 \
                         -y "$TS" -loglevel quiet
                     local DL
                     [ -s "$TS" ] && curl -s --connect-timeout 30 --max-time 300 -X POST -F "audio_file=@${TS}" \
@@ -405,7 +413,7 @@ path = sys.argv[1]
 try:
     data = json.load(open(path, 'r', encoding='utf-8', errors='replace'))
 except Exception:
-    data = {}
+    raise SystemExit  # no answer: no vote
 lang = str(data.get('language') or '').strip().lower()
 if lang:
     print(lang)
@@ -429,17 +437,18 @@ PYEOF
                     )
                     DL=$(normalize_lang_code "$DL")
                     rm -f "$TS" "$JSON_FILE"
-                    if [ -n "$DL" ] && [ "$DL" != "en" ]; then
+                    if [ -z "$DL" ]; then
+                        log "  -> ${PERCENT}%: [no answer]"
+                    elif [ "$DL" != "en" ]; then
                         log "  -> ${PERCENT}%: [${DL}]"
                         FOREIGN_VOTES=$((FOREIGN_VOTES+1))
                         [ -z "$DETECTED_FOREIGN_LANG" ] && DETECTED_FOREIGN_LANG="$DL"
-                        # One foreign vote decides the verdict; skip the remaining samples.
-                        break
                     else
                         log "  -> ${PERCENT}%: [en]"
+                        ENGLISH_VOTES=$((ENGLISH_VOTES+1))
                     fi
                 done
-                if [ "$FOREIGN_VOTES" -gt 0 ]; then
+                if [ "$FOREIGN_VOTES" -ge 2 ] && [ "$FOREIGN_VOTES" -gt "$ENGLISH_VOTES" ]; then
                     log "Verdict: FOREIGN [${DETECTED_FOREIGN_LANG}]"; PROCESSING_MODE="FOREIGN"
                 else
                     log "Verdict: ENGLISH"
@@ -455,16 +464,12 @@ PYEOF
     rm -f "${TEMP_AUDIO_FILE}"
     log "Step 2/5: Extracting audio..."
 
-    if [ "$PROCESSING_MODE" = "ENGLISH" ]; then
-        extract_audio "${VIDEO_FILE}" "0:a:m:language:eng:0" "${TEMP_AUDIO_FILE}"
-        [ ! -s "${TEMP_AUDIO_FILE}" ] && \
-            extract_audio "${VIDEO_FILE}" "0:a:m:language:en:0" "${TEMP_AUDIO_FILE}"
-        [ ! -s "${TEMP_AUDIO_FILE}" ] && \
-            extract_audio "${VIDEO_FILE}" "0:a:0" "${TEMP_AUDIO_FILE}"
-    elif [ "$PROCESSING_MODE" = "BILINGUAL_VIP" ]; then
+    if [ "$PROCESSING_MODE" = "BILINGUAL_VIP" ]; then
         extract_bilingual_audio "${VIDEO_FILE}" "${TEMP_AUDIO_FILE}"
     else
-        extract_audio "${VIDEO_FILE}" "0:a:0" "${TEMP_AUDIO_FILE}"
+        # A failed ffmpeg (a full /tmp, say) can leave a partial file that
+        # would be transcribed and published as the whole video.
+        extract_audio "${VIDEO_FILE}" "$AUDIO_MAP" "${TEMP_AUDIO_FILE}" || rm -f "${TEMP_AUDIO_FILE}"
     fi
 
     if [ ! -s "${TEMP_AUDIO_FILE}" ]; then
@@ -676,15 +681,13 @@ log "Schedule: launched by PlexMind; max runtime: ${MAX_RUNTIME_MINUTES:-0}m; re
 log "========================================================="
 check_dependencies curl ffmpeg ffprobe python3
 
-# Wait for PlexMind to finish if it's holding the GPU
+# A recommendation batch writes this sentinel only while it holds
+# plexmind_gpu.lock, which this run already holds (above), so one found now
+# was left by a killed batch. Waiting on it would block every job forever.
 PLEXMIND_SENTINEL="${DATA_DIR}/plexmind.running"
 if [ -f "$PLEXMIND_SENTINEL" ]; then
-    log "PlexMind is running — waiting before starting Whisper..."
-    while [ -f "$PLEXMIND_SENTINEL" ]; do
-        sleep 30
-        check_runtime
-    done
-    log "PlexMind finished — proceeding."
+    log "Removing a stale recommendation sentinel (no batch holds the GPU lock)."
+    rm -f "$PLEXMIND_SENTINEL"
 fi
 
 ALL_MEDIA_DIRS=("${MOVIE_DIR}" "${TV_DIR}")

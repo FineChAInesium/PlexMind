@@ -101,7 +101,7 @@ assert_whisper_stopped_before_report() {
     grep -q '^broker .*/containers/whisper-asr-webservice/stop' "$1/curl.log" || fail "$2: no stop request reached the broker"
 }
 
-# --- Normal run: profiler short-circuit and cleanup order ---
+# --- Normal run: profiler votes and cleanup order ---
 RUN="$TEMP_ROOT/normal"
 mkdir -p "$RUN/movies/Film" "$RUN/movies/Silent" "$RUN/tv" "$RUN/data"
 touch "$RUN/movies/Film/Film.mkv" "$RUN/movies/Silent/Silent.mkv"
@@ -111,8 +111,9 @@ run_transcribe "$RUN"
 [ -f "$RUN/movies/Film/Film.ja.srt" ] || fail "the profiler's foreign verdict was not used for the transcript"
 [ -f "$RUN/movies/Silent/Silent.en.srt" ] || fail "a video without profiler samples did not default to English"
 profiles=$(grep -c '^profile ' "$RUN/curl.log") || true
-# Film stops after its first (foreign) sample; Silent has no sample to upload.
-[ "$profiles" = 1 ] || fail "expected 1 profiler request, got ${profiles:-0}: $(cat "$RUN/curl.log")"
+# Every Film sample votes (one foreign sample must not decide a file); Silent
+# has no sample to upload, so it gets no vote and defaults to English.
+[ "$profiles" = 5 ] || fail "expected 5 profiler requests, got ${profiles:-0}: $(cat "$RUN/curl.log")"
 grep -q -- '^profile .* --connect-timeout 30 --max-time 300 ' "$RUN/curl.log" || fail "profiler request has no curl timeouts"
 assert_whisper_stopped_before_report "$RUN" "normal run"
 

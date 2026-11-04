@@ -121,6 +121,57 @@ script_helper() {
 # three-letter codes, so an unmapped one comes back empty and the caller
 # detects the language instead. Anything else also comes back empty, so
 # untrusted media metadata never reaches a path or URL.
+# --- AUDIO TRACK ---
+# Prints "<stream index> <language tag>" for the audio track to transcribe:
+# with PREFER=english the first English-tagged track, with PREFER=foreign the
+# first tagged in another language; else the default track, else the first.
+# Every step maps this index: the 0:a:m:language:eng:0 specifier this used to
+# rely on does not parse (ffmpeg 8 rejects it), so a Japanese-first anime
+# with an English dub was transcribed from the Japanese track.
+pick_audio_track() {
+    local VIDEO_FILE="$1" PREFER="${2:-english}"
+    ffprobe -v error -select_streams a -show_entries stream=index:stream_tags=language:stream_disposition=default \
+        -of json "${VIDEO_FILE}" 2>/dev/null | python3 -c '
+import json, sys
+try:
+    streams = json.load(sys.stdin).get("streams") or []
+except ValueError:
+    streams = []
+def lang(s):
+    code = str((s.get("tags") or {}).get("language") or "").lower()
+    return "" if code in ("und", "unk", "mis", "zxx") else code
+english = lambda s: lang(s) in ("eng", "en")
+wanted = english if sys.argv[1] == "english" else (lambda s: lang(s) and not english(s))
+pick = next((s for s in streams if wanted(s)), None) \
+    or next((s for s in streams if (s.get("disposition") or {}).get("default")), None) \
+    or (streams[0] if streams else None)
+if pick is not None:
+    print(pick["index"], lang(pick) or "-")
+' "$PREFER"
+}
+
+# True if a full subtitle sits beside the video BASE (path without extension):
+# BASE.srt or BASE.<lang>[.sdh|.hi|.cc].srt, any case. A forced-only track
+# (it covers only foreign-language lines) does not count, nor a sibling
+# video's file such as BASE.Part2.en.srt.
+has_full_subtitle() {
+    local base="$1" f rest
+    shopt -s nullglob nocaseglob
+    local subs=( "${base}".srt "${base}".*.srt )
+    shopt -u nullglob nocaseglob
+    for f in "${subs[@]}"; do
+        [ -e "$f" ] || continue  # BASE.srt is no glob, so nullglob keeps it
+        rest="${f:${#base}}"
+        rest="${rest%.*}"
+        rest="${rest,,}"
+        [[ "$rest" =~ ^(\.[a-z0-9_-]+)?(\.(sdh|hi|cc))?$ ]] || continue
+        # Forced-only, or this script's own unfinished Title.ai[-lang].srt.
+        [[ "$rest" == *.forced* || "$rest" == .ai || "$rest" == .ai-* ]] && continue
+        return 0
+    done
+    return 1
+}
+
 normalize_lang_code() {
     local code
     code=$(printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]' | cut -d'-' -f1)
@@ -416,13 +467,18 @@ write_failed_marker() {
 }
 
 # True for a transient failure (curl timeout, API error) with retries left
-# before MAX_RETRIES_SOFT. Sets MARKER_REASON and MARKER_COUNT.
+# before MAX_RETRIES_SOFT, or for any failure whose marker is older than
+# TRANSCRIBE_FAILED_RETRY_DAYS (0 = never), so fixes and replaced files get
+# another try; each failure rewrites the marker and restarts that wait.
+# Sets MARKER_REASON and MARKER_COUNT.
 failed_marker_retryable() {
     read_failed_marker "$1"
     case "$MARKER_REASON" in
-        "$FAIL_CURL_TIMEOUT"|"$FAIL_API_ERROR") [ "$MARKER_COUNT" -lt "$MAX_RETRIES_SOFT" ] ;;
-        *) return 1 ;;
+        "$FAIL_CURL_TIMEOUT"|"$FAIL_API_ERROR") [ "$MARKER_COUNT" -lt "$MAX_RETRIES_SOFT" ] && return 0 ;;
     esac
+    local days="${TRANSCRIBE_FAILED_RETRY_DAYS:-30}"
+    [[ "$days" =~ ^[0-9]+$ ]] && [ "$days" -gt 0 ] || return 1
+    [ -n "$(find "$1" -mtime +"$((days - 1))" 2>/dev/null)" ]
 }
 
 # The marker stays in place during the retry, so a repeat failure counts up
@@ -433,7 +489,13 @@ retry_failed() {
     [ ! -f "$MARKER_FILE" ] && return 1
 
     if failed_marker_retryable "$MARKER_FILE"; then
-        log "  RETRY: Transient failure (${MARKER_REASON}), attempt $((MARKER_COUNT + 1))/${MAX_RETRIES_SOFT}."
+        case "$MARKER_REASON" in
+            "$FAIL_CURL_TIMEOUT"|"$FAIL_API_ERROR")
+                [ "$MARKER_COUNT" -lt "$MAX_RETRIES_SOFT" ] \
+                    && log "  RETRY: Transient failure (${MARKER_REASON}), attempt $((MARKER_COUNT + 1))/${MAX_RETRIES_SOFT}." \
+                    && return 0 ;;
+        esac
+        log "  RETRY: ${MARKER_REASON} was more than ${TRANSCRIBE_FAILED_RETRY_DAYS:-30} days ago; trying again."
         return 0
     fi
     case "$MARKER_REASON" in
@@ -549,7 +611,9 @@ while i < len(cues):
     while j < len(cues) and cues[j]['text'].strip().lower() == ct: j += 1
     run = j - i
     if run >= threshold:
-        output.append({'start': cues[i]['start'], 'end': cues[j-1]['end'], 'text': cues[i]['text']})
+        # Keep the first cue with its own timing: stretching it over the whole
+        # run showed one line for minutes and failed validation.
+        output.append(cues[i])
         removed += (run - 1)
     else:
         output.extend(cues[i:j])
@@ -1115,7 +1179,7 @@ score_confidence() {
         local TEMP_SRT="/tmp/confidence_check_$$_${SAMPLE_OFFSET}.srt"
 
         ffmpeg -nostdin -ss "$SAMPLE_OFFSET" -i "$VIDEO_FILE" \
-            -map 0:a:0 -t "$SAMPLE_DURATION" -vn -acodec pcm_s16le -ar 16000 -ac 1 \
+            -map "${AUDIO_MAP:-0:a:0}" -t "$SAMPLE_DURATION" -vn -acodec pcm_s16le -ar 16000 -ac 1 \
             -y "$TEMP_SAMPLE" -loglevel quiet 2>/dev/null
 
         if [ ! -s "$TEMP_SAMPLE" ]; then

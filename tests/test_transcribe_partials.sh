@@ -17,6 +17,8 @@ printf '1\n00:00:01,000 --> 00:00:02,000\nTruncated upload.\n' > "$MOVIES/Film/F
 cat > "$TEMP_ROOT/bin/ffprobe" <<'EOF'
 #!/bin/sh
 case "$*" in
+  *'-of json'*) case "$*" in *Foreign*) tag=fre ;; *) tag='../../evil' ;; esac
+    printf '{"streams":[{"index":1,"tags":{"language":"%s"}}]}' "$tag" ;;
   *stream_tags=language*) case "$*" in *Foreign*) echo fre ;; *) echo '../../evil' ;; esac ;;
   *format=duration*) echo 100 ;;
   *) echo 'aac,2,48000' ;;

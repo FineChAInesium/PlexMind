@@ -319,6 +319,7 @@ when `WHISPER_MODEL` does not match a cached model artifact.
 | `TRANSLATION_MAX_FALLBACK_PCT` | Fail a file only if more than this percentage of its cues kept their original line. | `10` |
 | `CHUNK_RETRY_ATTEMPTS` | Attempts per cue before it keeps its original line (or, for llama.cpp errors, the file stops and resumes later). | `3` |
 | `FAILED_RETRY_HOURS` | Hours before a failed file is tried again. | `24` |
+| `TRANSCRIBE_FAILED_RETRY_DAYS` | Days before transcription retries a video that failed permanently (validation, no usable audio); `0` never retries. | `30` |
 | `LLAMA_ON_DEMAND` | Start llama.cpp when needed and stop it when idle. | `0` |
 | `LLAMA_IDLE_STOP_MINUTES` | Idle minutes before an on-demand llama.cpp is stopped. | `15` |
 | `LLAMA_STARTUP_TIMEOUT_SECONDS` | How long to wait for an on-demand llama.cpp to load its model. | `180` |
