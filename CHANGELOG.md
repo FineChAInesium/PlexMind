@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.9.3 - 2026-11-03
 
 - Never recommend a title Plex marks as watched for the user (any view of a movie, any watched episode of a show). Watched titles were only taken from the last `HISTORY_LIMIT` history entries, where every episode is one entry, so a title watched long ago was recommended again.
 
