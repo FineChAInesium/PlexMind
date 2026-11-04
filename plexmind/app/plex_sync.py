@@ -127,6 +127,32 @@ def _get_account(token: str) -> MyPlexAccount | None:
         return None
 
 
+def _identities(item, title: str) -> list[str]:
+    """Every key the ownership file may hold for ITEM, preferred first. Older
+    runs recorded a rating key or a title; the Plex GUID also identifies a
+    pick on the watchlist after it has left the library."""
+    keys = []
+    guid = getattr(item, "guid", None)
+    if isinstance(guid, str) and guid.startswith("plex://"):
+        keys.append(f"guid:{guid}")
+    rating_key = getattr(item, "ratingKey", None)
+    if rating_key:
+        keys.append(f"rating:{rating_key}")
+    keys.append(str(title).casefold().strip())
+    return keys
+
+
+def _watchlist_match(watchlist: list, identity: str) -> object | None:
+    """The watchlist entry an owned identity refers to, if it is unambiguous."""
+    if identity.startswith("guid:"):
+        matches = [w for w in watchlist if getattr(w, "guid", None) == identity[5:]]
+    elif identity.startswith("rating:"):
+        return None  # a library rating key says nothing about the watchlist entry
+    else:
+        matches = [w for w in watchlist if str(getattr(w, "title", "")).casefold().strip() == identity]
+    return matches[0] if len(matches) == 1 else None
+
+
 def _sync_watchlist(token: str, user_key: str, recs: list[dict]) -> dict:
     """Admin-only: add recs to plex.tv Watchlist."""
     server = PlexServer(PLEX_URL, token)
@@ -145,25 +171,27 @@ def _sync_watchlist(token: str, user_key: str, recs: list[dict]) -> dict:
         matched: list = []
         unmatched: list[str] = []
         new_identities: list[str] = []
+        kept: set[str] = set()  # every key of the items in this set
 
         for rec in recs:
             item = _resolve(index, rec)
             if not item:
                 unmatched.append(rec.get("title", ""))
                 continue
-            rating_key = getattr(item, "ratingKey", None)
-            identity = f"rating:{rating_key}" if rating_key else rec.get("title", "").casefold().strip()
+            keys = _identities(item, rec.get("title", ""))
             try:
                 if account.onWatchlist(item):
                     # plexapi raises on a duplicate add. Keep ownership only if
                     # PlexMind added it previously; never claim a user's own item.
                     matched.append(rec["title"])
-                    if identity in previous:
-                        new_identities.append(identity)
+                    if previous.intersection(keys):
+                        new_identities.append(keys[0])
+                        kept.update(keys)
                     continue
                 account.addToWatchlist(item)
                 matched.append(rec["title"])
-                new_identities.append(identity)
+                new_identities.append(keys[0])
+                kept.update(keys)
             except Exception as exc:
                 log.debug("Watchlist add failed for %s: %s", rec["title"], exc)
                 unmatched.append(rec["title"])
@@ -174,16 +202,28 @@ def _sync_watchlist(token: str, user_key: str, recs: list[dict]) -> dict:
         # Remove the old set only after at least one replacement was added.
         owned_identities = set(new_identities)
         cleanup_failed: list[str] = []
-        for identity in previous - owned_identities:
-            item = index.get(identity)
-            if item:
-                try:
-                    account.removeFromWatchlist(item)
-                except Exception as exc:
-                    log.warning("Could not remove obsolete watchlist item %s: %s", identity, exc)
-                    owned_identities.add(identity)
-                    cleanup_failed.append(identity)
-            else:
+        watchlist = None
+        for identity in sorted(previous - kept):
+            target = index.get(identity)
+            if target is None:
+                # Gone from the library (watched and deleted, say), but it can
+                # still be on the watchlist: find it there.
+                if watchlist is None:
+                    try:
+                        watchlist = account.watchlist()
+                    except Exception as exc:
+                        log.warning("Could not read the watchlist for cleanup: %s", exc)
+                        watchlist = []
+                target = _watchlist_match(watchlist, identity)
+                if target is None:
+                    # Neither in the library nor on the watchlist under this
+                    # key: already removed, or not findable. Stop tracking it.
+                    log.info("Obsolete watchlist pick %s is not in the library or the watchlist; forgetting it", identity)
+                    continue
+            try:
+                account.removeFromWatchlist(target)
+            except Exception as exc:
+                log.warning("Could not remove obsolete watchlist item %s: %s", identity, exc)
                 owned_identities.add(identity)
                 cleanup_failed.append(identity)
 

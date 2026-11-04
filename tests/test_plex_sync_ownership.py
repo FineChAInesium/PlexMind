@@ -84,6 +84,41 @@ def test_rerecommended_title_stays_on_watchlist_and_user_items_are_not_claimed()
     assert saved["admin"] == ["rating:1", "rating:3"]
 
 
+def test_picks_that_left_the_library_are_removed_from_the_watchlist():
+    # Last run's picks: Ozark (tracked by title, since deleted from the
+    # library), Gone (rating key, deleted, so no longer findable) and Kept.
+    kept = SimpleNamespace(ratingKey=1, title="Kept", type="movie", year=2020, guid="plex://movie/kept")
+    new = SimpleNamespace(ratingKey=3, title="New", type="movie", year=2021, guid="plex://movie/new")
+    index = {"rating:1": kept, "rating:3": new, "kept": kept, "new": new}
+    ozark = SimpleNamespace(title="Ozark", guid="plex://show/ozark")
+    mine = SimpleNamespace(title="Mine", guid="plex://show/mine")  # the user's own
+    on_watchlist = {"plex://movie/kept", "plex://show/ozark", "plex://show/mine"}
+    removed = []
+    account = MagicMock()
+    account.onWatchlist.side_effect = lambda item: item.guid in on_watchlist
+    account.addToWatchlist.side_effect = lambda item: on_watchlist.add(item.guid)
+    account.watchlist.return_value = [ozark, mine]
+
+    def remove(item):
+        on_watchlist.discard(item.guid)
+        removed.append(item.title)
+
+    account.removeFromWatchlist.side_effect = remove
+    recs = [{"title": "Kept", "_rating_key": 1}, {"title": "New", "_rating_key": 3}]
+    with _track_file({"admin": ["rating:1", "ozark", "rating:99"]}) as track, \
+            patch.object(plex_sync, "PlexServer"), \
+            patch.object(plex_sync, "_get_account", return_value=account), \
+            patch.object(plex_sync, "_build_index", return_value=index):
+        result = plex_sync._sync_watchlist("admin-token", "admin", recs)
+        saved = json.loads(track.read_text(encoding="utf-8"))
+
+    assert result["mode"] == "watchlist" and result["cleanup_failed"] == []
+    assert removed == ["Ozark"]  # found on the watchlist; never the kept pick or the user's own
+    assert on_watchlist == {"plex://movie/kept", "plex://movie/new", "plex://show/mine"}
+    # New picks are tracked by GUID; the re-picked one keeps working under its new key.
+    assert saved["admin"] == ["guid:plex://movie/kept", "guid:plex://movie/new"]
+
+
 def test_remove_collection_refuses_admin_token_fallback_for_other_users():
     server = MagicMock()
     with _track_file({"42": ["some title"]}), \
