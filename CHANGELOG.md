@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.9.1 - 2026-11-03
 
 - Pause a running translation for the transcription window and the monthly recommendation batch instead of letting its backlog block both; it resumes from its checkpoint afterwards. A stop from the dashboard is not resumed.
 - Stop an idle on-demand llama.cpp before transcription so Whisper gets the GPU memory.
@@ -67,7 +67,7 @@
   pinned direct dependencies/images, release verification, SBOM, and provenance.
 - Corrected browser-only schedule wording, endpoint fallback, Whisper artifact/state/model truth.
 
-## Unreleased
+## v0.9.1 - 2026-11-03
 
 - Complete the production-hardening audit and deploy the API, recommendation worker, scripts worker, and authenticated Docker broker with end-to-end health verification.
 - Discover translation targets from the worker's configured language list instead of hard-coding Chinese and Mexican Spanish in the dashboard.

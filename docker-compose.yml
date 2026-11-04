@@ -1,4 +1,4 @@
-# PlexMind release line: v0.9.0
+# PlexMind release line: v0.9.1
 services:
   # ---------------------------------------------------------------------------
   # llama.cpp — Local LLM server (recommendations + translation)
@@ -75,7 +75,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    image: plexmind:0.9.0
+    image: plexmind:0.9.1
     container_name: plexmind
     restart: unless-stopped
     # Must exceed supervisor.py's 25 s drain plus 5 s for the broker, so the

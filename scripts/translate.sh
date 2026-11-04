@@ -1,7 +1,7 @@
 #!/bin/bash
 # ==============================================================================
 # translate.sh — SRT Translation Backfill via llama.cpp LLM
-# Version: 0.9.0 — PlexMind release line
+# Version: 0.9.1 — PlexMind release line
 #
 # Finds .en.srt files, translates to target languages using llama.cpp's OpenAI-compatible chat API.
 # Sends TRANSLATION_BATCH_CUES consecutive cues per request as a JSON array and
@@ -661,7 +661,7 @@ PYEOF
 # MAIN
 # ==============================================================================
 log "========================================================="
-log "Translation Backfill v0.9.0 (containerized)"
+log "Translation Backfill v0.9.1 (containerized)"
 log "Schedule: launched by PlexMind; max runtime: ${MAX_RUNTIME_MINUTES:-0}m; retention: ${LOG_RETENTION_DAYS}d; RUN_NOW=${RUN_NOW}"
 log "========================================================="
 check_dependencies curl jq python3
