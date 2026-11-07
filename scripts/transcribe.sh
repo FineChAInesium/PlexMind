@@ -124,7 +124,9 @@ calculate_pending_jobs() {
         [ -f "${DIR_PATH}/${BASENAME_NO_EXT}.ai.failed" ] \
             && ! failed_marker_retryable "${DIR_PATH}/${BASENAME_NO_EXT}.ai.failed" && continue
 
-        has_full_subtitle "${DIR_PATH}/${BASENAME_NO_EXT}" || TEMP_PENDING=$((TEMP_PENDING+1))
+        has_full_subtitle "${DIR_PATH}/${BASENAME_NO_EXT}" \
+            || existing_subtitle_source "$VIDEO_FILE" "${TRANSCRIPTION_LANGUAGE:-en}" >/dev/null \
+            || TEMP_PENDING=$((TEMP_PENDING+1))
     done < <(find "${ALL_MEDIA_DIRS[@]}" -type f \( -iname "*.mkv" -o -iname "*.mp4" -o -iname "*.avi" -o -iname "*.mov" -o -iname "*.wmv" -o -iname "*.m4v" \) -print0 2>/dev/null)
 
     log "LIBRARY: ${TEMP_TOTAL} videos, ${TEMP_PENDING} pending"
@@ -328,6 +330,14 @@ process_video() {
     # A subtitle (from an earlier run, or from Bazarr) settles the video, so
     # a failure marker left beside it is stale.
     if has_full_subtitle "${DIR_PATH}/${BASENAME_NO_EXT}"; then
+        rm -f "$FAILED_MARKER_FILE"
+        SKIPPED_EXISTING=$((SKIPPED_EXISTING+1)); return
+    fi
+    # So does a subtitle in this language Plex can already show: a track
+    # inside the file, or one Plex lists (including ones Plex downloaded).
+    local SUB_SOURCE
+    if SUB_SOURCE=$(existing_subtitle_source "$VIDEO_FILE" "$LANG_TAG"); then
+        log "SKIP: ${BASENAME_WITH_EXT} already has a ${LANG_TAG} subtitle (${SUB_SOURCE})."
         rm -f "$FAILED_MARKER_FILE"
         SKIPPED_EXISTING=$((SKIPPED_EXISTING+1)); return
     fi

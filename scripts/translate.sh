@@ -66,7 +66,7 @@ acquire_lock "${DATA_DIR}/plexmind_gpu.lock"
 TEMP_JSON_PAYLOAD="/tmp/llama_cpp_payload.json"
 TEMP_RESPONSE_FILE="/tmp/llama_cpp_response.json"
 
-export TOTAL_FILES_SCANNED=0 TRANSLATIONS_PROCESSED=0 SKIPPED_EXISTING=0 SKIPPED_FAILED=0 FAILED_THIS_RUN=0
+export TOTAL_FILES_SCANNED=0 TRANSLATIONS_PROCESSED=0 SKIPPED_EXISTING=0 SKIPPED_PLEX=0 SKIPPED_FAILED=0 FAILED_THIS_RUN=0
 export SESSION_PROCESSING_SECONDS=0
 FILES_SINCE_HEALTH_CHECK=0
 TRANSLATED_FILES=()
@@ -132,7 +132,7 @@ EOF
 
     echo ""
     log "========================================================="
-    log "Translation Session: Scanned:${TOTAL_FILES_SCANNED} Done:${TRANSLATIONS_PROCESSED} Skip-Exist:${SKIPPED_EXISTING} New-Fail:${FAILED_THIS_RUN} Deferred-Fail:${SKIPPED_FAILED}"
+    log "Translation Session: Scanned:${TOTAL_FILES_SCANNED} Done:${TRANSLATIONS_PROCESSED} Skip-Exist:${SKIPPED_EXISTING} Skip-Plex:${SKIPPED_PLEX} New-Fail:${FAILED_THIS_RUN} Deferred-Fail:${SKIPPED_FAILED}"
     log "Lifetime Total: ${LIFETIME_PROCESSED}"
     log "========================================================="
     rm -f "$TEMP_JSON_PAYLOAD" "$TEMP_RESPONSE_FILE" /tmp/translation_backfill.pid 2>/dev/null
@@ -457,6 +457,13 @@ process_subtitle() {
     local EX=( "${DIR_PATH}/${BASENAME_NO_EXT}"*.${TARGET_LANG}.srt "${DIR_PATH}/${BASENAME_NO_EXT}.${TARGET_LANG}"*.srt )
     shopt -u nullglob nocaseglob
     if [ ${#EX[@]} -gt 0 ]; then SKIPPED_EXISTING=$((SKIPPED_EXISTING+1)); return; fi
+    # So does a subtitle in this language Plex can already show: a track
+    # inside the video, or one Plex lists (including ones Plex downloaded).
+    local VIDEO_FILE
+    if VIDEO_FILE=$(video_for_subtitle "$DIR_PATH" "$BASENAME_NO_EXT") \
+        && existing_subtitle_source "$VIDEO_FILE" "$TARGET_LANG" >/dev/null; then
+        SKIPPED_PLEX=$((SKIPPED_PLEX+1)); return
+    fi
 
     local SYSTEM_PROMPT
     SYSTEM_PROMPT=$(get_system_prompt "$TARGET_LANG")

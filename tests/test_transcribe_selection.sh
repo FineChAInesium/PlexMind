@@ -46,6 +46,11 @@ has_full_subtitle "$V" || fail "an untagged Movie.srt was not counted"
 rm -f "$V.srt"; touch "$V.es-MX.srt"
 has_full_subtitle "$V" || fail "a regional language tag was not counted"
 
+# --- A subtitle's video is found whatever the extension's case ---
+touch "$TEMP_ROOT/Show.S01E01.MKV" "$TEMP_ROOT/Show.S01E01.nfo"
+[ "$(video_for_subtitle "$TEMP_ROOT" Show.S01E01)" = "$TEMP_ROOT/Show.S01E01.MKV" ] || fail "video for a subtitle not found"
+video_for_subtitle "$TEMP_ROOT" Missing >/dev/null && fail "a missing video was reported"
+
 # --- A permanent failure is retried once its marker is old enough ---
 MARKER="$TEMP_ROOT/Film.ai.failed"
 printf '%s\n%s\n' "$FAIL_VALIDATION" 1 > "$MARKER"

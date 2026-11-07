@@ -18,7 +18,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY scripts/lib.sh scripts/transcribe.sh scripts/translate.sh scripts/maintenance.sh scripts/watermark.sh \
      scripts/stop-job.sh scripts/control_server.py scripts/docker_broker.py scripts/supervisor.py \
      scripts/fix_srt_ordering.py scripts/repair_srt_timestamps.py scripts/dedup_subs.py \
-     scripts/translation_cue.py scripts/pgs_cleanup.py scripts/srt_encoding.py ./
+     scripts/translation_cue.py scripts/pgs_cleanup.py scripts/srt_encoding.py scripts/subtitle_inventory.py ./
 COPY plexmind/app/ ./app/
 
 # The API and recommendation worker run as this user; supervisor.py starts them.

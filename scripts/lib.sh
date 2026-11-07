@@ -116,11 +116,6 @@ script_helper() {
     printf '%s/%s' "${SCRIPT_DIR:-$(dirname "${BASH_SOURCE[0]}")}" "$1"
 }
 
-# Map a container (ISO 639-2) or Whisper language tag to the ISO 639-1 code
-# used in subtitle names and Whisper requests. Whisper rejects other
-# three-letter codes, so an unmapped one comes back empty and the caller
-# detects the language instead. Anything else also comes back empty, so
-# untrusted media metadata never reaches a path or URL.
 # --- AUDIO TRACK ---
 # Prints "<stream index> <language tag>" for the audio track to transcribe:
 # with PREFER=english the first English-tagged track, with PREFER=foreign the
@@ -172,6 +167,32 @@ has_full_subtitle() {
     return 1
 }
 
+# Prints where (embedded / Plex) and succeeds if VIDEO already has a full,
+# not forced, subtitle in LANG that Plex can show: a track inside the file,
+# or one Plex lists for it, including subtitles Plex downloaded itself.
+# Sidecar .srt files are has_full_subtitle's job. See subtitle_inventory.py.
+existing_subtitle_source() {
+    python3 "$(script_helper subtitle_inventory.py)" has "$2" "$1" 2>/dev/null
+}
+
+# Prints the video a subtitle belongs to: DIR/BASE.<video extension>, any case.
+video_for_subtitle() {
+    local dir="$1" base="$2" f
+    shopt -s nullglob
+    local candidates=( "${dir}/${base}".* )
+    shopt -u nullglob
+    for f in "${candidates[@]}"; do
+        case "${f##*.}" in
+            [Mm][Kk][Vv]|[Mm][Pp]4|[Aa][Vv][Ii]|[Mm][Oo][Vv]|[Ww][Mm][Vv]|[Mm]4[Vv]) printf '%s' "$f"; return 0 ;;
+        esac
+    done
+    return 1
+}
+# Map a container (ISO 639-2) or Whisper language tag to the ISO 639-1 code
+# used in subtitle names and Whisper requests. Whisper rejects other
+# three-letter codes, so an unmapped one comes back empty and the caller
+# detects the language instead. Anything else also comes back empty, so
+# untrusted media metadata never reaches a path or URL.
 normalize_lang_code() {
     local code
     code=$(printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]' | cut -d'-' -f1)

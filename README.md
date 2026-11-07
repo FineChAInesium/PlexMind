@@ -320,6 +320,7 @@ when `WHISPER_MODEL` does not match a cached model artifact.
 | `CHUNK_RETRY_ATTEMPTS` | Attempts per cue before it keeps its original line (or, for llama.cpp errors, the file stops and resumes later). | `3` |
 | `FAILED_RETRY_HOURS` | Hours before a failed file is tried again. | `24` |
 | `TRANSCRIBE_FAILED_RETRY_DAYS` | Days before transcription retries a video that failed permanently (validation, no usable audio); `0` never retries. | `30` |
+| `SUBTITLE_INVENTORY_TTL_HOURS` | Transcription and translation skip a video that already has a full subtitle in that language: a `.srt` beside it, a track inside the file, or any subtitle Plex lists for it (including ones Plex downloaded). Forced tracks don't count, and languages match on their base (any Spanish covers `es-MX`). The answer is cached per file for this many hours. | `24` |
 | `LLAMA_ON_DEMAND` | Start llama.cpp when needed and stop it when idle. | `0` |
 | `LLAMA_IDLE_STOP_MINUTES` | Idle minutes before an on-demand llama.cpp is stopped. | `15` |
 | `LLAMA_STARTUP_TIMEOUT_SECONDS` | How long to wait for an on-demand llama.cpp to load its model. | `180` |

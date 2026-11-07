@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Skip transcribing or translating a video that already has a full subtitle in that language anywhere Plex can show it: a track embedded in the file, or any subtitle Plex lists for it, including ones Plex downloaded itself. Before, only `.srt` files beside the video counted. Forced tracks never count, and languages match on their base (any Spanish covers `es-MX`, any Chinese `zh`). Answers are cached per file for `SUBTITLE_INVENTORY_TTL_HOURS` (24). On the author's library this skips about half of the queued translations.
+
 ## v0.9.5 - 2026-11-07
 
 - Upgrade the base image's Alpine packages at build time: zlib 1.3.2 (CVE-2026-4738, critical) failed the v0.9.4 release scan.
