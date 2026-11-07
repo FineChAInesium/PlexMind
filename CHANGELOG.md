@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+- Watermark: put the cue after a UTF-8 byte-order mark, and leave UTF-16 and other non-UTF-8 subtitles untouched (logged as skipped) instead of corrupting them.
+- Dedup: never weigh a job's in-progress `Title.ai.srt`, `.ai-<lang>.srt` or `translate_tmp` file (a crashed transcription's partial could get a user's untagged `Title.srt` quarantined); count UTF-16 cues; read `Title.hi.srt` as Hindi.
+- PGS cleanup: PlexMind's own Whisper/LLM subtitles no longer replace authored image subtitles unless `PGS_CLEANUP_ALLOW_GENERATED=1`, and a regular or SDH replacement needs at least 20 cues.
+- Job control: the control server sees a job started with `docker exec` and no longer deletes its PID file; `stop-job.sh` signals only a process running the job's script, never whatever now owns a stale PID.
+- Ordering fixer: treat whitespace-only lines as cue separators and keep position tags after the end time.
+- `repair_srt_timestamps.py`: skip non-UTF-8 files instead of mangling them, require the real media lock, keep file ownership, and continue past unreadable files.
+- Audit and dashboard: count subtitles the way transcription does, read translation targets from `TARGET_LANGUAGES`, and label the quarantine count as videos.
+- A translation run still going when its next window opens now counts for that window, instead of deferring on its own GPU load all night.
 ## v0.9.3 - 2026-11-03
 
 - Never recommend a title Plex marks as watched for the user (any view of a movie, any watched episode of a show). Watched titles were only taken from the last `HISTORY_LIMIT` history entries, where every episode is one entry, so a title watched long ago was recommended again.

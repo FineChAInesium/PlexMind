@@ -28,7 +28,8 @@ sed "s#/tmp/#$TEMP_ROOT/#g" "$ROOT_DIR/scripts/stop-job.sh" > "$TEMP_ROOT/stop-j
 
 # A bash job with an EXIT trap waiting on a foreground child, like translate.sh
 # waiting on curl to llama.cpp.
-cat > "$TEMP_ROOT/job.sh" <<'EOF'
+# Named like the real job: stop-job.sh checks the PID runs translate.sh.
+cat > "$TEMP_ROOT/translate.sh" <<'EOF'
 #!/bin/bash
 set -euo pipefail
 trap 'rm -f "$JOB_PID_FILE"' EXIT
@@ -56,7 +57,7 @@ wait_until() {
 
 start_job() {
     rm -f "$JOB_PID_FILE" "$CHILD_PID_FILE"
-    "$@" bash "$TEMP_ROOT/job.sh" </dev/null >/dev/null 2>&1 &
+    "$@" bash "$TEMP_ROOT/translate.sh" </dev/null >/dev/null 2>&1 &
     job_bg=$!
     wait_until [ -s "$CHILD_PID_FILE" ] || fail "fake job did not start"
     job_pid=$(cat "$JOB_PID_FILE")
@@ -90,6 +91,17 @@ run_stop
 wait_until gone "$job_pid" || fail "stop-job.sh did not fall back to signalling the job's PID"
 wait "$job_bg" || true
 job_pid=""
+
+# A PID file left behind after its job ended, whose PID now belongs to some
+# other process: that process must not be signalled.
+setsid sleep 30 </dev/null >/dev/null 2>&1 &
+other=$!
+echo "$other" > "$JOB_PID_FILE"
+run_stop
+[ "$rc" -eq 0 ] || fail "stop-job.sh exited $rc for a stale PID file: $out"
+alive "$other" || fail "stop-job.sh signalled an unrelated process through a stale PID file"
+[ ! -e "$JOB_PID_FILE" ] || fail "stop-job.sh kept a stale PID file"
+kill -KILL "$other" 2>/dev/null || true
 
 # PID 0 would make kill signal stop-job.sh's own process group.
 echo 0 > "$JOB_PID_FILE"

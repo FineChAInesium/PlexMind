@@ -2,8 +2,8 @@
 set -eu
 
 case "${1:-}" in
-  transcribe|transcription) pid_file=/tmp/transcription_backfill.pid ;;
-  translate|translation) pid_file=/tmp/translation_backfill.pid ;;
+  transcribe|transcription) pid_file=/tmp/transcription_backfill.pid; script=transcribe.sh ;;
+  translate|translation) pid_file=/tmp/translation_backfill.pid; script=translate.sh ;;
   *) echo "Usage: $0 {transcribe|translate}" >&2; exit 2 ;;
 esac
 
@@ -17,7 +17,10 @@ case "$pid" in
   ''|0*|*[!0-9]*) echo "Invalid PID file: $pid_file" >&2; rm -f "$pid_file"; exit 1 ;;
 esac
 
-if kill -0 "$pid" 2>/dev/null; then
+# The PID file outlives its job, and the PID may since belong to another
+# process (another job's whole group would be signalled below): only signal
+# a process that is running this job's script.
+if kill -0 "$pid" 2>/dev/null && tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null | grep -q "$script"; then
   # Signal the job's process group (control API and docker exec jobs lead one)
   # so the running curl/ffmpeg child, which holds the job's locks, exits too.
   # "kill -TERM -1" would signal every process, so PID 1 gets a plain kill.

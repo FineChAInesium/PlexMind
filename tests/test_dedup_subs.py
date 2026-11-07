@@ -60,6 +60,28 @@ class DedupSubsTests(unittest.TestCase):
             self.assertTrue(moved.exists())
             self.assertEqual(moved.read_text(encoding="utf-8").count(" --> "), 20)
 
+    def test_job_work_files_are_never_weighed(self):
+        for name in ("Movie.ai.srt", "Movie.ai-en.srt", "Movie.en.translate_tmp.srt"):
+            self.assertTrue(dedup.is_work_file(name), name)
+        self.assertFalse(dedup.is_work_file("Movie.en.ai.srt"))  # an older finished Whisper track
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            media = root / "media" / "Movie"
+            media.mkdir(parents=True)
+            _srt(media / "Movie.srt", 30)  # the user's untagged track
+            _srt(media / "Movie.ai.srt", 90)  # a crashed transcription's partial
+            with patch.object(dedup, "QUARANTINE_DIR", root / "quarantine"):
+                self.assertEqual(dedup.main(str(root / "media")), 0)
+            self.assertEqual(sorted(p.name for p in media.iterdir()), ["Movie.ai.srt", "Movie.srt"])
+
+    def test_hindi_and_utf16_tracks(self):
+        self.assertEqual(dedup.classify("Movie.hi.srt"), ("Movie", "hi", ""))
+        with tempfile.TemporaryDirectory() as raw:
+            path = Path(raw) / "Movie.en.srt"
+            text = "".join(f"{i}\n00:00:{i:02d},000 --> 00:00:{i:02d},500\nLine\n\n" for i in range(1, 6))
+            path.write_bytes(text.encode("utf-16"))
+            self.assertEqual(dedup.count_cues(path)[0], 5)
+
 
 if __name__ == "__main__":
     unittest.main()

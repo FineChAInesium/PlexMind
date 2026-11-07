@@ -69,7 +69,9 @@ fi
 
 cp "$TEMP_ROOT/arrow-dialogue.srt" "$TEMP_ROOT/movies/cleanup.en.srt"
 printf 'fixture\n' > "$TEMP_ROOT/movies/cleanup.en.sup"
-cleanup_pgs "$TEMP_ROOT/movies" > "$TEMP_ROOT/pgs-cleanup.log"
+# The fixture is short and carries the PlexMind watermark (above); this checks
+# the count, not the replacement rules (test_pgs_cleanup.py covers those).
+PGS_MIN_REPLACEMENT_CUES=1 PGS_CLEANUP_ALLOW_GENERATED=1 cleanup_pgs "$TEMP_ROOT/movies" > "$TEMP_ROOT/pgs-cleanup.log"
 [ "${PGS_DELETED_COUNT:-0}" -eq 1 ] || {
     echo "PGS cleanup did not expose an exact numeric deletion count" >&2
     exit 1

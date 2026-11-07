@@ -131,10 +131,11 @@ def _proc(job):
         LAST_RESULTS[job] = {"returncode": proc.returncode, "finished_at": time.time()}
         _persist(job, status=status, returncode=proc.returncode, finished_at=time.time(), pid=None)
         PROCS.pop(job, None)
-        pid_file = JOBS[job].get("pid_file")
-        if pid_file and Path(pid_file).exists():
+        # Only this run's PID file: a run started with docker exec owns the
+        # file when this one exited at once on the held lock (75).
+        if _pid_from_file(job) == proc.pid:
             try:
-                Path(pid_file).unlink()
+                Path(JOBS[job]["pid_file"]).unlink()
             except OSError:
                 pass
         return None
@@ -152,25 +153,33 @@ def _pid_from_file(job):
         return None
 
 
+def _runs_job(job, pid):
+    """Whether PID is alive and running JOB's script."""
+    try:
+        os.kill(pid, 0)
+        command = Path(f"/proc/{pid}/cmdline").read_bytes().replace(b"\0", b" ").decode(errors="replace")
+    except OSError:
+        return False
+    return JOBS[job]["cmd"][0] in command
+
+
 def _running_pid(job):
     proc = _proc(job)
     if proc:
         return proc.pid
     record = _load_state().get(job) or {}
-    pid = record.get("pid") or _pid_from_file(job)
-    if pid:
-        try:
-            os.kill(pid, 0)
-            command = Path(f"/proc/{pid}/cmdline").read_bytes().replace(b"\0", b" ").decode(errors="replace")
-            expected = JOBS[job]["cmd"][0]
-            if (expected in command
-                    and record.get("boot_id") == _boot_id()
-                    and record.get("start_ticks") == _proc_start_ticks(pid)):
-                return pid
-        except OSError:
-            pass
-        if record.get("status") in ("running", "stopping"):
-            _persist(job, status="interrupted", pid=None, finished_at=time.time(), returncode=None)
+    pid = record.get("pid")
+    if (pid and _runs_job(job, pid)
+            and record.get("boot_id") == _boot_id()
+            and record.get("start_ticks") == _proc_start_ticks(pid)):
+        return pid
+    # A run started with docker exec has only its PID file. The script name
+    # in its command line guards against a reused PID.
+    file_pid = _pid_from_file(job)
+    if file_pid and _runs_job(job, file_pid):
+        return file_pid
+    if record.get("status") in ("running", "stopping"):
+        _persist(job, status="interrupted", pid=None, finished_at=time.time(), returncode=None)
     return None
 
 

@@ -818,17 +818,40 @@ replace_keeping_metadata() {
 }
 
 # Prepend the watermark cue. WATERMARK_TMP_FILE names the temp file while it
-# exists so callers can remove it from an EXIT trap.
+# exists so callers can remove it from an EXIT trap. The cue is UTF-8, so it
+# goes after a UTF-8 byte-order mark, and a UTF-16 or other non-UTF-8 file is
+# left alone (returns 3) rather than spliced into a mix of two encodings;
+# maintenance's encoding repair converts those first.
 prepend_watermark() {
-    local SUB_FILE="$1"
+    local SUB_FILE="$1" status
     WATERMARK_TMP_FILE="${SUB_FILE}.tmp"
-    if { printf '0\n00:00:00,000 --> 00:00:05,000\n%s\n\n' "${WATERMARK_TEXT}" && cat "$SUB_FILE"; } > "$WATERMARK_TMP_FILE" \
-        && replace_keeping_metadata "$WATERMARK_TMP_FILE" "$SUB_FILE"; then
+    python3 - "$SUB_FILE" "$WATERMARK_TMP_FILE" "$WATERMARK_TEXT" <<'PYEOF'
+import codecs, sys
+src, dst, text = sys.argv[1:4]
+data = open(src, "rb").read()
+bom = codecs.BOM_UTF8 if data.startswith(codecs.BOM_UTF8) else b""
+body = data[len(bom):]
+try:
+    if b"\0" in body:
+        raise ValueError("NUL bytes")
+    body.decode("utf-8")
+except ValueError:
+    sys.exit(3)
+cue = f"0\n00:00:00,000 --> 00:00:05,000\n{text}\n\n".encode("utf-8")
+with open(dst, "wb") as out:
+    out.write(bom + cue + body)
+PYEOF
+    status=$?
+    if [ "$status" -eq 0 ] && replace_keeping_metadata "$WATERMARK_TMP_FILE" "$SUB_FILE"; then
         WATERMARK_TMP_FILE=""
         return 0
     fi
     rm -f "$WATERMARK_TMP_FILE"
     WATERMARK_TMP_FILE=""
+    if [ "$status" -eq 3 ]; then
+        log "  WATERMARK: ${SUB_FILE##*/} is not UTF-8; left as is until its encoding is repaired."
+        return 3
+    fi
     log "  WATERMARK: Could not watermark ${SUB_FILE##*/}. Keeping original."
     return 1
 }
@@ -1345,6 +1368,7 @@ verify_encoding() {
 pgs_cleanup_helper() {
     local args=()
     [ "${PGS_CLEANUP_ALLOW_UNKNOWN:-0}" = "1" ] && args+=( --allow-unknown )
+    [ "${PGS_CLEANUP_ALLOW_GENERATED:-0}" = "1" ] && args+=( --allow-generated )
     python3 "$(script_helper pgs_cleanup.py)" "${args[@]}" "$@"
 }
 
@@ -1418,11 +1442,9 @@ audit_library() {
             local VBASE="${VIDEO##*/}"
             local VNAME="${VBASE%.*}"
 
-            shopt -s nullglob nocaseglob
-            local SUBS=( "${VDIR}/${VNAME}".*.srt )
-            shopt -u nullglob nocaseglob
-
-            if [ ${#SUBS[@]} -eq 0 ]; then
+            # Same rule as transcription: a plain Title.srt counts; a forced-only
+            # track or a crashed run's Title.ai.srt does not.
+            if ! has_full_subtitle "${VDIR}/${VNAME}"; then
                 echo "  [NO SUBS] ${VIDEO}"
                 NO_SUBS=$((NO_SUBS + 1))
             fi
@@ -1433,7 +1455,8 @@ audit_library() {
 
         echo "## VIDEOS MISSING TRANSLATIONS"
         echo ""
-        local TARGET_LANGS=("zh" "es-MX")
+        local TARGET_LANGS
+        IFS=',' read -ra TARGET_LANGS <<< "${TARGET_LANGUAGES:-zh,es-MX}"
         while IFS= read -r -d '' SRT; do
             TOTAL_SRTS=$((TOTAL_SRTS + 1))
             local SDIR="${SRT%/*}"
@@ -1636,7 +1659,9 @@ generate_report() {
         if [ -f "$QUARANTINE_LOG" ]; then
             local Q_COUNT
             Q_COUNT=$(wc -l < "$QUARANTINE_LOG")
-            echo "Total quarantined: ${Q_COUNT}"
+            # quarantine.log records quarantined videos only; dedup, PGS and
+            # partial cleanups keep their own logs under the quarantine dir.
+            echo "Quarantined videos: ${Q_COUNT}"
             echo ""
             echo "**Recent entries (last 20):**"
             echo ""
@@ -1659,10 +1684,7 @@ generate_report() {
             local VD="${V%/*}"
             local VN="${V##*/}"
             VN="${VN%.*}"
-            shopt -s nullglob nocaseglob
-            local V_SUBS=( "${VD}/${VN}".*.srt )
-            shopt -u nullglob nocaseglob
-            if [ ${#V_SUBS[@]} -gt 0 ]; then
+            if has_full_subtitle "${VD}/${VN}"; then
                 V_WITH_SUBS=$((V_WITH_SUBS + 1))
             fi
         done < <(find "${MOVIE_DIR}" "${TV_DIR}" -type f \( -iname "*.mkv" -o -iname "*.mp4" -o -iname "*.avi" -o -iname "*.mov" -o -iname "*.wmv" -o -iname "*.m4v" \) -print0 2>/dev/null)

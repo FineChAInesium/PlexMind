@@ -118,6 +118,15 @@ def test_a_user_stop_is_not_resumed(plane):
     assert ("start", "translate") not in plane.calls
 
 
+def test_a_running_backlog_covers_the_new_translation_window(plane):
+    gpu = AsyncMock(return_value={"vendor": "nvidia", "pct": 99, "probe_error": None})
+    with patch.object(scheduler, "_sustained_gpu_info", gpu):
+        translate_tick()
+    assert plane.calls == []  # no second launch
+    gpu.assert_not_called()  # and no GPU sampling against its own load
+    assert "translate" in scheduler._SCRIPT_LAST_WINDOW
+
+
 def test_a_stale_pause_resumes_even_if_its_pauser_never_ran(plane):
     scheduler._record_pause({"for": "recommendations", "at": time.time() - scheduler.PAUSE_MAX_SECONDS - 1})
     plane.translating = False

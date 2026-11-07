@@ -327,6 +327,7 @@ when `WHISPER_MODEL` does not match a cached model artifact.
 | `GPU_PROBE_CONTAINERS` | Containers the GPU-busy check runs `nvidia-smi` in, in order. | `llama-cpp` |
 | `PLEXMIND_GPU_PROBE_CONTAINERS` | Extra containers the broker may run the fixed GPU probe in. | blank |
 | `PGS_CLEANUP_ALLOW_UNKNOWN` | Let PGS cleanup act on image subtitles with no language tag. | `0` |
+| `PGS_CLEANUP_ALLOW_GENERATED` | `1` lets PlexMind's own Whisper or LLM subtitles replace authored image subtitles in PGS cleanup; by default only other text subtitles (with at least 20 cues, or any forced track) replace them. | `0` |
 | `OMDB_NOT_FOUND_TTL_SECONDS` | How long an OMDb "not found" is cached. Errors and rate limits are never cached. | `604800` (7 days) |
 | `TARGET_LANGUAGES` | Comma-separated subtitle translation targets. | `zh,es-MX` |
 | `MAX_RECOMMENDATIONS` | Picks per user. | `10` |

@@ -24,10 +24,26 @@ DATA_DIR = Path(os.getenv("DATA_DIR", "/app/data"))
 QUARANTINE_DIR = Path(os.getenv("DEDUP_QUARANTINE_DIR", str(DATA_DIR / "quarantine" / "dedup")))
 
 LANG_RE = re.compile(r"^[a-z]{2,3}(-[a-z]{2,4})?$")
-# Provenance marker only; a Whisper ".ai" track is a duplicate of a regular one.
+# Provenance marker only: an older Whisper "Title.<lang>.ai.srt" is a finished
+# track and a duplicate of a regular one.
 PROVENANCE_TAGS = {"ai"}
+# transcribe.sh's Title.ai-<lang>.srt (finished, not yet final) and the
+# bilingual pass's temporary file belong to a job, not to the library.
+WORK_FILE_RE = re.compile(r"\.(ai-[a-z]{2,3}(-[a-z0-9]{2,8})?|translate_tmp)\.srt$", re.IGNORECASE)
 # Track-kind tags; hi/sdh/cc are the same kind of track.
 KIND_TAGS = {"hi": "sdh", "sdh": "sdh", "cc": "sdh", "forced": "forced"}
+
+
+def is_work_file(filename):
+    """A job's file: Title.ai.srt (in progress, no language before "ai"),
+    Title.ai-<lang>.srt or a translate_tmp. Dedup must never weigh these:
+    an in-progress Title.ai.srt grouped with an untagged Title.srt, whatever
+    its language, and one of the two was quarantined."""
+    if WORK_FILE_RE.search(filename):
+        return True
+    parts = filename[:-4].split(".") if filename.lower().endswith(".srt") else filename.split(".")
+    return len(parts) > 1 and parts[-1].lower() == "ai" and not (
+        len(parts) > 2 and LANG_RE.match(parts[-2].lower()))
 
 
 def classify(filename):
@@ -40,6 +56,10 @@ def classify(filename):
     while len(parts) > 1:
         tail = parts[-1].lower()
         if tail in PROVENANCE_TAGS:
+            parts.pop()
+        elif tail == "hi" and lang is None and not (len(parts) > 2 and LANG_RE.match(parts[-2].lower())):
+            # "hi" is Hindi unless a language comes before it (Title.en.hi.srt).
+            lang = tail
             parts.pop()
         elif tail in KIND_TAGS:
             kinds.add(KIND_TAGS[tail])
@@ -54,11 +74,14 @@ def classify(filename):
 
 def count_cues(path):
     try:
-        with open(path, "r", encoding="utf-8", errors="replace") as f:
-            content = f.read()
-        return len(re.findall(r" --> ", content)), os.path.getsize(path)
+        with open(path, "rb") as f:
+            data = f.read()
     except OSError:
         return 0, 0
+    # A UTF-16 file read as UTF-8 counted 0 cues and always lost.
+    encoding = "utf-16" if data.startswith((b"\xff\xfe", b"\xfe\xff")) else "utf-8"
+    content = data.decode(encoding, errors="replace")
+    return len(re.findall(r" --> ", content)), len(data)
 
 
 def quarantine(path, scan_dir):
@@ -75,7 +98,7 @@ def main(scan_dir):
     groups = defaultdict(list)
     for root, _dirs, files in os.walk(scan_dir):
         for name in files:
-            if not name.lower().endswith(".srt"):
+            if not name.lower().endswith(".srt") or is_work_file(name):
                 continue
             groups[(root, *classify(name))].append(os.path.join(root, name))
 

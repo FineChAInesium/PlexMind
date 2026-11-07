@@ -26,6 +26,7 @@ prepare_log_file
 export FILES_SCANNED=0
 export WATERMARKS_ADDED=0
 export ALREADY_WATERMARKED=0
+export SKIPPED_ENCODING=0
 
 log "========================================================="
 log "Starting Mass SRT Watermark Injection"
@@ -59,7 +60,12 @@ for DIR in "${ALL_MEDIA_DIRS[@]}"; do
             *)
                 # Writes WATERMARK_TEXT literally (like transcribe.sh), keeps the
                 # file's mode/owner and never leaves its temp file behind.
-                if ! prepend_watermark "$SUB_FILE"; then
+                rc=0
+                prepend_watermark "$SUB_FILE" || rc=$?
+                if [ "$rc" -eq 3 ]; then
+                    SKIPPED_ENCODING=$((SKIPPED_ENCODING + 1))
+                    continue
+                elif [ "$rc" -ne 0 ]; then
                     log "ERROR: Failed to watermark ${SUB_FILE}."
                     exit 2
                 fi
@@ -77,4 +83,5 @@ log "Injection Session Finished!"
 log "Total SRT Files Scanned: ${FILES_SCANNED}"
 log "New Watermarks Added: ${WATERMARKS_ADDED}"
 log "Skipped (Already Watermarked): ${ALREADY_WATERMARKED}"
+log "Skipped (Not UTF-8; run maintenance encoding repair): ${SKIPPED_ENCODING}"
 log "========================================================="

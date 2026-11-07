@@ -26,6 +26,10 @@ DATA_DIR = Path(os.getenv("DATA_DIR", "/app/data"))
 BACKUP_DIR = Path(os.getenv("ORDERING_BACKUP_DIR", str(DATA_DIR / "quarantine" / "srt-ordering-backups")))
 LOCK_FILE = Path(os.getenv("MEDIA_MUTATION_LOCK", str(DATA_DIR / "plexmind_media_mutation.lock")))
 
+# Cues are separated by blank lines; a "blank" line may hold spaces or tabs.
+BLOCK_SEPARATOR = re.compile(r'\n(?:[ \t]*\n)+')
+
+
 def parse_time_ms(ts):
     m = re.match(r'(\d{2}):(\d{2}):(\d{2}),(\d{3})', ts)
     if not m:
@@ -36,7 +40,7 @@ def parse_time_ms(ts):
 def parse_srt(content):
     content = content.replace('\r\n', '\n').replace('\r', '\n')
     blocks = []
-    for raw in re.split(r'\n{2,}', content.strip()):
+    for raw in BLOCK_SEPARATOR.split(content.strip()):
         lines = raw.strip().split('\n')
         if not lines:
             continue
@@ -44,8 +48,9 @@ def parse_srt(content):
         idx = 1 if re.match(r'^\d+$', lines[0]) else 0
         if idx >= len(lines):
             continue
+        # Keep whatever follows the end time (X1:/Y1: positions) on rewrite.
         m = re.match(
-            r'(\d{2}:\d{2}:\d{2},\d{3}) --> (\d{2}:\d{2}:\d{2},\d{3})',
+            r'(\d{2}:\d{2}:\d{2},\d{3}) --> (\d{2}:\d{2}:\d{2},\d{3})(.*)$',
             lines[idx]
         )
         if not m:
@@ -57,7 +62,7 @@ def parse_srt(content):
         text = '\n'.join(lines[idx + 1:]).strip()
         if not text:
             continue
-        blocks.append((start_ms, end_ms, start_str, end_str, text))
+        blocks.append((start_ms, end_ms, start_str, end_str + m.group(3).rstrip(), text))
     return blocks
 
 def fix_file(path):
@@ -72,7 +77,7 @@ def fix_file(path):
     blocks = parse_srt(content)
     if not blocks:
         return 'skip', 'no blocks parsed'
-    raw_blocks = [block for block in re.split(r'\n{2,}', content.replace('\r\n', '\n').replace('\r', '\n').strip()) if block.strip()]
+    raw_blocks = [block for block in BLOCK_SEPARATOR.split(content.replace('\r\n', '\n').replace('\r', '\n').strip()) if block.strip()]
     if len(blocks) != len(raw_blocks):
         return 'error', f'refusing lossy rewrite: parsed {len(blocks)} of {len(raw_blocks)} blocks'
 

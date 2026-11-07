@@ -11,7 +11,9 @@ _spec = importlib.util.spec_from_file_location("pgs_cleanup_under_test", ROOT / 
 pgs = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(pgs)
 
-SRT = "1\n00:00:01,000 --> 00:00:02,000\nHello.\n"
+# A full text track: enough cues to replace a regular image track.
+SRT = "".join(f"{i}\n00:00:{i:02d},000 --> 00:00:{i:02d},500\nLine {i}.\n\n" for i in range(1, 26))
+SHORT_SRT = "1\n00:00:01,000 --> 00:00:02,000\nHello.\n"
 
 
 class PgsCleanupTests(unittest.TestCase):
@@ -122,6 +124,22 @@ class PgsCleanupTests(unittest.TestCase):
         records = out.buffer.getvalue().split(b"\0")
         self.assertEqual(records, [str(self.media / "Movie.en.sup").encode(), b""])
         self.assertIn("Movie.en.sup", self.remaining())
+
+
+    def test_generated_or_near_empty_srt_does_not_replace_an_authored_track(self):
+        self.add("Movie.zh.sup", "Movie.en.sup", "Movie.en.forced.sup")
+        watermarked = "0\n00:00:00,000 --> 00:00:05,000\nBrought to you by PlexMind\n\n" + SRT
+        self.add("Movie.zh.srt", content=watermarked)  # an LLM translation
+        self.add("Movie.en.srt", content=SHORT_SRT)  # a one-cue stub
+        self.add("Movie.en.forced.srt", content=SHORT_SRT)  # forced tracks are short
+        self.cleanup()
+        self.assertEqual(self.remaining(), ["Movie.en.forced.srt", "Movie.en.srt", "Movie.en.sup", "Movie.zh.srt", "Movie.zh.sup"])
+        self.cleanup("--allow-generated")
+        self.assertNotIn("Movie.zh.sup", self.remaining())
+
+    def test_hi_alone_is_hindi_not_hearing_impaired(self):
+        self.assertEqual(pgs.classify("Movie.hi"), ("movie", "hi", ""))
+        self.assertEqual(pgs.classify("Movie.en.hi"), ("movie", "en", "sdh"))
 
 
 if __name__ == "__main__":

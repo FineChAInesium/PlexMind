@@ -400,6 +400,14 @@ async def _script_window_tick(job: str, title: str, start_hour: int, end_hour: i
     if last_key == window_key:
         return
 
+    # A backlog run from an earlier window is still going: this window is
+    # covered. Without this, its own GPU load deferred the launch all night.
+    if job == "translate" and await _translation_running():
+        _SCRIPT_LAST_WINDOW[job] = window_key
+        state = _load_schedule_state(); state["window_receipts"] = dict(_SCRIPT_LAST_WINDOW); _save_schedule_state(state)
+        log.info("%s is already running; window %s needs no new launch.", title, window_key)
+        return
+
     # Defer if recommendation batch is running (sentinel written by _do_run_all_users)
     if Path(SENTINEL_PATH).exists():
         log.info("%s scheduled launch deferred — recommendation batch is in progress.", title)

@@ -31,7 +31,11 @@ def from_ms(value: int) -> str:
 
 
 def repair(path: Path, backup_root: Path) -> tuple[int, Path | None]:
-    raw = path.read_text(encoding="utf-8", errors="replace")
+    data = path.read_bytes()
+    bom = "﻿" if data.startswith(b"\xef\xbb\xbf") else ""
+    # Strict: decoding cp1252 or GBK with errors="replace" and writing UTF-8
+    # back turned every accented or CJK letter into U+FFFD.
+    raw = data.decode("utf-8-sig")
     newline = "\r\n" if "\r\n" in raw else "\n"
     lines = raw.replace("\r\n", "\n").replace("\r", "\n").split("\n")
     parsed = [(index, match) for index, line in enumerate(lines) if (match := STAMP.match(line))]
@@ -61,13 +65,21 @@ def repair(path: Path, backup_root: Path) -> tuple[int, Path | None]:
         shutil.copy2(path, backup)
         os.chmod(backup, 0o600)
 
-    repaired = newline.join(lines)
+    repaired = bom + newline.join(lines)
     with tempfile.NamedTemporaryFile("w", encoding="utf-8", newline="", dir=path.parent, delete=False) as handle:
         temporary = Path(handle.name)
         handle.write(repaired)
         handle.flush()
         os.fsync(handle.fileno())
-    os.chmod(temporary, path.stat().st_mode & 0o777)
+    original = path.stat()
+    os.chmod(temporary, original.st_mode & 0o777)
+    if hasattr(os, "chown"):
+        try:
+            # Run as root, the replacement would otherwise belong to root and
+            # Bazarr could no longer overwrite it.
+            os.chown(temporary, original.st_uid, original.st_gid)
+        except PermissionError:
+            pass
     os.replace(temporary, path)
     return fixes, backup
 
@@ -96,8 +108,12 @@ def main() -> int:
         paths = [Path(os.fsdecode(value)) for value in sys.stdin.buffer.read().split(b"\0") if value]
     lock_file = args.lock_file
     if lock_file is None:
+        # A private lock would exclude nothing: translation could replace a
+        # file at the same moment and one of the two versions would be lost.
         data_dir = os.getenv("DATA_DIR")
-        lock_file = Path(data_dir) / "plexmind_media_mutation.lock" if data_dir else args.backup_root / ".media-mutation.lock"
+        if not data_dir:
+            parser.error("--lock-file (PlexMind's data/plexmind_media_mutation.lock) or DATA_DIR is required")
+        lock_file = Path(data_dir) / "plexmind_media_mutation.lock"
     lock_file.parent.mkdir(parents=True, exist_ok=True)
     total = 0
     with lock_file.open("a+") as lock:
@@ -107,7 +123,14 @@ def main() -> int:
             print(f"Another media mutation is running (lock: {lock_file}).")
             return 1
         for path in paths:
-            fixes, backup = repair(path, args.backup_root)
+            try:
+                fixes, backup = repair(path, args.backup_root)
+            except UnicodeDecodeError:
+                print(f"SKIPPED not UTF-8 (repair its encoding first): {path}")
+                continue
+            except OSError as exc:
+                print(f"SKIPPED {exc.strerror or exc}: {path}")
+                continue
             if fixes:
                 total += fixes
                 print(f"REPAIRED fixes={fixes} backup={backup} file={path}")
