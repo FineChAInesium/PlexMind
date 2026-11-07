@@ -4,7 +4,10 @@ ENV TZ=UTC
 
 WORKDIR /app
 
-RUN apk add --no-cache \
+# apk upgrade pulls in security fixes released since the pinned base image
+# (zlib 1.3.2 -> 1.4 for CVE-2026-4738 failed the v0.9.4 release scan).
+RUN apk upgrade --no-cache \
+    && apk add --no-cache \
     bash curl file jq ffmpeg tini tzdata \
     && ln -snf /usr/share/zoneinfo/$TZ /etc/localtime \
     && echo $TZ > /etc/timezone
