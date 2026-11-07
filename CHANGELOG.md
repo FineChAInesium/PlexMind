@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.9.4 - 2026-11-07
 
 - Watermark: put the cue after a UTF-8 byte-order mark, and leave UTF-16 and other non-UTF-8 subtitles untouched (logged as skipped) instead of corrupting them.
 - Dedup: never weigh a job's in-progress `Title.ai.srt`, `.ai-<lang>.srt` or `translate_tmp` file (a crashed transcription's partial could get a user's untagged `Title.srt` quarantined); count UTF-16 cues; read `Title.hi.srt` as Hindi.
