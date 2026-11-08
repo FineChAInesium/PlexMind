@@ -4,6 +4,8 @@
 # Version: 0.9.7 — PlexMind release line
 #
 # Finds .en.srt files, translates to target languages using llama.cpp's OpenAI-compatible chat API.
+# A video with no .en.srt is translated from an English text subtitle inside the
+# file or held by Plex, if it has one (see subtitle_inventory.py).
 # Sends TRANSLATION_BATCH_CUES consecutive cues per request as a JSON array and
 # requires a JSON array of exactly that many translations back; any cue the
 # batch does not deliver is retried one cue per request. The SRT envelope is
@@ -173,6 +175,59 @@ split_source_path() {
     BASENAME_NO_EXT="$name"
 }
 
+# --- WHAT IS LEFT TO DO ---
+# True if BASE in DIR already has an .srt in target language LANG.
+translation_exists() {
+    local dir="$1" base="$2" lang="$3"
+    shopt -s nullglob nocaseglob
+    local ex=( "${dir}/${base}"*.${lang}.srt "${dir}/${base}.${lang}"*.srt )
+    shopt -u nullglob nocaseglob
+    [ ${#ex[@]} -gt 0 ]
+}
+
+# True if LANG is still to do: no .srt yet, and no failure still waiting out
+# FAILED_RETRY_HOURS.
+translation_due() {
+    local dir="$1" base="$2" lang="$3" marker="$1/$2.$3.failed"
+    if [ -f "$marker" ]; then
+        local age=$(( $(date +%s) - $(stat -c %Y "$marker" 2>/dev/null || echo 0) ))
+        [ "$age" -lt $((FAILED_RETRY_HOURS * 3600)) ] && return 1
+    fi
+    ! translation_exists "$dir" "$base" "$lang"
+}
+
+# Videos whose only source is inside the file or held by Plex. Sets
+# EXISTING_SOURCE_VIDEOS and EXISTING_SOURCE_PENDING. Nothing is extracted
+# until a video's turn comes, so this stays cheap on a large library.
+find_existing_source_videos() {
+    EXISTING_SOURCE_VIDEOS=()
+    EXISTING_SOURCE_PENDING=0
+    local video name dir base tl due sidecars
+    while IFS= read -r -d '' video; do
+        name="${video##*/}"; dir="${video%/*}"; base="${name%.*}"
+        # [.] makes each one a glob, so nocaseglob matches it as the .srt walk would.
+        shopt -s nullglob nocaseglob
+        sidecars=( "${dir}/${base}.${SOURCE_LANG}"[.]srt "${dir}/${base}.${SOURCE_LANG}"[.]sdh.srt "${dir}/${base}.${SOURCE_LANG}"[.]hi.srt "${dir}/${base}"[.]hi."${SOURCE_LANG}".srt "${dir}/${base}"[.]sdh."${SOURCE_LANG}".srt )
+        shopt -u nullglob nocaseglob
+        [ ${#sidecars[@]} -eq 0 ] || continue   # the .srt walk translates this one
+
+        due=()
+        for tl in "${TARGET_LANGUAGES[@]}"; do
+            translation_due "$dir" "$base" "$tl" && due+=("$tl")
+        done
+        [ ${#due[@]} -gt 0 ] || continue
+        existing_text_source "$video" "$SOURCE_LANG" >/dev/null || continue
+
+        local pending=0
+        for tl in "${due[@]}"; do
+            existing_subtitle_source "$video" "$tl" >/dev/null || pending=$((pending+1))
+        done
+        [ "$pending" -gt 0 ] || continue
+        EXISTING_SOURCE_VIDEOS+=("$video")
+        EXISTING_SOURCE_PENDING=$((EXISTING_SOURCE_PENDING + pending))
+    done < <(find "${ALL_MEDIA_DIRS[@]}" -type f \( -iname "*.mkv" -o -iname "*.mp4" -o -iname "*.avi" -o -iname "*.mov" -o -iname "*.wmv" -o -iname "*.m4v" \) -print0 2>/dev/null)
+}
+
 # --- CALCULATE PENDING ---
 calculate_pending_jobs() {
     log "Pre-scanning for pending translations..."
@@ -184,19 +239,13 @@ calculate_pending_jobs() {
         split_source_path "$SUB_FILE"
 
         for TL in "${TARGET_LANGUAGES[@]}"; do
-            local marker="${DIR_PATH}/${BASENAME_NO_EXT}.${TL}.failed"
-            if [ -f "$marker" ]; then
-                local marker_age=$(( $(date +%s) - $(stat -c %Y "$marker" 2>/dev/null || echo 0) ))
-                [ "$marker_age" -lt $((FAILED_RETRY_HOURS * 3600)) ] && continue
-            fi
-            shopt -s nullglob nocaseglob
-            local EX=( "${DIR_PATH}/${BASENAME_NO_EXT}"*.${TL}.srt "${DIR_PATH}/${BASENAME_NO_EXT}.${TL}"*.srt )
-            shopt -u nullglob nocaseglob
-            [ ${#EX[@]} -eq 0 ] && TEMP_PENDING=$((TEMP_PENDING+1))
+            translation_due "$DIR_PATH" "$BASENAME_NO_EXT" "$TL" && TEMP_PENDING=$((TEMP_PENDING+1))
         done
     done < <(find "${ALL_MEDIA_DIRS[@]}" -type f \( -iname "*.${SOURCE_LANG}.srt" -o -iname "*.${SOURCE_LANG}.sdh.srt" -o -iname "*.${SOURCE_LANG}.hi.srt" -o -iname "*.hi.${SOURCE_LANG}.srt" -o -iname "*.sdh.${SOURCE_LANG}.srt" \) -print0 2>/dev/null)
 
-    log "LIBRARY: ${TEMP_TOTAL} source subs, ${TEMP_PENDING} pending translations"
+    find_existing_source_videos
+    TEMP_PENDING=$((TEMP_PENDING + EXISTING_SOURCE_PENDING))
+    log "LIBRARY: ${TEMP_TOTAL} source subs, ${#EXISTING_SOURCE_VIDEOS[@]} videos with a source inside the file or in Plex, ${TEMP_PENDING} pending translations"
 
     if [ "$LIFETIME_PROCESSED" -gt 0 ] && [ "$LIFETIME_PROCESSING_SECONDS" -gt 0 ]; then
         local AVG=$(( LIFETIME_PROCESSING_SECONDS / LIFETIME_PROCESSED ))
@@ -437,9 +486,11 @@ translate_batch() {
 
 # --- PROCESS SUBTITLE ---
 process_subtitle() {
-    local SOURCE_FILE="$1" TARGET_LANG="$2"
+    # OUTPUT_DIR: where the translation goes when the source is not beside the video.
+    local SOURCE_FILE="$1" TARGET_LANG="$2" OUTPUT_DIR="${3:-}"
     local DIR_PATH BASENAME_NO_EXT
     split_source_path "$SOURCE_FILE"
+    [ -n "$OUTPUT_DIR" ] && DIR_PATH="$OUTPUT_DIR"
 
     local FINAL_OUTPUT_FILE="${DIR_PATH}/${BASENAME_NO_EXT}.${TARGET_LANG}.srt"
     local FAILED_MARKER_FILE="${DIR_PATH}/${BASENAME_NO_EXT}.${TARGET_LANG}.failed"
@@ -665,6 +716,43 @@ PYEOF
     fi
 }
 
+# --- TRANSLATE FROM A SUBTITLE INSIDE THE VIDEO OR HELD BY PLEX ---
+# The source is kept in DATA_DIR, not the library, so Plex does not list a
+# second English subtitle. It stays there until every language is done: a
+# fresh copy would not match an interrupted translation's checkpoint.
+translate_from_existing_source() {
+    local video="$1" name="${1##*/}" dir="${1%/*}" base tl message
+    base="${name%.*}"
+    local cache_dir
+    cache_dir="${DATA_DIR}/translation_sources/$(printf '%s' "$video" | sha256sum | cut -c1-16)"
+    local source_file="${cache_dir}/${base}.${SOURCE_LANG}.srt"
+
+    if [ ! -s "$source_file" ] || [ "$video" -nt "$source_file" ]; then
+        if ! message=$(extract_text_source "$video" "$SOURCE_LANG" "$source_file"); then
+            log "ERROR: Could not read the ${SOURCE_LANG} subtitle of ${name}: ${message}"
+            for tl in "${TARGET_LANGUAGES[@]}"; do
+                if translation_due "$dir" "$base" "$tl"; then
+                    touch "${dir}/${base}.${tl}.failed"
+                    FAILED_THIS_RUN=$((FAILED_THIS_RUN+1))
+                fi
+            done
+            return
+        fi
+        log "SOURCE: ${name} has no ${SOURCE_LANG} .srt file; using its ${message} subtitle."
+    fi
+
+    for tl in "${TARGET_LANGUAGES[@]}"; do
+        check_runtime
+        process_subtitle "$source_file" "$tl" "$dir"
+    done
+
+    for tl in "${TARGET_LANGUAGES[@]}"; do
+        translation_exists "$dir" "$base" "$tl" || existing_subtitle_source "$video" "$tl" >/dev/null || return 0
+    done
+    rm -f "$source_file"
+    rmdir "$cache_dir" 2>/dev/null || true
+}
+
 # ==============================================================================
 # MAIN
 # ==============================================================================
@@ -723,6 +811,12 @@ while IFS= read -r -d '' SUB_FILE; do
         process_subtitle "$SUB_FILE" "$LANG"
     done
 done < <(find "${ALL_MEDIA_DIRS[@]}" -type f \( -iname "*.${SOURCE_LANG}.srt" -o -iname "*.${SOURCE_LANG}.sdh.srt" -o -iname "*.${SOURCE_LANG}.hi.srt" -o -iname "*.hi.${SOURCE_LANG}.srt" -o -iname "*.sdh.${SOURCE_LANG}.srt" \) -print0 2>/dev/null)
+
+for EXISTING_SOURCE_VIDEO in "${EXISTING_SOURCE_VIDEOS[@]}"; do
+    check_runtime
+    TOTAL_FILES_SCANNED=$((TOTAL_FILES_SCANNED+1))
+    translate_from_existing_source "$EXISTING_SOURCE_VIDEO"
+done
 
 # Fix timestamp ordering in the SRT files this run wrote;
 # `maintenance.sh ordering` sweeps the whole library.

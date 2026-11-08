@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Translate videos that have no English `.srt` file from an English text subtitle inside the video or held by Plex. The source stays in PlexMind's data folder, so Plex does not list a second English subtitle. Picture subtitles (PGS, VobSub) cannot be used.
+
 ## v0.9.7 - 2026-11-08
 
 - Hold transcription, translation, maintenance and recommendation jobs while the server is too hot or short of memory, with a separate limit for each of GPU, CPU, NVMe, hard drive temperature and RAM (`THROTTLE_*`; blank turns a sensor off, and all are off by default). Jobs resume once every enabled sensor has cooled by `THROTTLE_RESUME_MARGIN`.

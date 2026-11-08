@@ -175,6 +175,17 @@ existing_subtitle_source() {
     python3 "$(script_helper subtitle_inventory.py)" has "$2" "$1" 2>/dev/null
 }
 
+# Prints where (embedded / Plex) and succeeds if VIDEO has a full subtitle in
+# LANG that can be translated from, meaning text rather than pictures.
+existing_text_source() {
+    python3 "$(script_helper subtitle_inventory.py)" source "$2" "$1" 2>/dev/null
+}
+
+# Writes that subtitle to OUTPUT as SRT. Prints where it came from, or why not.
+extract_text_source() {
+    python3 "$(script_helper subtitle_inventory.py)" extract "$2" "$1" "$3" 2>/dev/null
+}
+
 # Prints the video a subtitle belongs to: DIR/BASE.<video extension>, any case.
 video_for_subtitle() {
     local dir="$1" base="$2" f

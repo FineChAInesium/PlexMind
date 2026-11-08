@@ -115,5 +115,102 @@ class CommandTests(unittest.TestCase):
         self.assertEqual(inv.main(["x", "has", "en", "/no/such/video.mkv"]), 1)
 
 
+def srt(cues):
+    return "".join(f"{i}\n00:00:{i:02d},000 --> 00:00:{i:02d},500\nLine {i}.\n\n" for i in range(1, cues + 1))
+
+
+def plex_xml(*streams):
+    return ET.fromstring("<MediaContainer><Video><Media><Part>"
+                         + "".join(f"<Stream {s}/>" for s in streams)
+                         + "</Part></Media></Video></MediaContainer>")
+
+
+class TranslationSourceTests(unittest.TestCase):
+    def probe(self, *streams):
+        payload = json.dumps({"streams": [
+            {"codec_name": codec, "tags": {"language": lang, "title": title},
+             "disposition": {"forced": forced, "hearing_impaired": sdh}}
+            for codec, lang, title, forced, sdh in streams]})
+        return lambda *_a, **_k: SimpleNamespace(stdout=payload)
+
+    def test_embedded_track_must_be_full_dialogue_text_in_the_language(self):
+        run = self.probe(("hdmv_pgs_subtitle", "eng", "", 0, 0), ("subrip", "spa", "", 0, 0),
+                         ("subrip", "eng", "Director Commentary", 0, 0), ("subrip", "eng", "", 1, 0))
+        self.assertIsNone(inv.embedded_text_track("v.mkv", "en", run=run))
+
+    def test_embedded_track_position_prefers_plain_over_sdh(self):
+        run = self.probe(("hdmv_pgs_subtitle", "eng", "", 0, 0), ("subrip", "eng", "SDH", 0, 0),
+                         ("ass", "eng", "English", 0, 0))
+        self.assertEqual(inv.embedded_text_track("v.mkv", "en", run=run), 2)
+        run = self.probe(("subrip", "eng", "English", 0, 1))
+        self.assertEqual(inv.embedded_text_track("v.mkv", "en", run=run), 0)
+
+    def test_plex_stream_needs_a_downloadable_text_file(self):
+        xml = plex_xml('streamType="3" languageCode="eng" codec="pgs" key="/library/streams/1"',
+                       'streamType="3" languageCode="eng" codec="srt"',  # embedded: no key
+                       'streamType="3" languageCode="eng" codec="srt" key="/somewhere/else"',
+                       'streamType="3" languageCode="eng" codec="srt" key="/library/streams/2" forced="1"',
+                       'streamType="3" languageCode="eng" codec="srt" key="/library/streams/3" hearingImpaired="1"',
+                       'streamType="3" languageCode="eng" codec="srt" key="/library/streams/4"',
+                       'streamType="3" languageCode="spa" codec="srt" key="/library/streams/5"')
+        found = inv.plex_text_stream("v.mkv", "en", get=lambda _p: xml, index={"v.mkv": "1"})
+        self.assertEqual(found, {"key": "/library/streams/4", "codec": "srt"})
+        self.assertEqual(inv.plex_text_stream("v.mkv", "fr", get=lambda _p: xml, index={"v.mkv": "1"}), {})
+
+    def _video(self, raw):
+        video = Path(raw) / "E1.mkv"
+        video.write_bytes(b"video")
+        return str(video)
+
+    def test_an_unreachable_plex_is_not_remembered_as_no_subtitle(self):
+        with tempfile.TemporaryDirectory() as raw:
+            video = self._video(raw)
+            with patch.object(inv, "SOURCES_FILE", Path(raw) / "s.json"), \
+                    patch.object(inv, "embedded_text_track", return_value=None), \
+                    patch.object(inv, "plex_text_stream", side_effect=[None, {"key": "/library/streams/9", "codec": "srt"}]) as plex:
+                self.assertIsNone(inv.find_source(video, "en"))
+                self.assertEqual(inv.find_source(video, "en"), {"key": "/library/streams/9", "codec": "srt"})
+                self.assertEqual(inv.find_source(video, "en"), {"key": "/library/streams/9", "codec": "srt"})
+            self.assertEqual(plex.call_count, 2)  # the third call came from the cache
+
+    def test_extract_writes_a_plex_download_and_says_where_it_came_from(self):
+        with tempfile.TemporaryDirectory() as raw:
+            video, output = self._video(raw), Path(raw) / "out" / "E1.en.srt"
+            with patch.object(inv, "find_source", return_value={"key": "/library/streams/9", "codec": "srt"}):
+                origin = inv.extract(video, "en", output, fetch=lambda _key: srt(25).encode())
+            self.assertEqual(origin, "Plex")
+            self.assertEqual(output.read_text(), srt(25))
+            self.assertEqual([p.name for p in output.parent.iterdir()], ["E1.en.srt"])
+
+    def test_extract_passes_the_track_position_to_ffmpeg(self):
+        calls = []
+
+        def run(command, **_kwargs):
+            calls.append(command)
+            Path(command[-1]).write_text(srt(25))
+            return SimpleNamespace(returncode=0, stderr="")
+
+        with tempfile.TemporaryDirectory() as raw:
+            video, output = self._video(raw), Path(raw) / "E1.en.srt"
+            with patch.object(inv, "find_source", return_value={"track": 3}):
+                self.assertEqual(inv.extract(video, "en", output, run=run), "embedded")
+            self.assertTrue(output.exists())
+        self.assertIn("0:s:3", calls[0])
+
+    def test_extract_refuses_a_short_subtitle_and_leaves_nothing_behind(self):
+        with tempfile.TemporaryDirectory() as raw:
+            video, output = self._video(raw), Path(raw) / "out" / "E1.en.srt"
+            with patch.object(inv, "find_source", return_value={"key": "/library/streams/9", "codec": "srt"}):
+                with self.assertRaisesRegex(ValueError, "only 3 cues"):
+                    inv.extract(video, "en", output, fetch=lambda _key: srt(3).encode())
+            self.assertEqual(list(output.parent.iterdir()), [])
+
+    def test_extract_command_prints_why_it_failed(self):
+        with patch.object(inv, "extract", side_effect=ValueError("no text subtitle in en")), \
+                patch("builtins.print") as out:
+            self.assertEqual(inv.main(["x", "extract", "en", "v.mkv", "out.srt"]), 1)
+        self.assertEqual(str(out.call_args.args[0]), "no text subtitle in en")
+
+
 if __name__ == "__main__":
     unittest.main()
