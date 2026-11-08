@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.9.7 - 2026-11-08
 
 - Hold transcription, translation, maintenance and recommendation jobs while the server is too hot or short of memory, with a separate limit for each of GPU, CPU, NVMe, hard drive temperature and RAM (`THROTTLE_*`; blank turns a sensor off, and all are off by default). Jobs resume once every enabled sensor has cooled by `THROTTLE_RESUME_MARGIN`.
 
