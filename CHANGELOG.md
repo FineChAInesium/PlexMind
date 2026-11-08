@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.9.8 - 2026-11-08
 
 - Translate videos that have no English `.srt` file from an English text subtitle inside the video or held by Plex. The source stays in PlexMind's data folder, so Plex does not list a second English subtitle. Picture subtitles (PGS, VobSub) cannot be used.
 
