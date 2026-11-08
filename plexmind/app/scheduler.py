@@ -13,6 +13,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import fcntl
 import urllib.error
 import urllib.request
@@ -44,6 +45,7 @@ TRANSLATE_START_HOUR = int(os.getenv("TRANSLATE_START_HOUR", "23"))
 TRANSLATE_END_HOUR = int(os.getenv("TRANSLATE_END_HOUR", "3"))
 DATA_DIR = Path(os.getenv("DATA_DIR") or ("/app/data" if Path("/app").exists() else "data"))
 RECOMMENDATION_LOG_PATH = DATA_DIR / "recommendations.log"
+RESOURCE_GUARD = Path(os.getenv("RESOURCE_GUARD_SCRIPT", "/app/resource_guard.py"))
 
 log = logging.getLogger("plexmind.scheduler")
 
@@ -608,6 +610,12 @@ async def _sustained_gpu_info() -> dict:
     return info
 
 
+def _wait_for_resources() -> None:
+    """Hold while a THROTTLE_* limit is exceeded. Blocks; run it in a thread."""
+    if RESOURCE_GUARD.exists():
+        subprocess.run([sys.executable, str(RESOURCE_GUARD), "wait"], check=False)
+
+
 async def _wait_for_idle_gpu() -> None:
     """Block until GPU utilisation stays below threshold; raise if it cannot be read."""
     while True:
@@ -742,6 +750,7 @@ async def _do_run_all_users(triggered_by: str, on_progress=None) -> dict:
                 # GPU check between users: right before the next LLM call rather
                 # than straight after the previous one, whose own llama.cpp load
                 # would still show up in the reading.
+                await asyncio.to_thread(_wait_for_resources)
                 if not gpu_checked:
                     info = await _sustained_gpu_info()
                     if info["pct"] is not None and info["pct"] >= GPU_THRESHOLD_PCT:

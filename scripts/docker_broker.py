@@ -123,7 +123,7 @@ class Handler(BaseHTTPRequestHandler):
         return b"".join(chunks) if chunks else raw
 
     def gpu(self, container):
-        command = ["nvidia-smi", "--query-gpu=name,utilization.gpu,memory.total,memory.free", "--format=csv,noheader,nounits"]
+        command = ["nvidia-smi", "--query-gpu=name,utilization.gpu,memory.total,memory.free,temperature.gpu", "--format=csv,noheader,nounits"]
         try:
             code, created = self.docker_request(
                 "POST", f"/containers/{container}/exec",
@@ -139,9 +139,11 @@ class Handler(BaseHTTPRequestHandler):
             devices = []
             for line in output.splitlines():
                 try:
-                    name, utilization, memory_total, memory_free = [part.strip() for part in line.split(",", 3)]
+                    name, utilization, memory_total, memory_free, temperature = [part.strip() for part in line.split(",", 4)]
                     devices.append({"name": name, "utilization_pct": float(utilization),
-                                    "memory_total_mb": float(memory_total), "memory_free_mb": float(memory_free)})
+                                    "memory_total_mb": float(memory_total), "memory_free_mb": float(memory_free),
+                                    # "[N/A]" on some GPUs; the rest of the probe is still good.
+                                    "temperature_c": float(temperature) if temperature.replace(".", "", 1).isdigit() else None})
                 except (ValueError, TypeError):
                     pass
             if code != 200 or not devices:
@@ -152,6 +154,7 @@ class Handler(BaseHTTPRequestHandler):
                 "utilization_pct": int(sum(item["utilization_pct"] for item in devices) / len(devices)),
                 "memory_total_mb": int(sum(item["memory_total_mb"] for item in devices)),
                 "memory_free_mb": int(sum(item["memory_free_mb"] for item in devices)),
+                "temperature_c": max((item["temperature_c"] for item in devices if item["temperature_c"] is not None), default=None),
             }).encode()
             return self.reply(200, body)
         except (OSError, ValueError, json.JSONDecodeError) as exc:

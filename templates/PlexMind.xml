@@ -53,6 +53,11 @@
       <Mode>ro</Mode>
     </Volume>
     <Volume>
+      <HostDir>/var/local/emhttp</HostDir>
+      <ContainerDir>/run/unraid-emhttp</ContainerDir>
+      <Mode>ro</Mode>
+    </Volume>
+    <Volume>
       <HostDir>/var/run/docker.sock</HostDir>
       <ContainerDir>/var/run/docker.sock</ContainerDir>
       <Mode>rw</Mode>
@@ -179,6 +184,36 @@
       <Name>STOP_SIDECAR_CONTAINERS</Name>
       <Mode/>
       <Description>Set to 1 to stop Whisper/llama.cpp sidecars when script jobs exit</Description>
+    </Variable>
+    <Variable>
+      <Value/>
+      <Name>THROTTLE_GPU_TEMP</Name>
+      <Mode/>
+      <Description>Hold jobs at this GPU temperature in degrees C (blank = off). Example: 80</Description>
+    </Variable>
+    <Variable>
+      <Value/>
+      <Name>THROTTLE_CPU_TEMP</Name>
+      <Mode/>
+      <Description>Hold jobs at this CPU temperature in degrees C (blank = off). Example: 90</Description>
+    </Variable>
+    <Variable>
+      <Value/>
+      <Name>THROTTLE_NVME_TEMP</Name>
+      <Mode/>
+      <Description>Hold jobs at this NVMe temperature in degrees C (blank = off). Example: 70</Description>
+    </Variable>
+    <Variable>
+      <Value/>
+      <Name>THROTTLE_DISK_TEMP</Name>
+      <Mode/>
+      <Description>Hold jobs at this hard drive temperature in degrees C (blank = off). Example: 50</Description>
+    </Variable>
+    <Variable>
+      <Value/>
+      <Name>THROTTLE_RAM_PCT</Name>
+      <Mode/>
+      <Description>Hold jobs at this percentage of memory used (blank = off). Example: 90</Description>
     </Variable>
   </Environment>
 

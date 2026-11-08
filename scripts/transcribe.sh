@@ -244,6 +244,7 @@ upload_whisper_audio() {
         local CHUNK CHUNK_OUT HTTP_STATUS CURL_EXIT SPOKEN_CHUNKS=0
         for CHUNK in "${SEGMENT_DIR}"/chunk_*.${TRANSCRIBE_AUDIO_EXT}; do
             [ -f "$CHUNK" ] || continue
+            throttle_if_needed
             CHUNK_OUT="${CHUNK%.*}.srt"
             log "  Uploading chunk ${CHUNK##*/}..."
             HTTP_STATUS=$(curl -s -w "%{http_code}" -o "$CHUNK_OUT" \
@@ -356,6 +357,7 @@ process_video() {
         FILES_SINCE_HEALTH_CHECK=0
     fi
 
+    throttle_if_needed
     log "--------------------------------------------------------"
     log "Processing: ${BASENAME_WITH_EXT}"
     local START_JOB_TIME PROCESSING_MODE DETECTED_FOREIGN_LANG

@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Hold transcription, translation, maintenance and recommendation jobs while the server is too hot or short of memory, with a separate limit for each of GPU, CPU, NVMe, hard drive temperature and RAM (`THROTTLE_*`; blank turns a sensor off, and all are off by default). Jobs resume once every enabled sensor has cooled by `THROTTLE_RESUME_MARGIN`.
+
 ## v0.9.6 - 2026-11-07
 
 - Skip transcribing or translating a video that already has a full subtitle in that language anywhere Plex can show it: a track embedded in the file, or any subtitle Plex lists for it, including ones Plex downloaded itself. Before, only `.srt` files beside the video counted. Forced tracks never count, and languages match on their base (any Spanish covers `es-MX`, any Chinese `zh`). Answers are cached per file for `SUBTITLE_INVENTORY_TTL_HOURS` (24). On the author's library this skips about half of the queued translations.

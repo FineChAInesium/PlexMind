@@ -321,6 +321,8 @@ when `WHISPER_MODEL` does not match a cached model artifact.
 | `FAILED_RETRY_HOURS` | Hours before a failed file is tried again. | `24` |
 | `TRANSCRIBE_FAILED_RETRY_DAYS` | Days before transcription retries a video that failed permanently (validation, no usable audio); `0` never retries. | `30` |
 | `SUBTITLE_INVENTORY_TTL_HOURS` | Transcription and translation skip a video that already has a full subtitle in that language: a `.srt` beside it, a track inside the file, or any subtitle Plex lists for it (including ones Plex downloaded). Forced tracks don't count, and languages match on their base (any Spanish covers `es-MX`). The answer is cached per file for this many hours. | `24` |
+| `THROTTLE_GPU_TEMP` / `THROTTLE_CPU_TEMP` / `THROTTLE_NVME_TEMP` / `THROTTLE_DISK_TEMP` / `THROTTLE_RAM_PCT` | Jobs hold while a sensor is at its limit (degrees C, or percent of memory used). Blank turns that sensor off; a sensor that can't be read is skipped. Translation checks between batches, recommendations between users, maintenance between phases, and transcription between files and upload chunks, so a Whisper upload in progress finishes first. Hard drive temperatures need `UNRAID_EMHTTP_DIR=/var/local/emhttp`. | blank |
+| `THROTTLE_RESUME_MARGIN` / `THROTTLE_CHECK_SECONDS` | Jobs resume once every enabled sensor is this far below its limit; sensors are read at most this often. | `5` / `30` |
 | `LLAMA_ON_DEMAND` | Start llama.cpp when needed and stop it when idle. | `0` |
 | `LLAMA_IDLE_STOP_MINUTES` | Idle minutes before an on-demand llama.cpp is stopped. | `15` |
 | `LLAMA_STARTUP_TIMEOUT_SECONDS` | How long to wait for an on-demand llama.cpp to load its model. | `180` |

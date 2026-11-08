@@ -66,6 +66,8 @@ case "$MODE" in
     *) acquire_lock "${DATA_DIR}/plexmind_media_mutation.lock" ;;
 esac
 
+[ "$MODE" = help ] || throttle_if_needed
+
 case "$MODE" in
     audit)
         REPORT_FILE="${REPORT_DIR}/audit_$(date '+%Y-%m-%d_%H%M%S').txt"
@@ -122,16 +124,20 @@ case "$MODE" in
 
         # After the encoding repair, which converts what the fixer refuses to
         # read. A file it still cannot fix must not stop the other phases.
+        THROTTLE_NEXT_CHECK=0; throttle_if_needed
         log "--- Phase 2: Ordering ---"
         fix_library_ordering || { log "WARNING: Some translations could not be checked or fixed; see above."; EXIT_CODE=2; }
 
+        THROTTLE_NEXT_CHECK=0; throttle_if_needed
         log "--- Phase 3: Dedup ---"
         deduplicate_subs "${MOVIE_DIR}" || { log "ERROR: Movie deduplication failed."; exit 2; }
         deduplicate_subs "${TV_DIR}" || { log "ERROR: TV deduplication failed."; exit 2; }
 
+        THROTTLE_NEXT_CHECK=0; throttle_if_needed
         log "--- Phase 4: PGS Cleanup ---"
         cleanup_pgs "${ALL_DIRS[@]}" || { log "ERROR: PGS cleanup failed."; exit 2; }
 
+        THROTTLE_NEXT_CHECK=0; throttle_if_needed
         log "--- Phase 5: Audit ---"
         REPORT_FILE="${REPORT_DIR}/audit_$(date '+%Y-%m-%d_%H%M%S').txt"
         audit_library "$REPORT_FILE" "${ALL_DIRS[@]}" || { log "ERROR: Library audit failed."; exit 2; }

@@ -99,6 +99,9 @@ services:
       - "${WHISPER_CACHE_DIR:-./data/whisper-cache}:/whisper-cache:ro"
       # The broker inside starts/stops only the Whisper and llama.cpp containers.
       - /var/run/docker.sock:/var/run/docker.sock
+      # Unraid's drive temperatures, for THROTTLE_DISK_TEMP. A folder, because
+      # Unraid replaces disks.ini every few minutes and a file mount would go stale.
+      - "${UNRAID_EMHTTP_DIR:-./data/no-unraid-emhttp}:/run/unraid-emhttp:ro"
     environment:
       - DATA_DIR=/app/data
       - PLEX_URL=${PLEX_URL:-http://host.docker.internal:32400}
@@ -157,6 +160,13 @@ services:
       - FAILED_RETRY_HOURS=${FAILED_RETRY_HOURS:-24}
       - TRANSCRIBE_FAILED_RETRY_DAYS=${TRANSCRIBE_FAILED_RETRY_DAYS:-30}
       - SUBTITLE_INVENTORY_TTL_HOURS=${SUBTITLE_INVENTORY_TTL_HOURS:-24}
+      - THROTTLE_GPU_TEMP=${THROTTLE_GPU_TEMP:-}
+      - THROTTLE_CPU_TEMP=${THROTTLE_CPU_TEMP:-}
+      - THROTTLE_NVME_TEMP=${THROTTLE_NVME_TEMP:-}
+      - THROTTLE_DISK_TEMP=${THROTTLE_DISK_TEMP:-}
+      - THROTTLE_RAM_PCT=${THROTTLE_RAM_PCT:-}
+      - THROTTLE_RESUME_MARGIN=${THROTTLE_RESUME_MARGIN:-5}
+      - THROTTLE_CHECK_SECONDS=${THROTTLE_CHECK_SECONDS:-30}
       - TRANSLATION_MAX_FALLBACK_PCT=${TRANSLATION_MAX_FALLBACK_PCT:-10}
       - TRANSLATION_BATCH_CUES=${TRANSLATION_BATCH_CUES:-8}
       - TRANSCRIBE_AUDIO_EXT=${TRANSCRIBE_AUDIO_EXT:-mp3}

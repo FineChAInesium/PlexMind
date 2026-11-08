@@ -557,6 +557,7 @@ PYEOF
         previous_chunk=$(cat "${chunk_list[chunk_index-1]}")
     fi
     while [ "$chunk_index" -lt "${#chunk_list[@]}" ]; do
+        throttle_if_needed
         local batch_start="$chunk_index" batch_size=1 batch_dir=""
         # Three unusable batches in a row: this server cannot batch, so stop
         # paying a failed request per batch for the rest of the file.

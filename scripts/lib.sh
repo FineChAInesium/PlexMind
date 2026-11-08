@@ -448,6 +448,21 @@ wait_for_whisper_api() {
     exit 1
 }
 
+# Hold the job while a THROTTLE_* limit is exceeded (resource_guard.py).
+# Called between units of work; the temperatures are read at most every
+# THROTTLE_CHECK_SECONDS, so a loop of short requests stays cheap.
+THROTTLE_NEXT_CHECK=0
+throttle_if_needed() {
+    [ -n "${THROTTLE_GPU_TEMP:-}${THROTTLE_CPU_TEMP:-}${THROTTLE_NVME_TEMP:-}${THROTTLE_DISK_TEMP:-}${THROTTLE_RAM_PCT:-}" ] || return 0
+    [ "${EPOCHSECONDS:-$(date +%s)}" -ge "$THROTTLE_NEXT_CHECK" ] || return 0
+    local line
+    # Not a pipe: `read` lets a Stop's trap run while the job is held.
+    while IFS= read -r line; do
+        log "$line"
+    done < <(python3 "$(script_helper resource_guard.py)" wait 2>/dev/null)
+    THROTTLE_NEXT_CHECK=$(( ${EPOCHSECONDS:-$(date +%s)} + ${THROTTLE_CHECK_SECONDS:-30} ))
+}
+
 check_runtime() {
     [ "${MAX_RUNTIME_MINUTES:-0}" -gt 0 ] 2>/dev/null || return 0
     local now elapsed limit

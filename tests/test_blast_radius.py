@@ -79,7 +79,7 @@ class BlastRadiusTests(unittest.TestCase):
     def test_broker_exposes_only_fixed_gpu_probe(self):
         source = (ROOT / "scripts/docker_broker.py").read_text()
         self.assertIn('parts[2] == "gpu"', source)
-        self.assertIn('"--query-gpu=name,utilization.gpu,memory.total,memory.free"', source)
+        self.assertIn('"--query-gpu=name,utilization.gpu,memory.total,memory.free,temperature.gpu"', source)
         self.assertNotIn("self.rfile.read", source)
 
     def test_api_compose_has_no_gpu_device_request(self):
