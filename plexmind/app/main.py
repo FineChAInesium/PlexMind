@@ -19,6 +19,9 @@ import logging
 import os
 import re
 import secrets
+import subprocess
+import sys
+import tempfile
 import time
 from pathlib import Path
 from urllib.parse import unquote_plus
@@ -826,6 +829,66 @@ def scheduler_configure(
     """Reschedule the monthly recommendation batch run."""
     next_run = scheduler.configure_monthly(day, hour, minute)
     return {"status": "ok", "day": day, "hour": hour, "minute": minute, "next_run_utc": next_run}
+
+
+class ThrottleRequest(BaseModel):
+    limits: dict[str, int | None]
+
+
+# Lowest and highest limit the dashboard accepts for each sensor.
+THROTTLE_RANGES = {
+    "THROTTLE_GPU_TEMP": (30, 110),
+    "THROTTLE_CPU_TEMP": (30, 110),
+    "THROTTLE_NVME_TEMP": (30, 110),
+    "THROTTLE_DISK_TEMP": (30, 110),
+    "THROTTLE_RAM_PCT": (20, 99),
+}
+
+
+def _throttle_limits_file() -> Path:
+    return Path(os.getenv("DATA_DIR", "/app/data")) / "throttle_limits.json"
+
+
+def _throttle_status() -> dict:
+    """Each sensor's limit, reading and allowed range."""
+    try:
+        result = subprocess.run([sys.executable, str(scheduler.RESOURCE_GUARD), "status"],
+                                capture_output=True, text=True, timeout=45, check=True)
+        data = json.loads(result.stdout)
+    except (OSError, subprocess.SubprocessError, ValueError) as exc:
+        raise HTTPException(status_code=503, detail="Could not read the server's sensors") from exc
+    for sensor in data["sensors"]:
+        sensor["min"], sensor["max"] = THROTTLE_RANGES[sensor["name"]]
+    return data
+
+
+@app.get("/api/throttle", dependencies=[Depends(_require_key)])
+def throttle_status():
+    """Return every sensor's limit and current reading."""
+    return _throttle_status()
+
+
+@app.post("/api/throttle", dependencies=[Depends(_require_key)])
+def throttle_configure(request: ThrottleRequest):
+    """Save the limits (null turns a sensor off). Running jobs pick them up."""
+    if set(request.limits) != set(THROTTLE_RANGES):
+        raise HTTPException(status_code=422, detail="Send a limit, or null, for every sensor")
+    for name, value in request.limits.items():
+        low, high = THROTTLE_RANGES[name]
+        if value is not None and not low <= value <= high:
+            raise HTTPException(status_code=422, detail=f"{name} must be between {low} and {high}")
+    path = _throttle_limits_file()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    handle, temporary = tempfile.mkstemp(dir=path.parent, prefix=".throttle_limits.")
+    try:
+        with os.fdopen(handle, "w") as stream:
+            json.dump(request.limits, stream)
+        os.chmod(temporary, 0o644)
+        os.replace(temporary, path)
+    except OSError as exc:
+        Path(temporary).unlink(missing_ok=True)
+        raise HTTPException(status_code=500, detail="Could not save the limits") from exc
+    return _throttle_status()
 
 
 @app.get("/api/storage", dependencies=[Depends(_require_key)])

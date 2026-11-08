@@ -9,12 +9,17 @@ Each sensor has its own limit, and a blank limit turns it off:
   THROTTLE_DISK_TEMP  hottest SATA drive, in degrees C (Unraid's disks.ini)
   THROTTLE_RAM_PCT    memory in use, in percent
 
+Limits saved from the dashboard (DATA_DIR/throttle_limits.json, null for off)
+win over these environment variables. They are read again on every poll, so
+a change reaches a job that is already held.
+
 `wait` returns at once when everything is under its limit. Otherwise it prints
 why, and blocks until every enabled sensor is THROTTLE_RESUME_MARGIN below its
 limit. A sensor that cannot be read is skipped: a missing reading must not
 stop the job.
 
 Usage: resource_guard.py wait
+       resource_guard.py status    Print each sensor's limit and reading as JSON.
 """
 
 import json
@@ -29,6 +34,7 @@ from pathlib import Path
 HWMON_DIR = Path(os.getenv("THROTTLE_HWMON_DIR", "/sys/class/hwmon"))
 DISKS_INI = Path(os.getenv("THROTTLE_DISKS_INI", "/run/unraid-emhttp/disks.ini"))
 MEMINFO = Path("/proc/meminfo")
+LIMITS_FILE = Path(os.getenv("DATA_DIR", "/app/data")) / "throttle_limits.json"
 POLL_SECONDS = float(os.getenv("THROTTLE_POLL_SECONDS", "30"))
 NOTE_SECONDS = 300
 CPU_DRIVERS = {"k10temp", "coretemp", "zenpower"}
@@ -117,14 +123,45 @@ SENSORS = (
 )
 
 
-def configured(environ=os.environ):
+def saved_limits(path=None):
+    """Limits saved from the dashboard: {name: number or None}, {} if there are none."""
+    try:
+        value = json.loads((path or LIMITS_FILE).read_text())
+    except (OSError, ValueError):
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def _limit(name, environ, saved):
+    """NAME's limit, or None when that sensor is off. A saved entry wins, even null."""
+    limit = _number(saved[name] if name in saved else environ.get(name))
+    return limit if limit is not None and limit > 0 else None
+
+
+def configured(environ=os.environ, saved=None):
     """(limit, label, unit, reader) for each sensor with a usable limit."""
+    saved = saved_limits() if saved is None else saved
     limits = []
     for name, label, unit, reader in SENSORS:
-        limit = _number(environ.get(name))
-        if limit is not None and limit > 0:
+        limit = _limit(name, environ, saved)
+        if limit is not None:
             limits.append((limit, label, unit, reader))
     return limits
+
+
+def resume_margin(environ=os.environ):
+    return _number(environ.get("THROTTLE_RESUME_MARGIN")) or 5.0
+
+
+def status(environ=os.environ, saved=None):
+    """Every sensor's limit and current reading, for the dashboard."""
+    saved = saved_limits() if saved is None else saved
+    return {
+        "resume_margin": resume_margin(environ),
+        "sensors": [{"name": name, "label": label, "unit": unit,
+                     "limit": _limit(name, environ, saved), "reading": reader()}
+                    for name, label, unit, reader in SENSORS],
+    }
 
 
 def over(limits, margin=0.0):
@@ -138,7 +175,9 @@ def over(limits, margin=0.0):
 
 
 def wait(limits, margin, poll=POLL_SECONDS, sleep=time.sleep, clock=time.monotonic):
-    hot = over(limits)
+    """LIMITS is a list, or a function returning the current list."""
+    current = limits if callable(limits) else (lambda: limits)
+    hot = over(current())
     if not hot:
         return
     print(f"THROTTLE: holding: {', '.join(hot)}", flush=True)
@@ -146,7 +185,7 @@ def wait(limits, margin, poll=POLL_SECONDS, sleep=time.sleep, clock=time.monoton
     next_note += NOTE_SECONDS
     while True:
         sleep(poll)
-        hot = over(limits, margin)
+        hot = over(current(), margin)
         if not hot:
             print(f"THROTTLE: resuming after {(clock() - started) / 60:.0f} min", flush=True)
             return
@@ -156,12 +195,14 @@ def wait(limits, margin, poll=POLL_SECONDS, sleep=time.sleep, clock=time.monoton
 
 
 def main(argv):
+    if argv[1:] == ["status"]:
+        print(json.dumps(status()))
+        return 0
     if argv[1:] != ["wait"]:
-        print("usage: resource_guard.py wait", file=sys.stderr)
+        print("usage: resource_guard.py wait|status", file=sys.stderr)
         return 2
-    limits = configured()
-    if limits:
-        wait(limits, _number(os.getenv("THROTTLE_RESUME_MARGIN")) or 5.0)
+    if configured():
+        wait(configured, resume_margin())
     return 0
 
 

@@ -464,7 +464,8 @@ wait_for_whisper_api() {
 # THROTTLE_CHECK_SECONDS, so a loop of short requests stays cheap.
 THROTTLE_NEXT_CHECK=0
 throttle_if_needed() {
-    [ -n "${THROTTLE_GPU_TEMP:-}${THROTTLE_CPU_TEMP:-}${THROTTLE_NVME_TEMP:-}${THROTTLE_DISK_TEMP:-}${THROTTLE_RAM_PCT:-}" ] || return 0
+    [ -n "${THROTTLE_GPU_TEMP:-}${THROTTLE_CPU_TEMP:-}${THROTTLE_NVME_TEMP:-}${THROTTLE_DISK_TEMP:-}${THROTTLE_RAM_PCT:-}" ] \
+        || [ -f "${DATA_DIR}/throttle_limits.json" ] || return 0
     [ "${EPOCHSECONDS:-$(date +%s)}" -ge "$THROTTLE_NEXT_CHECK" ] || return 0
     local line
     # Not a pipe: `read` lets a Stop's trap run while the job is held.

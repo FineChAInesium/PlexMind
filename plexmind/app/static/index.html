@@ -47,6 +47,9 @@
       <button data-page="maintenance" class="nav-item w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-[14px] font-medium transition text-slate-300 hover:bg-slate-800/70 hover:text-white">
         <i data-lucide="wrench" class="w-[18px] h-[18px]"></i> Maintenance
       </button>
+      <button data-page="throttle" class="nav-item w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-[14px] font-medium transition text-slate-300 hover:bg-slate-800/70 hover:text-white">
+        <i data-lucide="thermometer" class="w-[18px] h-[18px]"></i> Throttle
+      </button>
       <button data-page="logs" class="nav-item w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-[14px] font-medium transition text-slate-300 hover:bg-slate-800/70 hover:text-white">
         <i data-lucide="scroll-text" class="w-[18px] h-[18px]"></i> Logs
       </button>
@@ -445,6 +448,22 @@
             </div>
           </div>
           <div id="logs-grid" class="p-5"></div>
+        </div>
+      </section>
+
+      <!-- THROTTLE -->
+      <section id="page-throttle" class="page hidden">
+        <div class="rounded-2xl bg-slate-800/40 border border-slate-700/60 overflow-hidden max-w-3xl">
+          <div class="px-6 py-4 border-b border-slate-700/60">
+            <h3 class="font-semibold">Throttle Limits</h3>
+            <p id="throttle-intro" class="text-sm text-slate-400 mt-1">Jobs pause when a sensor reaches its limit, and carry on once it has cooled.</p>
+          </div>
+          <form id="throttle-form" class="p-6 space-y-5" novalidate>
+            <div id="throttle-rows" class="space-y-3"><p class="text-sm text-slate-400">Loading…</p></div>
+            <div class="pt-2 flex items-center gap-3">
+              <button type="submit" class="rounded-xl bg-violet-600 hover:bg-violet-500 px-5 py-2.5 text-sm font-medium flex items-center gap-2 shadow-glow"><i data-lucide="save" class="w-4 h-4"></i>Save Limits</button>
+            </div>
+          </form>
         </div>
       </section>
 
@@ -963,6 +982,7 @@ const PAGE_TITLES = {
   transcribe: 'Transcribe',
   translate: 'Translate',
   maintenance: 'Maintenance',
+  throttle: 'Throttle',
   logs: 'Logs',
   settings: 'Settings',
 };
@@ -1000,7 +1020,136 @@ function showPage(page, opts = {}) {
     const auto = document.getElementById('logs-autorefresh');
     if (auto) auto.checked = false;
   }
+  if (target === 'throttle') {
+    loadThrottle();
+    if (!throttlePoller) throttlePoller = setInterval(loadThrottle, 15000);
+  } else if (throttlePoller) {
+    clearInterval(throttlePoller);
+    throttlePoller = null;
+  }
   if (window.innerWidth < 1024) toggleSidebar(false);
+}
+
+// ─── Throttle ───────────────────────────────────────────────────────────────
+const THROTTLE_SUGGESTED = {
+  THROTTLE_GPU_TEMP: 80, THROTTLE_CPU_TEMP: 90, THROTTLE_NVME_TEMP: 70, THROTTLE_DISK_TEMP: 50, THROTTLE_RAM_PCT: 90,
+};
+const THROTTLE_DEMO = {
+  resume_margin: 5,
+  sensors: [
+    { name: 'THROTTLE_GPU_TEMP', label: 'GPU', unit: 'C', limit: 80, reading: 52, min: 30, max: 110 },
+    { name: 'THROTTLE_CPU_TEMP', label: 'CPU', unit: 'C', limit: 90, reading: 64, min: 30, max: 110 },
+    { name: 'THROTTLE_NVME_TEMP', label: 'NVMe', unit: 'C', limit: 70, reading: 48, min: 30, max: 110 },
+    { name: 'THROTTLE_DISK_TEMP', label: 'hard drive', unit: 'C', limit: null, reading: 41, min: 30, max: 110 },
+    { name: 'THROTTLE_RAM_PCT', label: 'RAM', unit: '%', limit: 90, reading: 37, min: 20, max: 99 },
+  ],
+};
+let throttleSensors = [];
+let throttlePoller = null;
+let throttleLoading = false;
+
+function throttleUnit(sensor) {
+  return sensor.unit === 'C' ? '°C' : '%';
+}
+
+function throttleLabel(sensor) {
+  return sensor.label.charAt(0).toUpperCase() + sensor.label.slice(1);
+}
+
+function throttleRow(sensor) {
+  const on = sensor.limit !== null;
+  const value = on ? Math.round(sensor.limit) : THROTTLE_SUGGESTED[sensor.name];
+  return `<div class="rounded-xl bg-slate-900 border border-slate-800 p-3 flex items-center justify-between gap-3" data-sensor="${escapeHtml(sensor.name)}">
+    <label class="flex items-center gap-3 text-sm font-medium">
+      <input type="checkbox" data-role="enabled" class="accent-violet-500" ${on ? 'checked' : ''}>
+      ${escapeHtml(throttleLabel(sensor))}
+    </label>
+    <div class="flex items-center gap-3">
+      <span data-role="reading" class="text-xs text-slate-400"></span>
+      <input type="number" data-role="limit" aria-label="${escapeHtml(throttleLabel(sensor))} limit" min="${sensor.min}" max="${sensor.max}" step="1" value="${value}" ${on ? '' : 'disabled'} class="bg-slate-950 border border-slate-700 rounded-lg px-2.5 py-1.5 text-sm text-right focus:outline-none focus:ring-2 focus:ring-violet-500/50" style="width:5.5rem">
+      <span class="text-xs text-slate-400" style="width:1.5rem">${throttleUnit(sensor)}</span>
+    </div>
+  </div>`;
+}
+
+// Readings refresh while the page is open; what the user is typing is left alone.
+function paintThrottleReadings() {
+  throttleSensors.forEach(sensor => {
+    const row = document.querySelector(`#throttle-rows [data-sensor="${sensor.name}"]`);
+    if (!row) return;
+    const reading = row.querySelector('[data-role="reading"]');
+    const limit = row.querySelector('[data-role="limit"]');
+    const enabled = row.querySelector('[data-role="enabled"]');
+    limit.disabled = !enabled.checked;
+    const value = Number(limit.value);
+    const over = enabled.checked && sensor.reading !== null && value > 0 && sensor.reading >= value;
+    if (sensor.reading === null) {
+      reading.textContent = 'No reading';
+    } else {
+      reading.textContent = `Now ${Math.round(sensor.reading)}${throttleUnit(sensor)}${over ? ' · at limit, jobs will pause' : ''}`;
+    }
+    reading.classList.toggle('text-red-400', over);
+    reading.classList.toggle('text-slate-400', !over);
+  });
+}
+
+function applyThrottle(data, opts = {}) {
+  const fresh = !throttleSensors.length || opts.rebuild;
+  throttleSensors = data.sensors;
+  if (fresh) {
+    document.getElementById('throttle-rows').innerHTML = data.sensors.map(throttleRow).join('');
+    document.getElementById('throttle-intro').textContent =
+      `Jobs pause when a sensor reaches its limit, and carry on once it is ${data.resume_margin} below. A sensor that is switched off, or has no reading, never pauses a job.`;
+  }
+  paintThrottleReadings();
+}
+
+async function loadThrottle() {
+  if (DEMO) { applyThrottle(THROTTLE_DEMO); return; }
+  if (throttleLoading) return;
+  throttleLoading = true;
+  try {
+    const res = await apiFetch(`${API_BASE}/api/throttle`, { signal: AbortSignal.timeout(50000) });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    applyThrottle(await res.json());
+  } catch (e) {
+    if (!throttleSensors.length) {
+      document.getElementById('throttle-rows').innerHTML = '<p class="text-sm text-slate-400">Could not load the limits. Check the API key under Settings.</p>';
+    }
+  } finally {
+    throttleLoading = false;
+  }
+}
+
+async function saveThrottle(event) {
+  event.preventDefault();
+  if (!throttleSensors.length) return;
+  const limits = {};
+  for (const sensor of throttleSensors) {
+    const row = document.querySelector(`#throttle-rows [data-sensor="${sensor.name}"]`);
+    const on = row.querySelector('[data-role="enabled"]').checked;
+    const value = Number(row.querySelector('[data-role="limit"]').value);
+    if (on && !(Number.isInteger(value) && value >= sensor.min && value <= sensor.max)) {
+      toast(`${throttleLabel(sensor)} limit must be a whole number from ${sensor.min} to ${sensor.max}`, 'error');
+      return;
+    }
+    limits[sensor.name] = on ? value : null;
+  }
+  if (DEMO) { toast('Demo mode: limits are not saved', 'info'); return; }
+  try {
+    const res = await apiFetch(`${API_BASE}/api/throttle`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ limits }),
+      signal: AbortSignal.timeout(50000),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(typeof data.detail === 'string' ? data.detail : `HTTP ${res.status}`);
+    applyThrottle(data, { rebuild: true });
+    toast('Throttle limits saved');
+  } catch (e) {
+    toast(`Could not save the limits: ${e.message}`, 'error');
+  }
 }
 
 function initNav() {
@@ -1035,6 +1184,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     document.body.style.paddingTop = '';
   };
 
+  document.getElementById('throttle-form').addEventListener('submit', saveThrottle);
+  document.getElementById('throttle-rows').addEventListener('input', paintThrottleReadings);
   document.getElementById('menu-btn').onclick = () => toggleSidebar();
   document.getElementById('overlay').onclick = () => toggleSidebar(false);
 

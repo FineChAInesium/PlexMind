@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Add a Throttle page to the dashboard: switch each sensor on or off, set its limit and see its current reading. Saved limits replace the `THROTTLE_*` settings and reach running jobs, including one already held.
+
 ## v0.9.8 - 2026-11-08
 
 - Translate videos that have no English `.srt` file from an English text subtitle inside the video or held by Plex. The source stays in PlexMind's data folder, so Plex does not list a second English subtitle. Picture subtitles (PGS, VobSub) cannot be used.

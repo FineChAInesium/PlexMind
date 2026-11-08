@@ -39,4 +39,13 @@ THROTTLE_NEXT_CHECK=0
 throttle_if_needed
 [ "$(calls)" -eq 2 ] || fail "the guard did not run once the interval had passed"
 
+# Limits saved from the dashboard count, with no THROTTLE_* variable set.
+unset THROTTLE_GPU_TEMP
+THROTTLE_NEXT_CHECK=0
+throttle_if_needed
+[ "$(calls)" -eq 2 ] || fail "the guard ran with no limits set"
+echo '{"THROTTLE_GPU_TEMP": 80}' > "$DATA_DIR/throttle_limits.json"
+throttle_if_needed
+[ "$(calls)" -eq 3 ] || fail "the guard ignored limits saved from the dashboard"
+
 echo "throttle hook tests passed"

@@ -75,6 +75,37 @@ class GuardTests(unittest.TestCase):
             guard.wait(limits, 5, sleep=lambda _s: None)
         self.assertIn("RAM 95%", out.call_args_list[0].args[0])
 
+    def test_saved_limits_win_over_the_environment_even_when_off(self):
+        environ = {"THROTTLE_GPU_TEMP": "80", "THROTTLE_CPU_TEMP": "90", "THROTTLE_RAM_PCT": "85"}
+        limits = guard.configured(environ, saved={"THROTTLE_GPU_TEMP": 70, "THROTTLE_CPU_TEMP": None})
+        self.assertEqual([(item[1], item[0]) for item in limits], [("GPU", 70), ("RAM", 85)])
+
+    def test_a_damaged_limits_file_falls_back_to_the_environment(self):
+        with tempfile.TemporaryDirectory() as raw:
+            path = Path(raw) / "throttle_limits.json"
+            path.write_text("{not json")
+            self.assertEqual(guard.saved_limits(path), {})
+            path.write_text("[1, 2]")
+            self.assertEqual(guard.saved_limits(path), {})
+
+    def test_a_limit_changed_during_a_hold_applies_at_once(self):
+        slept = []
+        hot = [(80, "GPU", "C", sensor(85))]
+        # Hot on the first two looks; then the limit is switched off.
+        answers = [hot, hot, []]
+        with patch("builtins.print"):
+            guard.wait(lambda: answers.pop(0), 5, poll=30, sleep=slept.append)
+        self.assertEqual(slept, [30, 30])
+
+    def test_status_lists_every_sensor_with_its_limit_and_reading(self):
+        with patch.object(guard, "SENSORS", (("A", "GPU", "C", sensor(50)), ("B", "RAM", "%", sensor(None)))):
+            data = guard.status({"A": "80", "THROTTLE_RESUME_MARGIN": "3"}, saved={})
+        self.assertEqual(data["resume_margin"], 3)
+        self.assertEqual(data["sensors"], [
+            {"name": "A", "label": "GPU", "unit": "C", "limit": 80, "reading": 50},
+            {"name": "B", "label": "RAM", "unit": "%", "limit": None, "reading": None},
+        ])
+
     def test_main_returns_at_once_with_no_limits(self):
         with patch.object(guard, "configured", return_value=[]), patch.object(guard, "wait") as wait:
             self.assertEqual(guard.main(["x", "wait"]), 0)
