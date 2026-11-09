@@ -49,9 +49,13 @@ def clear_library_cache() -> None:
     _library_cache = None
     _library_cache_ts = 0.0
 
-# Deep cut: obscure but genre-matched hidden gem (like Spotify's low-key picks)
-DEEP_CUT_MAX_VOTES = 8000   # under this TMDB vote_count = not widely seen
-DEEP_CUT_MIN_RATING = 6.3   # but still has to be decent
+# Deep cut: a genuinely little-known title that matches the user's taste. TV
+# shows gather far fewer TMDB votes than films, so each has its own limit.
+DEEP_CUT_MAX_VOTES = {"movie": 1000, "show": 150}
+DEEP_CUT_MIN_VOTES = 10       # fewer than this and the rating means nothing
+DEEP_CUT_MIN_RATING = 6.3     # but still has to be decent
+DEEP_CUT_MAX_POPULARITY = 15  # TMDB's measure of current attention
+DEEP_CUT_MAX_SEASONS = 5      # a show running longer than this is not unknown
 
 SYSTEM_PROMPT = """\
 You are a personalised media recommendation engine. Select titles from an AVAILABLE
@@ -204,6 +208,9 @@ async def _enrich_all(items: list[tuple[str, int | None, str]]) -> list[dict]:
             "original_language": tmdb.original_language if tmdb else None,
             "tmdb_rating": tmdb.vote_average if tmdb else None,
             "vote_count": tmdb.vote_count if tmdb else None,
+            "popularity": tmdb.popularity if tmdb else None,
+            "seasons": tmdb.seasons if tmdb else None,
+            "in_collection": tmdb.in_collection if tmdb else False,
             "imdb_rating": omdb.get("imdb_rating") if omdb else None,
             "metascore": omdb.get("metascore") if omdb else None,
             "rt_score": omdb.get("rt_score") if omdb else None,
@@ -388,9 +395,13 @@ def _pick_deep_cut(library_meta: list[dict], exclude_titles: set[str]) -> dict |
     def qualifies(item: dict) -> bool:
         vote_count = item.get("vote_count")
         rating = float(item.get("tmdb_rating") or item.get("imdb_rating") or 0)
+        max_votes = DEEP_CUT_MAX_VOTES["movie" if item.get("media_type") == "movie" else "show"]
         return (item["title"].lower() not in exclude_titles and bool(item.get("_matches"))
-                and vote_count is not None and vote_count <= DEEP_CUT_MAX_VOTES
-                and rating >= DEEP_CUT_MIN_RATING)
+                and vote_count is not None and DEEP_CUT_MIN_VOTES <= vote_count <= max_votes
+                and rating >= DEEP_CUT_MIN_RATING
+                and (item.get("popularity") or 0) <= DEEP_CUT_MAX_POPULARITY
+                and (item.get("seasons") or 0) <= DEEP_CUT_MAX_SEASONS
+                and not item.get("in_collection"))
 
     best = max(filter(qualifies, library_meta), key=lambda item: item["_score"], default=None)
     if best is None:
@@ -716,7 +727,9 @@ async def get_recommendations(user_id: str, force: bool = False) -> list[dict]:
                     recs.append(_canonical(meta, None))
 
     # 10b. Deep cut — pick one hidden gem the LLM wouldn't normally choose
-    deep_cut = _pick_deep_cut(library_meta, exclude_titles=seen | set(shown_recs) | excluded | watched_titles)
+    deep_cut = _pick_deep_cut(
+        library_meta, exclude_titles=seen | set(shown_recs) | excluded | watched_titles | trending_titles,
+    )
     if deep_cut:
         recs.append(deep_cut)
     if not recs:

@@ -208,6 +208,29 @@ def test_deep_cut_needs_a_real_match():
     assert recommender._pick_deep_cut([unmatched], set()) is None
 
 
+def gem(title="Gem", media_type="movie", **fields):
+    values = {"vote_count": 100, "tmdb_rating": 7.5, "popularity": 5.0, "_matches": ["Dark"], "_score": 1.0, **fields}
+    return meta(title, media_type=media_type, **values)
+
+
+def test_a_genuinely_little_known_title_is_a_deep_cut():
+    assert recommender._pick_deep_cut([gem()], set())["title"] == "Gem"
+    assert recommender._pick_deep_cut([gem(media_type="show", vote_count=120, seasons=2)], set())["deep_cut"]
+
+
+def test_well_known_titles_are_not_deep_cuts():
+    for known in (
+        gem(popularity=1449.5, vote_count=900),                     # widely watched now
+        gem(media_type="show", vote_count=1273, seasons=1),         # too many votes for TV
+        gem(vote_count=1976),                                       # too many votes for a film
+        gem(media_type="show", vote_count=26, seasons=13),          # long-running franchise
+        gem(in_collection=True),                                    # part of a film series
+        gem(vote_count=3),                                          # too few votes to trust the rating
+        gem(tmdb_rating=5.0),                                       # not good enough
+    ):
+        assert recommender._pick_deep_cut([known], set()) is None, known
+
+
 def test_tmdb_related_merges_both_lists_without_repeats():
     detail = {"recommendations": {"results": [{"title": "A", "release_date": "1999-01-01"}]},
               "similar": {"results": [{"title": "A", "release_date": "1999-05-05"}, {"title": "B", "release_date": ""}]}}

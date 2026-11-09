@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Only call a recommendation a hidden gem if it really is little known: few TMDB votes for its type, low current popularity, not part of a film series, not a long-running show, and not trending.
+
 ## v0.9.11 - 2026-11-09
 
 - Translate what people are watching first: the next episodes after each active viewer, then shows being watched, recently added titles, anything watched before, and the rest. Videos using an embedded or Plex subtitle share the same queue.

@@ -38,6 +38,9 @@ class TMDBMeta:
     vote_average: float | None = None
     vote_count: int | None = None
     original_language: str | None = None
+    popularity: float | None = None
+    seasons: int | None = None          # TV only
+    in_collection: bool = False         # a film in a franchise
 
 
 class TMDBError(RuntimeError):
@@ -109,6 +112,8 @@ async def _enrich_movie(client: httpx.AsyncClient, tmdb_id: int, base: dict) -> 
         title=detail.get("title", base.get("title", "")),
         year=release_year,
         media_type="movie",
+        popularity=detail.get("popularity"),
+        in_collection=bool(detail.get("belongs_to_collection")),
         overview=detail.get("overview", ""),
         genres=genres,
         keywords=keywords,
@@ -140,6 +145,8 @@ async def _enrich_tv(client: httpx.AsyncClient, tmdb_id: int, base: dict) -> TMD
         title=detail.get("name", base.get("name", "")),
         year=year,
         media_type="tv",
+        popularity=detail.get("popularity"),
+        seasons=detail.get("number_of_seasons"),
         overview=detail.get("overview", ""),
         genres=genres,
         keywords=keywords,
