@@ -16,6 +16,10 @@ Per-cue and batch helpers for translate.sh.
       file) and writes each accepted cue to OUT_DIR/<index>.cue. Exit 0 if
       every item was accepted, 1 if some were rejected (summary printed),
       3 if the reply is unusable (reason printed).
+  translation_cue.py sentence-ends CHUNK_FILE...
+      Prints 1 or 0 for each cue: can a batch end after it?
+  translation_cue.py recent TEMP_FILE CHUNK_FILE...
+      Prints the given finished cues as English/Translation lines, for context.
 """
 import json
 import os
@@ -42,12 +46,29 @@ def english_markers(text):
     return sum(1 for word in words if word in ENGLISH_MARKERS)
 
 
+def is_junk(text):
+    """Pieces of a broken JSON reply, which would otherwise reach the screen."""
+    return bool(re.search(r"^\s*\]|`", text))
+
+
+def looks_shifted(source, output, lang):
+    """A translation far too long or short for its English usually holds a
+    neighbouring cue's words. Limits fit Chinese and Spanish only."""
+    english = len(re.sub(r"<[^>]+>|\{[^}]*\}|\s", "", source))
+    length = len(re.sub(r"<[^>]+>|\{[^}]*\}|\s", "", output))
+    if lang == "zh":
+        return length > english * 0.8 + 6 or (english >= 25 and length < english * 0.2)
+    if lang.startswith("es"):
+        return length > english * 1.6 + 12 or (english >= 25 and length < english * 0.5)
+    return False
+
+
 def validate(source, output, lang):
     """Return None if the translation is acceptable, else a rejection reason."""
     output = output.strip()
     if not output:
         return "empty_output"
-    if "-->" in output or re.search(r"(?im)^\s*```|</?think>|\[(?:target|previous context)", output):
+    if "-->" in output or re.search(r"(?im)^\s*```|</?think>|\[(?:target|previous context)", output) or is_junk(output):
         return "unexpected_formatting"
     if re.search(r"(?m)^\s*\d+\s*$", output):
         return "cue_number_in_output"
@@ -126,10 +147,68 @@ def validate_batch(sources, content, lang):
     if reason:
         return None, reason
     items = [normalize_item(item) for item in items]
+    # Shifted lines run together, so one bad fit condemns the whole reply: a
+    # batch redone one cue per request cannot move words between cues.
+    if any(is_junk(item) or looks_shifted(source, item, lang) for source, item in zip(sources, items)):
+        return None, "shifted_or_junk_items"
     return items, [unicode_problem(item) or validate(source, item, lang) for source, item in zip(sources, items)]
 
 
+PAUSE_SECONDS = 2.0     # a gap this long between cues ends the thought
+_SENTENCE_END = re.compile(r"""(?<!\.\.)[.?!♪]["'”’)\]]*$""")
+
+
+def _seconds(stamp):
+    match = re.match(r"\s*(\d+):(\d+):(\d+)[,.](\d+)", stamp)
+    return (int(match[1]) * 3600 + int(match[2]) * 60 + int(match[3]) + int(match[4]) / 1000) if match else None
+
+
+def sentence_ends(cues):
+    """For each (number, timestamp, dialogue): may a batch stop after this cue?
+    A trailing "..." usually runs on into the next cue, so it does not count."""
+    ends = []
+    for index, (_, timestamp, dialogue) in enumerate(cues):
+        if index + 1 == len(cues) or _SENTENCE_END.search(_strip_tags(dialogue).rstrip()):
+            ends.append(True)
+            continue
+        finish = _seconds(timestamp.split("-->")[-1]) if "-->" in timestamp else None
+        following = _seconds(cues[index + 1][1])
+        ends.append(finish is not None and following is not None and following - finish >= PAUSE_SECONDS)
+    return ends
+
+
+def recent_pairs(temp_path, cues):
+    """English and finished translation of CUES, matched by cue number."""
+    finished = {}
+    try:
+        with open(temp_path, "rb") as handle:
+            handle.seek(0, os.SEEK_END)
+            handle.seek(max(0, handle.tell() - 8192))
+            tail = handle.read().decode("utf-8", "ignore")
+    except OSError:
+        tail = ""
+    for block in re.split(r"\n{2,}", tail.replace("\r\n", "\n")):
+        lines = block.strip("\n").split("\n")
+        if len(lines) >= 3 and "-->" in lines[1]:
+            finished[lines[0].strip()] = " / ".join(lines[2:])
+    output = []
+    for number, _, dialogue in cues:
+        source = " / ".join(dialogue.split("\n"))
+        output.append(f"English: {source}")
+        translation = finished.get(number.strip())
+        if translation and translation != source:   # a line that fell back teaches nothing
+            output.append(f"Translation: {translation}")
+    return "\n".join(output)
+
+
 def main(argv):
+    if len(argv) >= 3 and argv[1] == "sentence-ends":
+        for ends in sentence_ends([read_cue(path) for path in argv[2:]]):
+            print(1 if ends else 0)
+        return 0
+    if len(argv) >= 4 and argv[1] == "recent":
+        print(recent_pairs(argv[2], [read_cue(path) for path in argv[3:]]))
+        return 0
     if len(argv) == 5 and argv[1] == "validate":
         with open(argv[3], encoding="utf-8", errors="strict") as handle:
             reason = validate(argv[2], handle.read(), argv[4])

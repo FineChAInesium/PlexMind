@@ -131,8 +131,12 @@ def map_part(file, locations, root):
 
 def build_index(get=None):
     """Map each video's PlexMind path to its Plex ratingKey."""
+    return {path: video.get("ratingKey") for video, path in library_videos(get)}
+
+
+def library_videos(get=None):
+    """(Plex Video element, PlexMind path) for every movie and episode file."""
     get = get or _plex_get
-    parts = {}
     for section in get("/library/sections").findall("Directory"):
         kind = section.get("type")
         if kind not in ROOTS:
@@ -148,11 +152,10 @@ def build_index(get=None):
                 for part in video.findall("Media/Part"):
                     path = map_part(part.get("file", ""), locations, ROOTS[kind])
                     if path:
-                        parts[path] = video.get("ratingKey")
+                        yield video, path
             start += len(videos)
             if not videos or start >= int(page.get("totalSize") or start):
                 break
-    return parts
 
 
 def plex_index():

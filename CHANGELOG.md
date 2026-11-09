@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Translate what people are watching first: the next episodes after each active viewer, then shows being watched, recently added titles, anything watched before, and the rest. Videos using an embedded or Plex subtitle share the same queue.
+- Give the translation model the title, genres, synopsis and character names from Plex, plus the last few finished lines, and end batches at sentence breaks.
+- Tell the model to translate slang and innuendo by meaning and to keep each line's words in its own line. A batch containing junk or a line far too long or short for its English is redone one line at a time.
+
 ## v0.9.10 - 2026-11-09
 
 - Recommendations now score each candidate against the individual watched titles it most resembles, instead of one averaged taste profile. Candidates also come from TMDB's similar and recommended lists, watched titles count by how much of them was watched, rewatches, star ratings and thumbs up or down, the top picks keep some variety, and each reason names the titles a pick actually matched.

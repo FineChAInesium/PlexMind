@@ -85,7 +85,7 @@ run_translate() {  # run_translate DIR [VAR=value...]; the given settings win
 }
 srt_cues() {  # srt_cues N -> N numbered cues
   local n="$1" i
-  for i in $(seq 1 "$n"); do printf '%d\n00:00:%02d,000 --> 00:00:%02d,500\nWhere are you going with this, %d?\n\n' "$i" "$i" "$i" "$i"; done
+  for i in $(seq 1 "$n"); do printf '%d\n00:00:%02d,000 --> 00:00:%02d,500\nWhere are you going, %d?\n\n' "$i" "$i" "$i" "$i"; done
 }
 requests() { cat "$FIXTURE/count" 2>/dev/null || echo 0; }
 no_ordering_run() { [ ! -e "$FIXTURE/ordering-calls" ] || fail "$1 run started the ordering fixer without a new translation"; }
@@ -153,7 +153,7 @@ srt_cues 4 > "$FIXTURE/movies/Surrogate/Surrogate.en.srt"
 run_translate "$FIXTURE/movies/Surrogate" TRANSLATION_BATCH_CUES=4 MOCK_BATCH_SURROGATE_ITEM=1
 [ "$RC" -eq 0 ] || fail "unencodable-item run exited $RC"
 [ "$(requests)" -eq 2 ] || fail "unencodable-item run took $(requests) requests"
-sed 's/^Where are you going with this, \([134]\)?$/Hola, \1./; s/^Where are you going with this, 2?$/Hola./' \
+sed 's/^Where are you going, \([134]\)?$/Hola, \1./; s/^Where are you going, 2?$/Hola./' \
   "$FIXTURE/movies/Surrogate/Surrogate.en.srt" > "$FIXTURE/expected"
 diff -u "$FIXTURE/expected" "$FIXTURE/movies/Surrogate/Surrogate.es-MX.srt" >&2 || fail "unencodable batch item not retranslated on its own"
 grep -qF 'Batch of cues 1-4: 3/4 accepted; rejected cue(s) 2 (invalid_unicode)' "$LOG" || fail "unencodable batch item not logged"
@@ -161,7 +161,7 @@ grep -qF 'Batch of cues 1-4: 3/4 accepted; rejected cue(s) 2 (invalid_unicode)' 
 # A finished translation that fails the timestamp check is discarded, so the
 # retry starts over instead of resuming into the same failure.
 mkdir -p "$FIXTURE/movies/Mismatch"
-printf '1\n00:00:01,000 --> 00:00:02,000 X1:100 X2:200\nWhere are you going with this, 1?\n\n' \
+printf '1\n00:00:01,000 --> 00:00:02,000 X1:100 X2:200\nWhere are you going, 1?\n\n' \
   > "$FIXTURE/movies/Mismatch/Mismatch.en.srt"
 run_translate "$FIXTURE/movies/Mismatch"
 [ "$RC" -eq 2 ] || fail "timestamp-mismatch run exited $RC"

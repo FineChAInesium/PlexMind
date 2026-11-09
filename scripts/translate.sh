@@ -85,18 +85,32 @@ LIFETIME_PROCESSING_SECONDS="${LIFETIME_PROCESSING_SECONDS:-0}"
 get_system_prompt() {
     local lang="$1"
     case "$lang" in
-        "zh")    echo "你是專業字幕翻譯員。將一句英文字幕翻譯為精簡的繁體中文。只輸出翻譯後的對白；不要輸出編號、時間戳、標籤、解釋或 Markdown。" ;;
-        "es-MX") echo "Eres traductor profesional de subtítulos. Traduce una sola entrada al español de México de forma breve. Devuelve solamente el diálogo traducido: sin números, marcas de tiempo, etiquetas, explicaciones ni Markdown." ;;
-        *)       echo "Translate one subtitle cue to $lang. Output only the translated dialogue, without cue numbers, timestamps, labels, explanations, or Markdown." ;;
+        "zh")    echo "你是專業字幕翻譯員。將一句英文字幕翻譯為精簡的繁體中文。俚語、雙關語和粗話要按真正的意思，譯成中文裡自然的說法，絕不逐字直譯。只輸出翻譯後的對白；不要輸出編號、時間戳、標籤、解釋或 Markdown。" ;;
+        "es-MX") echo "Eres traductor profesional de subtítulos. Traduce una sola entrada al español de México de forma breve. Traduce la jerga, los dobles sentidos y las groserías por su significado real, con un equivalente natural en México; nunca palabra por palabra. Devuelve solamente el diálogo traducido: sin números, marcas de tiempo, etiquetas, explicaciones ni Markdown." ;;
+        *)       echo "Translate one subtitle cue to $lang. Translate slang, innuendo and profanity by their real meaning, using a natural equivalent; never word for word. Output only the translated dialogue, without cue numbers, timestamps, labels, explanations, or Markdown." ;;
     esac
 }
 
 get_batch_system_prompt() {
     local lang="$1"
     case "$lang" in
-        "zh")    echo "你是專業字幕翻譯員。輸入是一個 JSON 字串陣列，每個元素是一條英文字幕。將每個元素翻譯為精簡的繁體中文，只輸出一個 JSON 字串陣列：元素數量和順序與輸入完全相同，第 N 個元素只包含第 N 條字幕的譯文。保留換行和 <i> 等格式標籤；不要合併、拆分或省略字幕，不要輸出編號、時間戳、解釋或 Markdown。" ;;
-        "es-MX") echo "Eres traductor profesional de subtítulos. La entrada es un arreglo JSON de cadenas; cada elemento es un subtítulo en inglés. Traduce cada elemento al español de México de forma breve y devuelve solamente un arreglo JSON de cadenas con la misma cantidad de elementos y en el mismo orden: el elemento N contiene solo la traducción del subtítulo N. Conserva los saltos de línea y las etiquetas de formato como <i>; no combines, dividas ni omitas subtítulos, y no agregues números, marcas de tiempo, explicaciones ni Markdown." ;;
-        *)       echo "The input is a JSON array of strings, each one subtitle cue. Translate every element to $lang and output only a JSON array of strings with the same number of elements in the same order: element N holds only the translation of cue N. Keep line breaks and formatting tags such as <i>; do not merge, split, or drop cues, and do not add cue numbers, timestamps, explanations, or Markdown." ;;
+        "zh")    echo "你是專業字幕翻譯員。輸入是一個 JSON 字串陣列，每個元素是一條英文字幕。將每個元素翻譯為精簡的繁體中文，只輸出一個 JSON 字串陣列：元素數量和順序與輸入完全相同，第 N 個元素只包含第 N 條字幕的譯文。俚語、雙關語和粗話要按真正的意思，譯成中文裡自然的說法，絕不逐字直譯。保留換行和 <i> 等格式標籤；每個元素只翻譯該元素本身的英文；即使句子延續到下一個元素，也絕不可把文字移到相鄰元素。不要合併、拆分或省略字幕，不要輸出編號、時間戳、解釋或 Markdown。" ;;
+        "es-MX") echo "Eres traductor profesional de subtítulos. La entrada es un arreglo JSON de cadenas; cada elemento es un subtítulo en inglés. Traduce cada elemento al español de México de forma breve y devuelve solamente un arreglo JSON de cadenas con la misma cantidad de elementos y en el mismo orden: el elemento N contiene solo la traducción del subtítulo N. Traduce la jerga, los dobles sentidos y las groserías por su significado real, con un equivalente natural en México; nunca palabra por palabra. Conserva los saltos de línea y las etiquetas de formato como <i>. Cada elemento traduce solo su propio texto: aunque la oración continúe en el siguiente, nunca muevas palabras a otro elemento. No combines, dividas ni omitas subtítulos, y no agregues números, marcas de tiempo, explicaciones ni Markdown." ;;
+        *)       echo "The input is a JSON array of strings, each one subtitle cue. Translate every element to $lang and output only a JSON array of strings with the same number of elements in the same order: element N holds only the translation of cue N. Translate slang, innuendo and profanity by their real meaning, using a natural equivalent; never word for word. Keep line breaks and formatting tags such as <i>. Each element translates only its own text: even if a sentence continues into the next element, never move words to a neighbouring element. Do not merge, split, or drop cues, and do not add cue numbers, timestamps, explanations, or Markdown." ;;
+    esac
+}
+
+# What the model should know about the title, in the prompt's own language.
+# Set for each file by process_subtitle.
+SHOW_CONTEXT=""
+SHOW_CONTEXT_VIDEO=""
+
+show_context_note() {
+    [ -n "$SHOW_CONTEXT" ] || return 0
+    case "$1" in
+        "zh")    printf '\n背景資料，僅供理解劇情與統一人名，不要翻譯或輸出：\n%s' "$SHOW_CONTEXT" ;;
+        "es-MX") printf '\nContexto, solo para entender la trama y mantener los nombres; no lo traduzcas ni lo incluyas:\n%s' "$SHOW_CONTEXT" ;;
+        *)       printf '\nBackground, only for understanding the story and keeping names consistent. Do not translate or output it:\n%s' "$SHOW_CONTEXT" ;;
     esac
 }
 
@@ -316,7 +330,8 @@ translate_chunk() {
             # Resample (new seed, warmer) instead of replaying a near-greedy reply.
             temperature="0.$(( attempt * 2 - 1 < 7 ? attempt * 2 - 1 : 7 ))"
         fi
-        local contextual_prompt="${sys_prompt}${retry_instruction}"
+        local contextual_prompt
+        contextual_prompt="${sys_prompt}${retry_instruction}$(show_context_note "$target_lang")"
         if [ -n "$previous_dialogue" ]; then
             contextual_prompt+=$'\nThe previous source cue is context only. Do not translate or repeat it:\n'"${previous_dialogue}"
         fi
@@ -428,9 +443,9 @@ translate_batch() {
     shift 4
     local count=$# sources sys_prompt user_message per_cue_tokens
     sources=$(python3 "${SCRIPT_DIR}/translation_cue.py" batch-sources "$@") || return 2
-    sys_prompt=$(get_batch_system_prompt "$target_lang")
+    sys_prompt="$(get_batch_system_prompt "$target_lang")$(show_context_note "$target_lang")"
     if [ -n "$context" ]; then
-        sys_prompt+=$'\nThe previous source cues are context only. Do not translate or repeat them:\n'"${context}"
+        sys_prompt+=$'\nThe lines just before this batch, for consistent names and tone. They are context only. Do not translate or repeat them:\n'"${context}"
     fi
     user_message=$(get_batch_user_message "$target_lang" "$count" "$sources")
     # A batch that runs out of tokens is redone one cue per request, so the
@@ -516,6 +531,12 @@ process_subtitle() {
         SKIPPED_PLEX=$((SKIPPED_PLEX+1)); return
     fi
 
+    if [ "$SHOW_CONTEXT_VIDEO" != "${VIDEO_FILE:-}" ] || [ -z "${VIDEO_FILE:-}" ]; then
+        SHOW_CONTEXT=""
+        [ -n "${VIDEO_FILE:-}" ] && SHOW_CONTEXT=$(python3 "${SCRIPT_DIR}/translation_plan.py" context "$VIDEO_FILE" 2>/dev/null)
+        SHOW_CONTEXT_VIDEO="${VIDEO_FILE:-}"
+    fi
+
     local SYSTEM_PROMPT
     SYSTEM_PROMPT=$(get_system_prompt "$TARGET_LANG")
 
@@ -580,6 +601,11 @@ PYEOF
         cue_kinds=()
     fi
 
+    # Where a batch may stop without cutting a sentence in half.
+    local -a cue_ends
+    mapfile -t cue_ends < <(python3 "${SCRIPT_DIR}/translation_cue.py" sentence-ends "${chunk_list[@]}")
+    [ "${#cue_ends[@]}" -eq "${#chunk_list[@]}" ] || cue_ends=()
+
     # Checkpoint: signature, cues done, .temp size and fallbacks at that point.
     local previous_chunk="" resume_chunk=0
     if [ -s "$TEMP_FINAL_FILE" ] && [ -f "$CHECKPOINT_FILE" ]; then
@@ -617,14 +643,23 @@ PYEOF
                 && [ "${cue_kinds[batch_start+batch_size]:-}" = "translate" ]; do
                 batch_size=$((batch_size+1))
             done
+            # Pull back to the last sentence end, unless that leaves a small batch.
+            local fitted="$batch_size" smallest=$(( TRANSLATION_BATCH_CUES > 3 ? TRANSLATION_BATCH_CUES / 2 : 2 ))
+            while [ "$fitted" -gt "$smallest" ] && [ "${cue_ends[batch_start+fitted-1]:-1}" != "1" ]; do
+                fitted=$((fitted-1))
+            done
+            [ "${cue_ends[batch_start+fitted-1]:-1}" = "1" ] && batch_size="$fitted"
         fi
         if [ "$batch_size" -gt 1 ]; then
             local context="" k
-            for k in $((batch_start-2)) $((batch_start-1)); do
+            local -a recent_chunks=()
+            for k in $((batch_start-3)) $((batch_start-2)) $((batch_start-1)); do
                 if [ "$k" -ge 0 ] && [ "${cue_kinds[k]:-}" = "translate" ]; then
-                    context+="$(sed '1,2d' "${chunk_list[k]}")"$'\n'
+                    recent_chunks+=("${chunk_list[k]}")
                 fi
             done
+            [ ${#recent_chunks[@]} -eq 0 ] \
+                || context=$(python3 "${SCRIPT_DIR}/translation_cue.py" recent "$TEMP_FINAL_FILE" "${recent_chunks[@]}")
             batch_dir="${CHUNK_DIR}/batch"
             rm -rf "$batch_dir"; mkdir -p "$batch_dir"
             local batch_key
@@ -803,20 +838,30 @@ if [ "$LLAMA_READY" -ne 1 ]; then
 fi
 calculate_pending_jobs
 
-while IFS= read -r -d '' SUB_FILE; do
-    check_runtime
-    TOTAL_FILES_SCANNED=$((TOTAL_FILES_SCANNED+1))
-    for LANG in "${TARGET_LANGUAGES[@]}"; do
-        check_runtime
-        process_subtitle "$SUB_FILE" "$LANG"
-    done
-done < <(find "${ALL_MEDIA_DIRS[@]}" -type f \( -iname "*.${SOURCE_LANG}.srt" -o -iname "*.${SOURCE_LANG}.sdh.srt" -o -iname "*.${SOURCE_LANG}.hi.srt" -o -iname "*.hi.${SOURCE_LANG}.srt" -o -iname "*.sdh.${SOURCE_LANG}.srt" \) -print0 2>/dev/null)
+# Most wanted first: subtitle files and videos with an embedded or Plex source together.
+QUEUE_SUMMARY="/tmp/translation_queue_$$"
+mapfile -d '' WORK_QUEUE < <({
+    find "${ALL_MEDIA_DIRS[@]}" -type f \( -iname "*.${SOURCE_LANG}.srt" -o -iname "*.${SOURCE_LANG}.sdh.srt" -o -iname "*.${SOURCE_LANG}.hi.srt" -o -iname "*.hi.${SOURCE_LANG}.srt" -o -iname "*.sdh.${SOURCE_LANG}.srt" \) -print0 2>/dev/null
+    [ ${#EXISTING_SOURCE_VIDEOS[@]} -eq 0 ] || printf '%s\0' "${EXISTING_SOURCE_VIDEOS[@]}"
+} | python3 "${SCRIPT_DIR}/translation_plan.py" order 2>"$QUEUE_SUMMARY")
+log "QUEUE: $(cat "$QUEUE_SUMMARY" 2>/dev/null)"
+rm -f "$QUEUE_SUMMARY"
 
-for EXISTING_SOURCE_VIDEO in "${EXISTING_SOURCE_VIDEOS[@]}"; do
+for WORK_ITEM in "${WORK_QUEUE[@]}"; do
     check_runtime
     TOTAL_FILES_SCANNED=$((TOTAL_FILES_SCANNED+1))
-    translate_from_existing_source "$EXISTING_SOURCE_VIDEO"
+    case "$WORK_ITEM" in
+        *.[sS][rR][tT])
+            for LANG in "${TARGET_LANGUAGES[@]}"; do
+                check_runtime
+                process_subtitle "$WORK_ITEM" "$LANG"
+            done
+            ;;
+        *) translate_from_existing_source "$WORK_ITEM" ;;
+    esac
 done
+
+
 
 # Fix timestamp ordering in the SRT files this run wrote;
 # `maintenance.sh ordering` sweeps the whole library.

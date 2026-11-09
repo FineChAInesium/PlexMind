@@ -132,10 +132,10 @@ run_translate() {
 }
 srt_cues() {  # srt_cues N [FIRST] -> N numbered cues starting at FIRST (default 1)
   local n="$1" first="${2:-1}" i
-  for i in $(seq "$first" $((first + n - 1))); do printf '%d\n00:00:%02d,000 --> 00:00:%02d,500\nWhere are you going with this, %d?\n\n' "$i" "$i" "$i" "$i"; done
+  for i in $(seq "$first" $((first + n - 1))); do printf '%d\n00:00:%02d,000 --> 00:00:%02d,500\nWhere are you going, %d?\n\n' "$i" "$i" "$i" "$i"; done
 }
 # What the batch mock makes of srt_cues output; per-cue requests get "Hola." instead.
-batch_translation() { sed 's/^Where are you going with this, \([0-9]*\)?$/Hola, \1./' "$1"; }
+batch_translation() { sed 's/^Where are you going, \([0-9]*\)?$/Hola, \1./' "$1"; }
 
 # One stubborn cue keeps its source line; the rest of the file is translated.
 mkdir -p "$FIXTURE/movies/Fallback"
@@ -145,7 +145,7 @@ out="$FIXTURE/movies/Fallback/Fallback.es-MX.srt"
 [ "$RC" -eq 0 ] || fail "fallback run exited $RC"
 [ -s "$out" ] || fail "fallback output missing"
 [ "$(grep -c -- '-->' "$out")" -eq 10 ] || fail "fallback output lost cues"
-grep -qF 'Where are you going with this, 1?' "$out" || fail "stubborn cue not kept in source language"
+grep -qF 'Where are you going, 1?' "$out" || fail "stubborn cue not kept in source language"
 [ "$(grep -c 'Hola.' "$out")" -eq 9 ] || fail "other cues not translated"
 [ ! -e "$FIXTURE/movies/Fallback/Fallback.es-MX.failed" ] || fail "file failed for one stubborn cue"
 grep -q 'Cue 1 kept in the source language' "$FIXTURE/data/translation.log" || fail "fallback not logged"
@@ -241,7 +241,7 @@ run_translate "$FIXTURE/movies/BatchMark" TARGET_LANGUAGES=zh TRANSLATION_BATCH_
 [ "$RC" -eq 0 ] || fail "watermark batch run exited $RC"
 [ "$(cat "$FIXTURE/count")" -eq 2 ] || fail "watermark batch run took $(cat "$FIXTURE/count") requests"
 jq -se '[.[].min_items] == [2, 3]' "$FIXTURE/batch-mark-requests" >/dev/null || fail "watermark cue was batched"
-sed 's/^Where are you going with this, \([0-9]*\)?$/你好，\1。/' "$FIXTURE/movies/BatchMark/BatchMark.en.srt" > "$FIXTURE/expected"
+sed 's/^Where are you going, \([0-9]*\)?$/你好，\1。/' "$FIXTURE/movies/BatchMark/BatchMark.en.srt" > "$FIXTURE/expected"
 diff -u "$FIXTURE/expected" "$FIXTURE/movies/BatchMark/BatchMark.zh.srt" >&2 || fail "watermark batch output does not match the source cues"
 grep -qF '將以下英文字幕翻譯成繁體中文，只輸出譯文' "$FIXTURE/batch-payloads" || fail "zh batch message lacks the target-language instruction"
 if grep -q 'PlexMind' "$FIXTURE/batch-payloads"; then fail "watermark text reached the model in a batch"; fi
@@ -256,14 +256,14 @@ out="$FIXTURE/movies/Peg/Peg.es-MX.srt"
 [ "$RC" -eq 0 ] || fail "peg-native run exited $RC"
 [ "$(cat "$FIXTURE/count")" -eq 12 ] || fail "peg-native run took $(cat "$FIXTURE/count") requests"
 [ ! -e "$FIXTURE/movies/Peg/Peg.es-MX.failed" ] || fail "file failed for a peg-native error"
-grep -qF 'Where are you going with this, 1?' "$out" || fail "unparseable cue not kept in the source language"
+grep -qF 'Where are you going, 1?' "$out" || fail "unparseable cue not kept in the source language"
 [ "$(grep -c '^Hola\.$' "$out")" -eq 9 ] || fail "cues after the peg-native error not translated"
 grep -qF 'Cue 1 kept in the source language after 3 attempts (reason=unparseable_model_output)' "$FIXTURE/data/translation.log" \
   || fail "peg-native fallback not logged"
 jq -se '[.[:3][] | .temperature] == [0.1, 0.3, 0.5] and [.[:3][] | .seed] == [null, 2, 3]' "$FIXTURE/peg-requests" >/dev/null \
   || fail "peg-native retries were not resampled"
 # A 33-character cue gets 73 tokens, a retry twice that, and the last attempt all of LLAMA_CPP_MAX_TOKENS.
-jq -se '[.[:3][] | .max_tokens] == [73, 146, 768]' "$FIXTURE/peg-requests" >/dev/null \
+jq -se '[.[:3][] | .max_tokens] == [63, 126, 768]' "$FIXTURE/peg-requests" >/dev/null \
   || fail "per-cue token budgets do not grow per attempt: $(jq -sc '[.[:3][] | .max_tokens]' "$FIXTURE/peg-requests")"
 
 # A reply cut off at max_tokens is retried with a larger budget, never
@@ -279,7 +279,7 @@ if grep -qF 'dónde' "$out"; then fail "a reply cut off at max_tokens was publis
 [ "$(grep -c '^Hola\.$' "$out")" -eq 2 ] || fail "truncated cue not retried"
 grep -qF 'rejected cue on attempt 1/3 (reason=truncated, finish=length)' "$FIXTURE/data/translation.log" \
   || fail "truncation not logged"
-jq -se '[.[].max_tokens] == [73, 100, 73]' "$FIXTURE/cut-requests" >/dev/null \
+jq -se '[.[].max_tokens] == [63, 100, 63]' "$FIXTURE/cut-requests" >/dev/null \
   || fail "truncated cue budgets not grown and capped: $(jq -sc '[.[].max_tokens]' "$FIXTURE/cut-requests")"
 
 # The same error on a batch sends its cues one per request, with no fallback.
