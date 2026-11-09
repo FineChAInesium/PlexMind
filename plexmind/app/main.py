@@ -1080,7 +1080,7 @@ if not _no_gui and _os.path.isdir(_static_dir):
 
     @app.get("/favicon.ico", include_in_schema=False)
     async def favicon():
-        return FileResponse(_os.path.join(_static_dir, "icon.png"))
+        return FileResponse(_os.path.join(_static_dir, "favicon-64.png"))
 else:
     @app.get("/", include_in_schema=False)
     async def api_root():
