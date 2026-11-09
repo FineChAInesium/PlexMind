@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.9.12 - 2026-11-09
 
 - Only call a recommendation a hidden gem if it really is little known: few TMDB votes for its type, low current popularity, not part of a film series, not a long-running show, and not trending.
 
