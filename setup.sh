@@ -117,8 +117,8 @@ select_models() {
     echo ""
 
     # --- llama.cpp model (recommendations + translation) ---
-    LLAMA_CPP_MODEL_ALIAS="qwen3.5-9b-q5_k_m"
-    LLAMA_CPP_MODEL_PATH="${LLAMA_CPP_MODEL_PATH:-/mnt/cache/appdata/llama-cpp/models/Qwen3.5-9B-Q5_K_M.gguf}"
+    LLAMA_CPP_MODEL_ALIAS="gemma-4-12b-q5_k_m"
+    LLAMA_CPP_MODEL_PATH="${LLAMA_CPP_MODEL_PATH:-/mnt/cache/appdata/llama-cpp/models/gemma-4-12b-it-Q5_K_M.gguf}"
     LLM_TIER="Local GGUF"
 
     # --- Whisper Model (transcription) ---

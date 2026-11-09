@@ -12,7 +12,7 @@ services:
     ports:
       - "${LLAMA_CPP_BIND_ADDRESS:-127.0.0.1}:${LLAMA_CPP_HOST_PORT:-11435}:8080"
     volumes:
-      - ${LLAMA_CPP_MODEL_PATH:-/mnt/cache/appdata/llama-cpp/models/Qwen3.5-9B-Q5_K_M.gguf}:/models/model.gguf:ro
+      - ${LLAMA_CPP_MODEL_PATH:-/mnt/cache/appdata/llama-cpp/models/gemma-4-12b-it-Q5_K_M.gguf}:/models/model.gguf:ro
     command:
       - --host
       - 0.0.0.0
@@ -21,7 +21,7 @@ services:
       - --model
       - /models/model.gguf
       - --alias
-      - ${LLAMA_CPP_MODEL_ALIAS:-qwen3.5-9b-q5_k_m}
+      - ${LLAMA_CPP_MODEL_ALIAS:-gemma-4-12b-q5_k_m}
       - --ctx-size
       - ${LLAMA_CPP_CTX_SIZE:-8192}
       # PlexMind sends one request at a time; extra slots only reserve memory.
@@ -123,7 +123,7 @@ services:
       - OMDB_API_KEY=${OMDB_API_KEY:-}
       - LLAMA_CPP_URL=${LLAMA_CPP_URL:-http://llama-cpp:8080}
       - LLAMA_CPP_API_URL=${LLAMA_CPP_API_URL:-}
-      - LLAMA_CPP_MODEL=${LLAMA_CPP_MODEL_ALIAS:-qwen3.5-9b-q5_k_m}
+      - LLAMA_CPP_MODEL=${LLAMA_CPP_MODEL_ALIAS:-gemma-4-12b-q5_k_m}
       - LLAMA_CPP_MAX_TOKENS=${LLAMA_CPP_MAX_TOKENS:-768}
       - LLAMA_CPP_CONTAINER_NAME=${LLAMA_CPP_CONTAINER_NAME:-llama-cpp}
       - MANAGE_LLAMA_CPP_CONTAINER=${MANAGE_LLAMA_CPP_CONTAINER:-0}

@@ -20,7 +20,7 @@ LLAMA_CPP_URL = os.getenv("LLAMA_CPP_URL", "http://localhost:11435")
 LLAMA_CPP_MODEL = (
     os.getenv("LLAMA_CPP_MODEL")
     or os.getenv("LLAMA_CPP_MODEL_ALIAS")
-    or "qwen3.5-9b-q5_k_m"
+    or "gemma-4-12b-q5_k_m"
 )
 REQUEST_TIMEOUT = 180  # seconds
 MAX_TOKENS = int(os.getenv("LLAMA_CPP_MAX_TOKENS", "768"))
@@ -44,7 +44,7 @@ def _extract_json(text: str) -> str:
       - variable assignments: `result = [...]` or `json_response = {...}`
       - leading prose before the JSON
     """
-    # Strip thinking blocks (Qwen sometimes emits these even with /no_think)
+    # Strip thinking blocks, which some models emit even when asked not to
     text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
 
     text = _strip_fences(text)
@@ -199,7 +199,7 @@ async def generate(prompt: str, system: str | None = None, *,
         "temperature": temperature,
         "top_p": 0.9,
         "max_tokens": MAX_TOKENS,
-        # Qwen3.5 thinks by default; the /no_think tag alone is not reliable.
+        # Some models think by default; models that do not ignore this setting.
         "chat_template_kwargs": {"enable_thinking": False},
     }
     if seed is not None:

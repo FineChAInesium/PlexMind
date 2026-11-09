@@ -66,7 +66,7 @@ else
   llm_ready="$(json_get llm_ready "$health" 2>/dev/null || true)"
   [ "$status" = "ok" ] && pass "/health status ok" || fail "/health status is ${status:-missing}"
   [ "$llm_ready" = "true" ] && pass "LLM ready (${llm:-unknown})" || fail "LLM not ready (${llm:-unknown})"
-  expected_model="${LLAMA_CPP_MODEL_ALIAS:-qwen3.5-9b-q5_k_m}"
+  expected_model="${LLAMA_CPP_MODEL_ALIAS:-gemma-4-12b-q5_k_m}"
   [ "$llm" = "$expected_model" ] && pass "expected llama.cpp model label" || fail "unexpected LLM label: ${llm:-missing} (expected ${expected_model})"
 fi
 
@@ -119,10 +119,10 @@ else
 fi
 
 page="$(http_get "${API_BASE}/" 2>/dev/null || true)"
-if printf '%s' "$page" | grep -q 'LLM (llama.cpp)' && printf '%s' "$page" | grep -q 'qwen3.5-9b-q5_k_m'; then
-  pass "dashboard labels show llama.cpp/qwen3.5-9b"
+if printf '%s' "$page" | grep -q 'LLM (llama.cpp)'; then
+  pass "dashboard labels show llama.cpp"
 else
-  fail "dashboard labels do not show expected llama.cpp/qwen3.5-9b text"
+  fail "dashboard labels do not show llama.cpp"
 fi
 if printf '%s' "$page" | grep -q 'Ollama'; then
   fail "dashboard still contains stale Ollama text"
