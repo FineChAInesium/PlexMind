@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.9.11 - 2026-11-09
 
 - Translate what people are watching first: the next episodes after each active viewer, then shows being watched, recently added titles, anything watched before, and the rest. Videos using an embedded or Plex subtitle share the same queue.
 - Give the translation model the title, genres, synopsis and character names from Plex, plus the last few finished lines, and end batches at sentence breaks.
