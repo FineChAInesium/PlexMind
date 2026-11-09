@@ -1,20 +1,20 @@
 """
-Core recommendation engine — all 9 features:
+Core recommendation engine.
 
-  1. Recency-weighted genre fingerprint (recent watches count 3×)
+  1. Candidates come from TMDB's lists around watched titles and a genre shortlist
   2. Partial-watch + in-progress exclusion from candidate pool
-  3. Feedback genre penalties (disliked items' genres reduce candidate scores)
-  4. Original-language awareness (dominant language(s) in history get a boost)
-  5. "Because you watched X" reason format
-  6. Trending boost (TMDB weekly trending titles score higher)
+  3. Each candidate is scored against the watched titles it most resembles (taste.py)
+  4. Thumbs-up and thumbs-down count as strong signals, by similarity
+  5. The language model makes the final choice, seeing each candidate's real matches
+  6. Reasons must name those matches, or are rewritten from them
   7. Re-recommendation suppression (SUPPRESSION_DAYS window)
-  8. Candidate pre-filter (top CANDIDATE_POOL_SIZE by composite score before LLM)
-  9. Plex collection sort by LLM rank order + IMDB rating (in plex_sync)
+  8. Plex collection sort by LLM rank order + IMDB rating (in plex_sync)
 
 Metadata sources (concurrent): TMDB + TVDB + OMDB/IMDB
 """
 import asyncio
 import logging
+import math
 import os
 import re
 import time
@@ -22,17 +22,17 @@ from collections import Counter
 
 from dotenv import load_dotenv
 
-from app import cache, imdb_client, llm_client, plex_client, tmdb_client, tvdb_client
+from app import cache, imdb_client, llm_client, plex_client, taste, tmdb_client, tvdb_client
 
 load_dotenv()
 
 MAX_RECS = int(os.getenv("MAX_RECOMMENDATIONS", "10"))
 CANDIDATE_POOL_SIZE = int(os.getenv("CANDIDATE_POOL_SIZE", "40"))
-RECENCY_HOT_DAYS = 90    # watched within this window → 3× weight
-RECENCY_WARM_DAYS = 180  # within this → 2× weight
-TRENDING_BOOST = 0.08
-LANGUAGE_BOOST = 0.06
-RATING_BOOST_MAX = 0.04  # scaled by IMDB rating / 10
+RECENCY_HOT_DAYS = 90    # labelled [recent] in the prompt
+RECENCY_WARM_DAYS = 180  # labelled [this year]
+MAX_PICKS_PER_MATCH = 3  # picks that may share the same closest watched title
+MAX_FEEDBACK_ENRICHED = 40
+DEFAULT_REASON = "Selected from your highest-scoring library matches."
 MAX_HISTORY_PROMPT_ITEMS = int(os.getenv("MAX_HISTORY_PROMPT_ITEMS", "25"))
 MAX_CANDIDATE_PROMPT_ITEMS = int(os.getenv("MAX_CANDIDATE_PROMPT_ITEMS", "28"))
 MAX_FEEDBACK_PROMPT_ITEMS = int(os.getenv("MAX_FEEDBACK_PROMPT_ITEMS", "12"))
@@ -64,7 +64,7 @@ Each element must have exactly these keys:
   "title"      — exact match to the AVAILABLE LIBRARY list
   "year"       — integer or null
   "type"       — "movie" or "tv"
-  "reason"     — one sentence beginning with "Because you watched [specific title from history],"
+  "reason"     — one sentence beginning "Because you watched", naming up to three titles from that candidate's matches
   "poster_url" — null (filled in later)\
 """
 
@@ -75,10 +75,7 @@ Each element must have exactly these keys:
 
 def _normalise(title: str) -> str:
     """Strip region suffixes and trailing years for fuzzy dedup."""
-    t = title.lower().strip()
-    t = re.sub(r"\s*\([a-z]{2}\)$", "", t)
-    t = re.sub(r"\s*\(\d{4}\)$", "", t)
-    return t.strip()
+    return taste.normalise_title(title)
 
 
 def _llm_title_key(title: str) -> str:
@@ -201,7 +198,7 @@ async def _enrich_all(items: list[tuple[str, int | None, str]]) -> list[dict]:
             "media_type": media_type,
             "poster_url": tmdb.poster_url if tmdb else None,
             "genres": list(dict.fromkeys(genres)),
-            "keywords": tmdb.keywords[:10] if tmdb else [],
+            "keywords": tmdb.keywords if tmdb else [],
             "cast": tmdb.cast[:5] if tmdb else [],
             "director": tmdb.director if tmdb else None,
             "original_language": tmdb.original_language if tmdb else None,
@@ -212,7 +209,7 @@ async def _enrich_all(items: list[tuple[str, int | None, str]]) -> list[dict]:
             "rt_score": omdb.get("rt_score") if omdb else None,
             "awards": omdb.get("awards") if omdb else None,
             "overview": (tmdb.overview if tmdb else None) or (omdb.get("plot") if omdb else None) or "",
-            "similar": tmdb.similar[:4] if tmdb else [],
+            "related": tmdb.related if tmdb else [],
             "tv_status": tvdb.get("status") if tvdb else None,
             "network": tvdb.get("network") if tvdb else None,
         }
@@ -239,47 +236,35 @@ def _recency_weight(viewed_at: float | None) -> float:
 def _build_fingerprint(
     history_meta: list[dict],
     history_items: list[plex_client.WatchedItem],
-) -> tuple[Counter, Counter, Counter, Counter, Counter]:
-    """
-    Build recency-weighted genre, keyword, language, director, and cast Counters.
-    Returns (genre_weights, kw_weights, lang_counts, director_weights, cast_weights).
-    """
+) -> tuple[Counter, Counter]:
+    """Recency-weighted (genre_weights, non-English language counts)."""
     genre_weights: Counter = Counter()
-    kw_weights: Counter = Counter()
     lang_counts: Counter = Counter()
-    director_weights: Counter = Counter()
-    cast_weights: Counter = Counter()
 
     for entry, watched in zip(history_meta, history_items):
         w = _recency_weight(watched.viewed_at)
         for g in entry.get("genres", []):
             genre_weights[g.lower()] += w
-        for k in entry.get("keywords", []):
-            kw_weights[k.lower()] += w
         lang = entry.get("original_language")
         if lang and lang != "en":  # non-English languages are a strong signal
             lang_counts[lang] += w
-        director = entry.get("director")
-        if director:
-            director_weights[director.lower()] += w
-        for person in entry.get("cast", [])[:3]:
-            cast_weights[person.lower()] += w
 
-    return genre_weights, kw_weights, lang_counts, director_weights, cast_weights
+    return genre_weights, lang_counts
 
 
-def _disliked_genres(user_id: str, meta_by_title: dict[str, dict]) -> Counter:
-    """
-    Return Counter of disliked genre frequencies.
-    A genre disliked across multiple titles accrues a higher penalty than one disliked once.
-    """
-    genres: Counter = Counter()
-    for fb in cache.get_user_feedback(user_id):
-        if fb["rating"] == "dislike":
-            meta = meta_by_title.get(fb["title"].lower(), {})
-            for g in meta.get("genres", []):
-                genres[g.lower()] += 1
-    return genres
+async def _enrich_feedback(feedback: list[dict]) -> dict[str, dict]:
+    """Metadata for titles the user gave a thumbs up or down, by lowercase title."""
+    wanted = {fb["title"].lower() for fb in feedback[-MAX_FEEDBACK_ENRICHED:] if fb.get("rating") in ("like", "dislike")}
+    if not wanted:
+        return {}
+    library = await asyncio.to_thread(_fetch_full_library)
+    found: dict[str, tuple] = {}
+    for item in library:
+        if item["title"].lower() in wanted:
+            found.setdefault(item["title"].lower(), (item["title"], item.get("year"), item["media_type"]))
+    if not found:
+        return {}
+    return {meta["title"].lower(): meta for meta in await _enrich_all(list(found.values()))}
 
 
 # ---------------------------------------------------------------------------
@@ -295,89 +280,49 @@ def _prescore_by_plex_genres(
     pool_size: int = PRESCORE_POOL,
 ) -> list[dict]:
     """
-    Fast genre-only scoring using Plex's built-in genre tags.
-    Returns the top `pool_size` items — these are the only ones we'll enrich via API.
+    Fast genre-only scoring using Plex's built-in genre tags. Rare genres count
+    for more, and a title gains nothing just from carrying more tags.
+    Returns the top `pool_size` items.
     """
     if len(library_items) <= pool_size:
         return library_items
 
-    # Build genre weights from watch history (using Plex genres on WatchedItems)
     genre_w: Counter = Counter()
     for item in history:
-        w = _recency_weight(item.viewed_at)
-        for g in item.genres:
-            genre_w[g.lower()] += w
+        for g in taste.genre_tokens(item.genres):
+            genre_w[g] += taste.engagement(item)
 
-    total = max(sum(genre_w.values()), 1)
+    tagged = [(item, taste.genre_tokens(item.get("plex_genres"))) for item in library_items]
+    frequency: Counter = Counter(g for _, genres in tagged for g in genres)
 
-    def _score(item: dict) -> float:
-        genres = {g.lower() for g in item.get("plex_genres", [])}
-        return sum(genre_w.get(g, 0) for g in genres) / total
+    def _score(pair: tuple[dict, frozenset]) -> float:
+        genres = pair[1]
+        if not genres:
+            return 0.0
+        fit = sum(genre_w.get(g, 0) * math.log((len(tagged) + 1) / (frequency[g] + 1)) for g in genres)
+        return fit / math.sqrt(len(genres))
 
-    scored = sorted(library_items, key=_score, reverse=True)
-    return scored[:pool_size]
+    return [item for item, _ in sorted(tagged, key=_score, reverse=True)[:pool_size]]
+
+
+def _merge_shortlist(related: list[dict], by_genre: list[dict], size: int) -> list[dict]:
+    """Up to two thirds from TMDB's lists around watched titles, then genre
+    matches, then any related titles left. Metadata cost stays at SIZE titles."""
+    def identity(item: dict) -> tuple:
+        return (item.get("rating_key") or item["title"], item.get("year"))
+
+    chosen: dict[tuple, dict] = {}
+    for items, cap in ((related, round(size * 2 / 3)), (by_genre, size), (related, size)):
+        for item in items:
+            if len(chosen) >= cap:
+                break
+            chosen.setdefault(identity(item), item)
+    return list(chosen.values())
 
 
 # ---------------------------------------------------------------------------
 # Candidate pre-filter (full enriched metadata)
 # ---------------------------------------------------------------------------
-
-def _score_candidate(
-    candidate: dict,
-    genre_weights: Counter,
-    kw_weights: Counter,
-    lang_counts: Counter,
-    disliked_genres: Counter,
-    trending_titles: set[str],
-    dominant_langs: set[str],
-    director_weights: Counter | None = None,
-    cast_weights: Counter | None = None,
-) -> float:
-    total_genre_w = max(sum(genre_weights.values()), 1)
-    total_kw_w = max(sum(kw_weights.values()), 1)
-
-    cand_genres = {g.lower() for g in candidate.get("genres", [])}
-    cand_kws = {k.lower() for k in candidate.get("keywords", [])}
-
-    genre_score = sum(genre_weights.get(g, 0) for g in cand_genres) / total_genre_w
-    kw_score = sum(kw_weights.get(k, 0) for k in cand_kws) / total_kw_w
-
-    # Director affinity
-    director_boost = 0.0
-    if director_weights:
-        total_dir_w = max(sum(director_weights.values()), 1)
-        director = (candidate.get("director") or "").lower()
-        if director:
-            director_boost = min(0.08, director_weights.get(director, 0) / total_dir_w)
-
-    # Cast affinity (top 3 cast members)
-    cast_boost = 0.0
-    if cast_weights:
-        total_cast_w = max(sum(cast_weights.values()), 1)
-        cand_cast = {p.lower() for p in candidate.get("cast", [])[:5]}
-        cast_boost = min(0.06, sum(cast_weights.get(p, 0) for p in cand_cast) / total_cast_w)
-
-    # Language boost
-    lang = candidate.get("original_language")
-    lang_boost = LANGUAGE_BOOST if lang in dominant_langs else 0.0
-
-    # Trending boost
-    trending_boost = TRENDING_BOOST if candidate["title"].lower() in trending_titles else 0.0
-
-    # Rating boost (scaled, capped)
-    imdb = candidate.get("imdb_rating") or 0
-    rating_boost = RATING_BOOST_MAX * min(float(imdb) / 10.0, 1.0)
-
-    # Graduated dislike penalty — scales with how many disliked titles share this genre
-    penalty = sum(0.1 * min(disliked_genres.get(g, 0), 3) for g in cand_genres)
-
-    # Small baseline so items with no enrichment data aren't zeroed out entirely
-    baseline = 0.01
-
-    return max(0.0, baseline + genre_score * 0.5 + kw_score * 0.3
-               + director_boost + cast_boost
-               + lang_boost + trending_boost + rating_boost - penalty)
-
 
 def _prefilter(
     candidates: list[dict],
@@ -388,16 +333,15 @@ def _prefilter(
     shown_recs: dict[str, float],
     pool_size: int,
     n: int,
+    feedback_meta: dict[str, dict] | None = None,
 ) -> list[dict]:
     """
-    Score candidates, exclude suppressed titles, preserve movie/TV ratio,
-    return top `pool_size` items.
+    Score candidates against the watched titles each one resembles, exclude
+    suppressed titles, preserve the movie/TV ratio and keep some variety.
+    Returns up to `pool_size` items, best match first.
     """
-    genre_weights, kw_weights, lang_counts, director_weights, cast_weights = \
-        _build_fingerprint(history_meta, history_items)
+    _, lang_counts = _build_fingerprint(history_meta, history_items)
     dominant_langs = {lang for lang, _ in lang_counts.most_common(3)} - {"en"}
-    meta_by_title = {e["title"].lower(): e for e in history_meta}
-    bad_genres = _disliked_genres(user_id, meta_by_title)
 
     # Titles the user marked watched or disliked are never candidates; liked
     # titles may come back. Other recently shown titles are suppressed.
@@ -414,8 +358,8 @@ def _prefilter(
                               key=lambda c: shown_recs.get(c["title"].lower(), 0))
         active += oldest_first[:n - len(active)]
 
-    # The prompt shows only MAX_CANDIDATE_PROMPT_ITEMS, movies first; a larger
-    # pool would cut the shows off and leave a movie-heavy user no TV picks.
+    # The prompt shows only MAX_CANDIDATE_PROMPT_ITEMS; keep the pool within
+    # it so a movie-heavy user still gets their TV picks.
     pool_size = min(pool_size, MAX_CANDIDATE_PROMPT_ITEMS)
     # Preserve proportional movie/TV ratio from history
     history_types = [h["media_type"] for h in history_meta]
@@ -423,77 +367,39 @@ def _prefilter(
     n_movies = max(1, round(pool_size * movie_ratio))
     n_shows = pool_size - n_movies
 
-    movies = [c for c in active if c["media_type"] == "movie"]
-    shows = [c for c in active if c["media_type"] != "movie"]
-
-    def _top(items: list[dict], k: int) -> list[dict]:
-        scored = sorted(
-            items,
-            key=lambda c: _score_candidate(
-                c, genre_weights, kw_weights, lang_counts,
-                bad_genres, trending_titles, dominant_langs,
-                director_weights, cast_weights,
-            ),
-            reverse=True,
-        )
-        return scored[:k]
-
-    return _top(movies, n_movies) + _top(shows, n_shows)
+    watched, disliked = taste.build_profiles(history_meta, history_items, feedback, feedback_meta)
+    matcher = taste.Matcher(watched, disliked, active)
+    ranked = matcher.rank(active, trending_titles, dominant_langs)
+    pool = (matcher.varied([c for c in ranked if c["media_type"] == "movie"], n_movies)
+            + matcher.varied([c for c in ranked if c["media_type"] != "movie"], n_shows))
+    return sorted(pool, key=lambda c: c["_score"], reverse=True)
 
 
 # ---------------------------------------------------------------------------
 # Deep cut (hidden gem) picker
 # ---------------------------------------------------------------------------
 
-def _pick_deep_cut(
-    library_meta: list[dict],
-    genre_weights: Counter,
-    kw_weights: Counter,
-    lang_counts: Counter,
-    disliked_genres: set[str],
-    trending_titles: set[str],
-    dominant_langs: set[str],
-    exclude_titles: set[str],
-) -> dict | None:
+def _pick_deep_cut(library_meta: list[dict], exclude_titles: set[str]) -> dict | None:
     """
-    Find one 'deep cut': a library item that strongly matches the user's taste
-    but is largely unknown (low TMDB vote_count).  Like Spotify's low-key gem.
-    Returns a rec dict with deep_cut=True, or None if nothing qualifies.
+    Find one 'deep cut': a library item that matches titles the user watched
+    but is largely unknown (low TMDB vote_count). Needs the scores _prefilter
+    set. Returns a rec dict with deep_cut=True, or None if nothing qualifies.
     """
-    scored: list[tuple[float, dict]] = []
-    for item in library_meta:
-        title_lower = item["title"].lower()
-        if title_lower in exclude_titles:
-            continue
+    def qualifies(item: dict) -> bool:
         vote_count = item.get("vote_count")
-        # Must be obscure (or unknown — None means no TMDB data, skip)
-        if vote_count is None or vote_count > DEEP_CUT_MAX_VOTES:
-            continue
-        # Must clear a minimum quality bar
         rating = float(item.get("tmdb_rating") or item.get("imdb_rating") or 0)
-        if rating < DEEP_CUT_MIN_RATING:
-            continue
-        score = _score_candidate(
-            item, genre_weights, kw_weights, lang_counts,
-            disliked_genres, trending_titles, dominant_langs,
-        )  # deep cut doesn't need director/cast boost
-        scored.append((score, item))
+        return (item["title"].lower() not in exclude_titles and bool(item.get("_matches"))
+                and vote_count is not None and vote_count <= DEEP_CUT_MAX_VOTES
+                and rating >= DEEP_CUT_MIN_RATING)
 
-    if not scored:
+    best = max(filter(qualifies, library_meta), key=lambda item: item["_score"], default=None)
+    if best is None:
         return None
 
-    scored.sort(key=lambda x: x[0], reverse=True)
-    best = scored[0][1]
-
-    # Build a reason that highlights the top genre match
-    top_genre = next(
-        (g for g, _ in genre_weights.most_common(5) if g in {g2.lower() for g2 in best.get("genres", [])}),
-        None,
-    )
-    genre_note = f"its {top_genre} elements" if top_genre else "its themes"
+    names = " and ".join(best["_matches"][:2])
     reason = (
         f"A deep cut: only {best.get('vote_count', '?')} ratings on TMDB, "
-        f"but {genre_note} closely match your taste — a hidden gem worth discovering."
+        f"but it closely matches {names} — a hidden gem worth discovering."
     )
 
     return {
@@ -506,7 +412,6 @@ def _pick_deep_cut(
         "_imdb_rating": best.get("imdb_rating"),
         "_tmdb_rating": best.get("tmdb_rating"),
     }
-
 
 # ---------------------------------------------------------------------------
 # Prompt formatting
@@ -551,11 +456,13 @@ def _fmt_meta(entry: dict, weight: float = 1.0) -> str:
 def _format_history(
     history_meta: list[dict],
     history_items: list[plex_client.WatchedItem],
+    matched: set[str] = frozenset(),
 ) -> str:
+    """Titles candidates matched come first, so the prompt always shows them."""
     lines = []
     paired = sorted(
         zip(history_meta, history_items),
-        key=lambda x: _recency_weight(x[1].viewed_at),
+        key=lambda x: (x[0]["title"] in matched, _recency_weight(x[1].viewed_at)),
         reverse=True,
     )
     for meta, watched in paired[:MAX_HISTORY_PROMPT_ITEMS]:
@@ -583,6 +490,8 @@ def _fmt_candidate(entry: dict) -> str:
         parts.append(f"ratings: {' | '.join(ratings)}")
     if entry.get("original_language") and entry["original_language"] != "en":
         parts.append(f"language: {entry['original_language']}")
+    if entry.get("_matches"):
+        parts.append(f"matches: {'; '.join(entry['_matches'][:3])}")
     return " | ".join(parts)
 
 
@@ -605,33 +514,34 @@ def _build_prompt(history_text: str, candidates_text: str, feedback_text: str,
                   n: int, top_genres: str = "") -> str:
     genre_line = f"\nUSER'S TOP GENRES (by watch frequency): {top_genres}\n" if top_genres else ""
     return f"""\
-USER WATCH HISTORY (sorted most-recent first; [recent] = watched within 90 days):
+USER WATCH HISTORY ([recent] = watched within 90 days):
 {history_text}
 {genre_line}
 USER FEEDBACK ON PAST RECOMMENDATIONS:
 {feedback_text}
 
-AVAILABLE LIBRARY — select ONLY from these titles the user has not yet watched:
+AVAILABLE LIBRARY — select ONLY from these titles the user has not yet watched.
+Listed best match first; "matches" names the watched titles each one most resembles:
 {candidates_text}
 
 TASK:
 Choose exactly {n} titles from AVAILABLE LIBRARY that best match this user's taste.
-Prioritise genre alignment with the user's top genres above all else.
-Weight: genre/tone alignment, thematic fit, cast/director overlap, then critical ratings.
+Prefer titles supported by several matches, and cover the user's different tastes rather than one.
+Weight: fit with its matches, tone, then critical ratings.
 Do NOT invent titles. Match movie/TV ratio to the user's viewing habits.
 
 Return a JSON array of exactly {n} objects. Each object must be wrapped in curly braces {{}}.
 Example format (DO NOT copy these titles — use only titles from AVAILABLE LIBRARY):
 [
-  {{"title": "Example Movie", "year": 2024, "type": "movie", "reason": "Because you watched X, ...", "poster_url": null}},
-  {{"title": "Example Show", "year": 2023, "type": "tv", "reason": "Because you watched Y, ...", "poster_url": null}}
+  {{"title": "Example Movie", "year": 2024, "type": "movie", "reason": "Because you watched X and Y, ...", "poster_url": null}},
+  {{"title": "Example Show", "year": 2023, "type": "tv", "reason": "Because you watched Z, ...", "poster_url": null}}
 ]
 
 Rules:
 - "title": exact match from AVAILABLE LIBRARY — no year, no [type] suffix
 - "year": integer or null
 - "type": "movie" or "tv"
-- "reason": one sentence starting with "Because you watched [specific title from history],"
+- "reason": one sentence starting with "Because you watched", naming only titles from that candidate's matches
 - "poster_url": always null
 
 Raw JSON array only. No variable names, no prose, no markdown.\
@@ -668,10 +578,22 @@ async def get_recommendations(user_id: str, force: bool = False) -> list[dict]:
     if not library_items:
         return []
 
-    # 4. Lightweight pre-score by Plex genres — avoids enriching entire library
-    shortlist = _prescore_by_plex_genres(library_items, history)
+    # 4. Metadata for what the user watched and rated
+    feedback = await asyncio.to_thread(cache.get_user_feedback, user_id)
+    history_batch = [(i.title, i.year, i.media_type) for i in history]
+    history_meta, feedback_meta = await asyncio.gather(
+        _enrich_all(history_batch) if history_batch else asyncio.sleep(0, result=[]),
+        _enrich_feedback(feedback),
+    )
 
-    # 5. Trending titles for boost signal (fetch concurrently with enrichment)
+    # 5. Shortlist: TMDB's lists around watched titles, plus a genre pre-score
+    watched_profiles, _ = taste.build_profiles(history_meta, history, feedback, feedback_meta)
+    shortlist = _merge_shortlist(
+        taste.related_items(library_items, watched_profiles, PRESCORE_POOL),
+        _prescore_by_plex_genres(library_items, history),
+        PRESCORE_POOL,
+    )
+
     async def _get_trending_titles() -> set[str]:
         try:
             trending = await tmdb_client.get_trending("all", "week")
@@ -679,13 +601,8 @@ async def get_recommendations(user_id: str, force: bool = False) -> list[dict]:
         except Exception:
             return set()
 
-    history_batch = [(i.title, i.year, i.media_type) for i in history]
     enrich_batch = [(d["title"], d["year"], d["media_type"]) for d in shortlist]
-    (history_meta, library_meta, trending_titles) = await asyncio.gather(
-        _enrich_all(history_batch) if history_batch else asyncio.sleep(0, result=[]),
-        _enrich_all(enrich_batch),
-        _get_trending_titles(),
-    )
+    library_meta, trending_titles = await asyncio.gather(_enrich_all(enrich_batch), _get_trending_titles())
     for meta, source in zip(library_meta, shortlist):
         meta["rating_key"] = source.get("rating_key")
 
@@ -693,20 +610,19 @@ async def get_recommendations(user_id: str, force: bool = False) -> list[dict]:
     shown_recs = await asyncio.to_thread(cache.get_shown_recs, user_id)
 
     # 7. Pre-filter enriched candidates to focused pool
-    feedback = await asyncio.to_thread(cache.get_user_feedback, user_id)
     n = min(MAX_RECS, len(shortlist))
     # Reserve one slot for the deep cut; LLM fills n-1
     llm_n = max(1, n - 1)
     candidates = _prefilter(
         library_meta, history_meta, history,
-        user_id, trending_titles, shown_recs, CANDIDATE_POOL_SIZE, llm_n,
+        user_id, trending_titles, shown_recs, CANDIDATE_POOL_SIZE, llm_n, feedback_meta,
     )
 
     # 8. Build prompt with recency-ordered history + top genres
-    genre_weights, kw_weights, lang_counts, director_weights, cast_weights = \
-        _build_fingerprint(history_meta, history)
+    genre_weights, _ = _build_fingerprint(history_meta, history)
     top_genres_str = ", ".join(g for g, _ in genre_weights.most_common(8))
-    history_text = _format_history(history_meta, history)
+    matched = {title for c in candidates for title in c.get("_matches", [])[:3]}
+    history_text = _format_history(history_meta, history, matched)
     candidates_text = _format_candidates(candidates)
     feedback_text = _format_feedback(feedback)
     prompt = _build_prompt(history_text, candidates_text, feedback_text, llm_n,
@@ -732,13 +648,32 @@ async def get_recommendations(user_id: str, force: bool = False) -> list[dict]:
     excluded = _feedback_excluded(feedback)
     recs: list[dict] = []
     seen: set[str] = set()
+    picks_per_match: Counter = Counter()
+    history_titles = {item.title for item in history}
+
+    def _reason(meta: dict, reason) -> str:
+        """The model's reason if it names only this title's real matches."""
+        matches = meta.get("_matches")
+        if not matches:
+            return str(reason or DEFAULT_REASON)[:500]
+        named = taste.titles_named(str(reason or ""), history_titles)
+        if named and named <= set(matches):
+            return str(reason)[:500]
+        return taste.explain(meta)[:500]
+
+    def _has_room(meta: dict) -> bool:
+        """So the list is not all one corner of the user's taste."""
+        matches = meta.get("_matches")
+        return not matches or picks_per_match[matches[0]] < MAX_PICKS_PER_MATCH
 
     def _canonical(meta: dict, reason) -> dict:
+        if meta.get("_matches"):
+            picks_per_match[meta["_matches"][0]] += 1
         return {
             "title": meta["title"],
             "year": meta.get("year"),
             "type": "movie" if meta.get("media_type") == "movie" else "tv",
-            "reason": str(reason or "Selected from your highest-scoring library matches.")[:500],
+            "reason": _reason(meta, reason),
             "poster_url": meta.get("poster_url"),
             "_rating_key": meta.get("rating_key"),
             "_imdb_rating": meta.get("imdb_rating"),
@@ -758,7 +693,7 @@ async def get_recommendations(user_id: str, force: bool = False) -> list[dict]:
             log.warning("Discarding LLM title outside candidate allowlist: %r", rec.get("title"))
             continue
         title_lower = meta["title"].lower()
-        if title_lower in seen or title_lower in excluded:
+        if title_lower in seen or title_lower in excluded or not _has_room(meta):
             continue
         seen.add(title_lower)
         recs.append(_canonical(meta, rec.get("reason")))
@@ -771,22 +706,17 @@ async def get_recommendations(user_id: str, force: bool = False) -> list[dict]:
     if len(recs) < llm_n:
         log.warning("LLM gave %d usable picks of %d for %s; topping up from the best candidates",
                     len(recs), llm_n, user_id)
-        for meta in candidates:
-            if len(recs) >= llm_n:
-                break
-            title_lower = meta["title"].lower()
-            if title_lower not in seen and title_lower not in excluded:
-                seen.add(title_lower)
-                recs.append(_canonical(meta, None))
+        for respect_variety in (True, False):  # a full list beats a varied short one
+            for meta in candidates:
+                if len(recs) >= llm_n:
+                    break
+                title_lower = meta["title"].lower()
+                if title_lower not in seen and title_lower not in excluded and (_has_room(meta) or not respect_variety):
+                    seen.add(title_lower)
+                    recs.append(_canonical(meta, None))
 
     # 10b. Deep cut — pick one hidden gem the LLM wouldn't normally choose
-    dominant_langs = {lang for lang, _ in lang_counts.most_common(3)} - {"en"}
-    bad_genres = _disliked_genres(user_id, {e["title"].lower(): e for e in history_meta})
-    deep_cut = _pick_deep_cut(
-        library_meta, genre_weights, kw_weights, lang_counts,
-        bad_genres, trending_titles, dominant_langs,
-        exclude_titles=seen | set(shown_recs) | excluded | watched_titles,
-    )
+    deep_cut = _pick_deep_cut(library_meta, exclude_titles=seen | set(shown_recs) | excluded | watched_titles)
     if deep_cut:
         recs.append(deep_cut)
     if not recs:

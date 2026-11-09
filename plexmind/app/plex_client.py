@@ -33,6 +33,10 @@ class WatchedItem:
     plex_key: str = ""
     viewed_at: float | None = None     # Unix timestamp of last watch
     view_percent: float | None = None  # 0.0–1.0 if known
+    plays: int = 1                     # times watched (movies)
+    episodes_watched: int | None = None
+    episode_total: int | None = None
+    user_rating: float | None = None   # the user's own Plex star rating, out of 10
 
 
 def _get_server() -> PlexServer:
@@ -192,6 +196,9 @@ def get_watch_history(user_id: str) -> list[WatchedItem]:
 
     seen_shows: set[str] = set()
     items: list[WatchedItem] = []
+    movie_plays: dict[str, int] = {}
+    show_episodes: dict[str, set] = {}
+    show_last_seen: dict[str, float] = {}
 
     try:
         history = server.library.history(maxresults=HISTORY_LIMIT)
@@ -212,8 +219,10 @@ def get_watch_history(user_id: str) -> list[WatchedItem]:
         if media_type == "movie":
             # Partial-watch filter using viewOffset vs duration on library item
             view_pct = None
+            user_rating = None
             try:
                 lib_item = server.fetchItem(entry.key)
+                user_rating = getattr(lib_item, "userRating", None)
                 dur = getattr(lib_item, "duration", None)
                 off = getattr(lib_item, "viewOffset", None)
                 if dur and dur > 0 and off is not None:
@@ -225,7 +234,9 @@ def get_watch_history(user_id: str) -> list[WatchedItem]:
             except Exception:
                 pass
 
+            movie_plays[entry.title.lower()] = movie_plays.get(entry.title.lower(), 0) + 1
             items.append(WatchedItem(
+                user_rating=user_rating,
                 title=entry.title,
                 year=getattr(entry, "year", None),
                 media_type="movie",
@@ -238,6 +249,8 @@ def get_watch_history(user_id: str) -> list[WatchedItem]:
 
         elif media_type == "episode":
             show_title = getattr(entry, "grandparentTitle", None) or entry.title
+            show_episodes.setdefault(show_title, set()).add(getattr(entry, "ratingKey", None) or entry.key)
+            show_last_seen[show_title] = max(show_last_seen.get(show_title, 0), viewed_at or 0)
             if show_title in seen_shows:
                 continue
             seen_shows.add(show_title)
@@ -254,6 +267,8 @@ def get_watch_history(user_id: str) -> list[WatchedItem]:
                 rating=getattr(show, "audienceRating", None) if show else None,
                 plex_key=getattr(show, "key", entry.key),
                 viewed_at=viewed_at,
+                episode_total=getattr(show, "leafCount", None) if show else None,
+                user_rating=getattr(show, "userRating", None) if show else None,
             ))
 
     # Deduplicate movies by title (keep most recent)
@@ -264,6 +279,12 @@ def get_watch_history(user_id: str) -> list[WatchedItem]:
         if not existing or (item.viewed_at or 0) > (existing.viewed_at or 0):
             seen[key] = item
 
+    for item in seen.values():
+        if item.media_type == "show":
+            item.episodes_watched = len(show_episodes.get(item.title, ()))
+            item.viewed_at = show_last_seen.get(item.title) or item.viewed_at
+        else:
+            item.plays = movie_plays.get(item.title.lower(), 1)
     return list(seen.values())
 
 

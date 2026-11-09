@@ -72,11 +72,10 @@ def test_unusable_llm_picks_are_topped_up_and_suffixed_titles_match():
             patch.object(cache, "get_shown_recs", return_value={}), \
             patch.object(cache, "get_user_feedback", return_value=[]), \
             patch.object(recommender, "_prefilter", return_value=metas), \
-            patch.object(recommender, "_build_fingerprint", return_value=(Counter(),) * 5), \
+            patch.object(recommender, "_build_fingerprint", return_value=(Counter(),) * 2), \
             patch.object(recommender, "_format_history", return_value=""), \
             patch.object(recommender.llm_client, "generate_json",
                          AsyncMock(return_value=[{"title": "Ronin (1998)", "type": "movie"}, {"title": "Invented"}])), \
-            patch.object(recommender, "_disliked_genres", return_value=set()), \
             patch.object(recommender, "_pick_deep_cut", return_value=None), \
             patch.object(cache, "cache_set", set_cache), \
             patch.object(cache, "mark_shown_recs", MagicMock()):

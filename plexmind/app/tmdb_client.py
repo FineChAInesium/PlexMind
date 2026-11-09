@@ -15,9 +15,11 @@ TMDB_API_KEY = os.getenv("TMDB_API_KEY", "")
 TMDB_BASE = "https://api.themoviedb.org/3"
 TMDB_IMAGE_BASE = "https://image.tmdb.org/t/p/w500"
 
-# Each enrich_item fires 4 internal concurrent requests, so effective
-# concurrency = SEM × 4.  Keep total ≤ 16 to avoid ConnectError floods.
+# Each enrich_item makes one search and one details request.
 _TMDB_SEM = asyncio.Semaphore(4)
+# Fetched with the details, in the same request.
+_APPENDED = "credits,keywords,similar,recommendations"
+MAX_RELATED_PER_LIST = 20
 
 
 @dataclass
@@ -31,7 +33,7 @@ class TMDBMeta:
     keywords: list[str] = field(default_factory=list)
     cast: list[str] = field(default_factory=list)       # top 5
     director: str | None = None
-    similar: list[str] = field(default_factory=list)    # top 5 similar titles
+    related: list[tuple[str, int | None]] = field(default_factory=list)  # TMDB's similar + recommended
     poster_url: str | None = None
     vote_average: float | None = None
     vote_count: int | None = None
@@ -75,23 +77,31 @@ async def _search(client: httpx.AsyncClient, title: str, year: int | None, media
     return results[0] if results else None
 
 
+def _related(detail: dict, title_key: str, date_key: str) -> list[tuple[str, int | None]]:
+    """(title, year) of everything TMDB lists alongside this title, without repeats."""
+    related: list[tuple[str, int | None]] = []
+    for source in ("recommendations", "similar"):
+        for result in (detail.get(source) or {}).get("results", [])[:MAX_RELATED_PER_LIST]:
+            title = result.get(title_key)
+            year = (result.get(date_key) or "")[:4]
+            if title:
+                related.append((title, int(year) if year.isdigit() else None))
+    return list(dict.fromkeys(related))
+
+
 async def _enrich_movie(client: httpx.AsyncClient, tmdb_id: int, base: dict) -> TMDBMeta:
-    detail, credits, kw_data, similar_data = await asyncio.gather(
-        _get(client, f"/movie/{tmdb_id}"),
-        _get(client, f"/movie/{tmdb_id}/credits"),
-        _get(client, f"/movie/{tmdb_id}/keywords"),
-        _get(client, f"/movie/{tmdb_id}/similar"),
-    )
+    detail = await _get(client, f"/movie/{tmdb_id}", {"append_to_response": _APPENDED})
+    credits = detail.get("credits") or {}
 
     genres = [g["name"] for g in detail.get("genres", [])]
-    keywords = [k["name"] for k in kw_data.get("keywords", [])][:15]
+    keywords = [k["name"] for k in (detail.get("keywords") or {}).get("keywords", [])][:15]
     cast = [c["name"] for c in credits.get("cast", [])][:5]
     director = next(
         (c["name"] for c in credits.get("crew", []) if c.get("job") == "Director"),
         None,
     )
-    similar = [s["title"] for s in similar_data.get("results", [])][:5]
-    poster = f"{TMDB_IMAGE_BASE}{base['poster_path']}" if base.get("poster_path") else None
+    related = _related(detail, "title", "release_date")
+    poster =f"{TMDB_IMAGE_BASE}{base['poster_path']}" if base.get("poster_path") else None
     release_year = int(detail.get("release_date", "")[:4]) if detail.get("release_date") else None
 
     return TMDBMeta(
@@ -104,7 +114,7 @@ async def _enrich_movie(client: httpx.AsyncClient, tmdb_id: int, base: dict) -> 
         keywords=keywords,
         cast=cast,
         director=director,
-        similar=similar,
+        related=related,
         poster_url=poster,
         vote_average=detail.get("vote_average"),
         vote_count=detail.get("vote_count"),
@@ -113,19 +123,15 @@ async def _enrich_movie(client: httpx.AsyncClient, tmdb_id: int, base: dict) -> 
 
 
 async def _enrich_tv(client: httpx.AsyncClient, tmdb_id: int, base: dict) -> TMDBMeta:
-    detail, credits, kw_data, similar_data = await asyncio.gather(
-        _get(client, f"/tv/{tmdb_id}"),
-        _get(client, f"/tv/{tmdb_id}/credits"),
-        _get(client, f"/tv/{tmdb_id}/keywords"),
-        _get(client, f"/tv/{tmdb_id}/similar"),
-    )
+    detail = await _get(client, f"/tv/{tmdb_id}", {"append_to_response": _APPENDED})
+    credits = detail.get("credits") or {}
 
     genres = [g["name"] for g in detail.get("genres", [])]
-    keywords = [k["name"] for k in kw_data.get("results", [])][:15]
+    keywords = [k["name"] for k in (detail.get("keywords") or {}).get("results", [])][:15]
     cast = [c["name"] for c in credits.get("cast", [])][:5]
     creator = next(iter([c["name"] for c in detail.get("created_by", [])]), None)
-    similar = [s["name"] for s in similar_data.get("results", [])][:5]
-    poster = f"{TMDB_IMAGE_BASE}{base['poster_path']}" if base.get("poster_path") else None
+    related = _related(detail, "name", "first_air_date")
+    poster =f"{TMDB_IMAGE_BASE}{base['poster_path']}" if base.get("poster_path") else None
     first_air = detail.get("first_air_date", "")
     year = int(first_air[:4]) if first_air else None
 
@@ -139,7 +145,7 @@ async def _enrich_tv(client: httpx.AsyncClient, tmdb_id: int, base: dict) -> TMD
         keywords=keywords,
         cast=cast,
         director=creator,
-        similar=similar,
+        related=related,
         poster_url=poster,
         vote_average=detail.get("vote_average"),
         vote_count=detail.get("vote_count"),
