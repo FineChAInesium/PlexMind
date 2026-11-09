@@ -1,7 +1,7 @@
 <?xml version="1.0"?>
 <Container version="2">
   <Name>PlexMind</Name>
-  <Repository>ghcr.io/finechainesium/plexmind:0.9.9</Repository>
+  <Repository>ghcr.io/finechainesium/plexmind:0.9.10</Repository>
   <Registry>https://github.com/FineChAInesium/PlexMind/pkgs/container/plexmind</Registry>
   <Network>bridge</Network>
   <Shell>bash</Shell>
@@ -17,7 +17,7 @@
   <Icon>https://raw.githubusercontent.com/FineChAInesium/PlexMind/main/templates/icon.png</Icon>
   <ExtraParams>--stop-timeout=40</ExtraParams>
   <Description>
-    PlexMind in one container. Version line: v0.9.9. Runs the dashboard/API, the recommendation worker, the subtitle scripts and a narrow Docker broker. It mounts your media read-write and the Docker socket (used only to start and stop the Whisper and llama.cpp containers), so do not expose port 8000 to the internet.
+    PlexMind in one container. Version line: v0.9.10. Runs the dashboard/API, the recommendation worker, the subtitle scripts and a narrow Docker broker. It mounts your media read-write and the Docker socket (used only to start and stop the Whisper and llama.cpp containers), so do not expose port 8000 to the internet.
   </Description>
 
   <Networking>

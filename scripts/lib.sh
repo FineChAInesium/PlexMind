@@ -3,7 +3,7 @@
 
 umask 077
 # common_lib.sh — Shared Infrastructure for Transcription/Translation Pipeline
-# Version: 0.9.9 — PlexMind release line
+# Version: 0.9.10 — PlexMind release line
 #
 # Source this file from any pipeline script:
 #   source /app/lib.sh || { echo "FATAL: Cannot load lib.sh"; exit 1; }

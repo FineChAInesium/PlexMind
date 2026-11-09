@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.9.10 - 2026-11-09
 
 - Recommendations now score each candidate against the individual watched titles it most resembles, instead of one averaged taste profile. Candidates also come from TMDB's similar and recommended lists, watched titles count by how much of them was watched, rewatches, star ratings and thumbs up or down, the top picks keep some variety, and each reason names the titles a pick actually matched.
 
