@@ -20,7 +20,7 @@ set -u
 # --- CONFIGURATION ---
 LLAMA_CPP_URL="${LLAMA_CPP_URL:-http://llama-cpp:8080}"
 LLAMA_CPP_API_URL="${LLAMA_CPP_API_URL:-${LLAMA_CPP_URL%/}/v1/chat/completions}"
-LLAMA_CPP_MODEL="${LLAMA_CPP_MODEL:-gemma-4-12b-q5_k_m}"
+LLAMA_CPP_MODEL="${LLAMA_CPP_MODEL:-gemma-4-12b-it-Q5_K_M}"
 LLAMA_CPP_MAX_TOKENS="${LLAMA_CPP_MAX_TOKENS:-768}"
 CHUNK_RETRY_ATTEMPTS="${CHUNK_RETRY_ATTEMPTS:-3}"
 CHUNK_RETRY_DELAY_SECONDS="${CHUNK_RETRY_DELAY_SECONDS:-2}"
@@ -98,6 +98,16 @@ get_batch_system_prompt() {
         "es-MX") echo "Eres traductor profesional de subtítulos. La entrada es un arreglo JSON de cadenas; cada elemento es un subtítulo en inglés. Traduce cada elemento al español de México de forma breve y devuelve solamente un arreglo JSON de cadenas con la misma cantidad de elementos y en el mismo orden: el elemento N contiene solo la traducción del subtítulo N. Traduce la jerga, los dobles sentidos y las groserías por su significado real, con un equivalente natural en México; nunca palabra por palabra. Conserva los saltos de línea y las etiquetas de formato como <i>. Cada elemento traduce solo su propio texto: aunque la oración continúe en el siguiente, nunca muevas palabras a otro elemento. No combines, dividas ni omitas subtítulos, y no agregues números, marcas de tiempo, explicaciones ni Markdown." ;;
         *)       echo "The input is a JSON array of strings, each one subtitle cue. Translate every element to $lang and output only a JSON array of strings with the same number of elements in the same order: element N holds only the translation of cue N. Translate slang, innuendo and profanity by their real meaning, using a natural equivalent; never word for word. Keep line breaks and formatting tags such as <i>. Each element translates only its own text: even if a sentence continues into the next element, never move words to a neighbouring element. Do not merge, split, or drop cues, and do not add cue numbers, timestamps, explanations, or Markdown." ;;
     esac
+}
+
+# The model chosen in the dashboard, picked up at the start of each file.
+refresh_llm_model() {
+    local saved
+    saved=$(jq -r '.model // empty' "${DATA_DIR}/llm_model.json" 2>/dev/null)
+    if [ -n "$saved" ] && [ "$saved" != "$LLAMA_CPP_MODEL" ]; then
+        LLAMA_CPP_MODEL="$saved"
+        log "MODEL: now using ${saved}."
+    fi
 }
 
 # What the model should know about the title, in the prompt's own language.
@@ -548,6 +558,7 @@ process_subtitle() {
     fi
 
     log "--------------------------------------------------------"
+    refresh_llm_model
     log "Translating to [${TARGET_LANG}]: ${SOURCE_FILE##*/}"
 
     local TEMP_FINAL_FILE="${DIR_PATH}/${BASENAME_NO_EXT}.${TARGET_LANG}.temp"

@@ -2,7 +2,9 @@
 
 ## Unreleased
 
-- Default model is now Gemma 4 12B (`gemma-4-12b-q5_k_m`), for translation and recommendations. PlexMind stays model-agnostic: any GGUF llama.cpp can load works, by setting `LLAMA_CPP_MODEL_PATH` and `LLAMA_CPP_MODEL_ALIAS`. Installs relying on the Compose default must download the new file (see the README) or set both to keep Qwen 3.5 9B.
+- Choose the model from the dashboard's Model Advisor card. It lists every GGUF in `LLAMA_CPP_MODELS_DIR`, remembers the last one used, and applies to recommendations at once and to translation at its next file. Compose now runs llama.cpp in router mode; `LLAMA_CPP_MODELS_DIR` replaces `LLAMA_CPP_MODEL_PATH`, and a model's name is its file name without `.gguf`.
+
+- Default model is now Gemma 4 12B (`gemma-4-12b-q5_k_m`), for translation and recommendations. PlexMind stays model-agnostic: any GGUF llama.cpp can load works. Installs relying on the Compose default must download the new file (see the README) or set `LLAMA_CPP_MODEL_ALIAS` to keep Qwen 3.5 9B.
 
 ## v0.9.12 - 2026-11-09
 

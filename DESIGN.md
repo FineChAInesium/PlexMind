@@ -37,7 +37,7 @@ PlexMind Suite is a self-hosted AI control plane for Plex. It runs entirely on l
 
 **Stack:** Python 3.12 / FastAPI / APScheduler / Bash / Tailwind CSS (vanilla JS)  
 **Deployment:** Docker Compose (5 services) on Unraid  
-**LLM:** llama.cpp OpenAI-compatible server, model-agnostic, defaulting to gemma-4-12b-q5_k_m (local, no cloud)
+**LLM:** llama.cpp OpenAI-compatible server, model-agnostic, defaulting to gemma-4-12b-it-Q5_K_M (local, no cloud)
 **ASR:** Whisper (onerahmet webservice, GPU-accelerated)
 
 ---
@@ -177,7 +177,7 @@ Active symlinks: `transcription.log`, `translation.log`, `maintenance.log`
 | Docker broker | Allowlisted sidecar lifecycle, inspect, and fixed NVIDIA telemetry; it alone mounts the raw Docker socket | For sidecar lifecycle and GPU status |
 
 **Current config:**
-- Model: `gemma-4-12b-q5_k_m` by default (any llama.cpp GGUF works); generation defaults are capped for 8192-token context
+- Model: `gemma-4-12b-it-Q5_K_M` by default (any llama.cpp GGUF works); generation defaults are capped for 8192-token context
 - TVDB + OMDB keys: **not set** — metadata enrichment is partial
 - Plex token in `.env` (plaintext — keep `chmod 600`)
 
@@ -312,7 +312,7 @@ An unusable batch reply is logged as `Batch of cues X-Y unusable (reason=...)`, 
 
 | Item | State |
 |---|---|
-| LLM model | gemma-4-12b-q5_k_m by default, via llama.cpp OpenAI-compatible API; model-agnostic |
+| LLM model | gemma-4-12b-it-Q5_K_M by default, via llama.cpp OpenAI-compatible API; model-agnostic |
 | LLM health | `/health` returns `llm_ready: true` |
 | LLM endpoint | `http://192.168.2.10:11435` externally, `http://llama-cpp:8080` in Docker network |
 | GPU status | NVIDIA detected; `/api/scheduler/status` returns `gpu_vendor`, `gpu_detection_source`, and `gpu_probe_error` diagnostics |

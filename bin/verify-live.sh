@@ -66,7 +66,7 @@ else
   llm_ready="$(json_get llm_ready "$health" 2>/dev/null || true)"
   [ "$status" = "ok" ] && pass "/health status ok" || fail "/health status is ${status:-missing}"
   [ "$llm_ready" = "true" ] && pass "LLM ready (${llm:-unknown})" || fail "LLM not ready (${llm:-unknown})"
-  expected_model="${LLAMA_CPP_MODEL_ALIAS:-gemma-4-12b-q5_k_m}"
+  expected_model="${LLAMA_CPP_MODEL_ALIAS:-gemma-4-12b-it-Q5_K_M}"
   [ "$llm" = "$expected_model" ] && pass "expected llama.cpp model label" || fail "unexpected LLM label: ${llm:-missing} (expected ${expected_model})"
 fi
 

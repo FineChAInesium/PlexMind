@@ -6,12 +6,15 @@ import json
 import logging
 import os
 import re
+import tempfile
 
 import httpx
 
 from app import llama_lifecycle
 
 log = logging.getLogger("plexmind.llm")
+from pathlib import Path
+
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -20,9 +23,75 @@ LLAMA_CPP_URL = os.getenv("LLAMA_CPP_URL", "http://localhost:11435")
 LLAMA_CPP_MODEL = (
     os.getenv("LLAMA_CPP_MODEL")
     or os.getenv("LLAMA_CPP_MODEL_ALIAS")
-    or "gemma-4-12b-q5_k_m"
+    or "gemma-4-12b-it-Q5_K_M"
 )
 REQUEST_TIMEOUT = 180  # seconds
+_log = logging.getLogger("plexmind.llm")
+
+
+def _data_file(name: str) -> Path:
+    return Path(os.getenv("DATA_DIR", "/app/data")) / name
+
+
+def _read_json(path: Path):
+    try:
+        return json.loads(path.read_text())
+    except (OSError, ValueError):
+        return None
+
+
+def _write_json(path: Path, value) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    handle, temporary = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.")
+    try:
+        with os.fdopen(handle, "w") as stream:
+            json.dump(value, stream)
+        os.chmod(temporary, 0o644)   # translate.sh reads this as another user
+        os.replace(temporary, path)
+    except OSError:
+        Path(temporary).unlink(missing_ok=True)
+        raise
+
+
+def current_model() -> str:
+    """The model last chosen in the dashboard, or the configured default."""
+    saved = _read_json(_data_file("llm_model.json"))
+    model = saved.get("model") if isinstance(saved, dict) else None
+    return model if isinstance(model, str) and model else LLAMA_CPP_MODEL
+
+
+def save_model(model: str) -> None:
+    _write_json(_data_file("llm_model.json"), {"model": model})
+
+
+async def list_models() -> dict:
+    """Models llama.cpp offers. While it is on standby, the list from when it
+    last ran, so opening the dashboard never has to wake the GPU."""
+    seen_file = _data_file("llm_models_seen.json")
+    models, live = None, False
+    try:
+        async with httpx.AsyncClient(timeout=5) as client:
+            resp = await client.get(f"{LLAMA_CPP_URL.rstrip('/')}/v1/models")
+            resp.raise_for_status()
+        models = [{"id": m["id"], "loaded": (m.get("status") or {}).get("value") in (None, "loaded")}
+                  for m in resp.json().get("data", []) if m.get("id")]
+        live = True
+        _write_json(seen_file, [m["id"] for m in models])
+    except (httpx.HTTPError, ValueError, KeyError, TypeError, OSError):
+        models = None
+    if models is None:
+        seen = _read_json(seen_file)
+        models = [{"id": m, "loaded": False} for m in seen] if isinstance(seen, list) else []
+    current = current_model()
+    ids = [m["id"] for m in models]
+    if live and ids and current not in ids and current != LLAMA_CPP_MODEL:
+        # The file was removed: fall back rather than fail every request.
+        _log.warning("Selected model %s is no longer available; using the default.", current)
+        _data_file("llm_model.json").unlink(missing_ok=True)
+        current = LLAMA_CPP_MODEL
+    if current not in ids:
+        models.insert(0, {"id": current, "loaded": False})
+    return {"current": current, "default": LLAMA_CPP_MODEL, "live": live, "models": models}
 MAX_TOKENS = int(os.getenv("LLAMA_CPP_MAX_TOKENS", "768"))
 MAX_RETRIES = 2
 
@@ -193,7 +262,7 @@ async def generate(prompt: str, system: str | None = None, *,
     messages.append({"role": "user", "content": "/no_think\n" + prompt})
 
     payload: dict = {
-        "model": LLAMA_CPP_MODEL,
+        "model": current_model(),
         "messages": messages,
         "stream": False,
         "temperature": temperature,
@@ -261,6 +330,6 @@ async def health_check() -> bool:
             resp = await client.get(f"{LLAMA_CPP_URL.rstrip('/')}/v1/models")
             resp.raise_for_status()
             models = [m.get("id", "") for m in resp.json().get("data", [])]
-            return not models or LLAMA_CPP_MODEL in models
+            return not models or current_model() in models
     except Exception:
         return False

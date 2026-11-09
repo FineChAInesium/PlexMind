@@ -117,8 +117,8 @@ select_models() {
     echo ""
 
     # --- llama.cpp model (recommendations + translation) ---
-    LLAMA_CPP_MODEL_ALIAS="gemma-4-12b-q5_k_m"
-    LLAMA_CPP_MODEL_PATH="${LLAMA_CPP_MODEL_PATH:-/mnt/cache/appdata/llama-cpp/models/gemma-4-12b-it-Q5_K_M.gguf}"
+    LLAMA_CPP_MODEL_ALIAS="gemma-4-12b-it-Q5_K_M"
+    LLAMA_CPP_MODELS_DIR="${LLAMA_CPP_MODELS_DIR:-/mnt/cache/appdata/llama-cpp/models}"
     LLM_TIER="Local GGUF"
 
     # --- Whisper Model (transcription) ---
@@ -237,7 +237,7 @@ TV_HOST_PATH=${TV_HOST_PATH}
 # --- LLM (llama.cpp) ---
 LLAMA_CPP_URL=http://llama-cpp:8080
 LLAMA_CPP_MODEL_ALIAS=${LLAMA_CPP_MODEL_ALIAS}
-LLAMA_CPP_MODEL_PATH=${LLAMA_CPP_MODEL_PATH}
+LLAMA_CPP_MODELS_DIR=${LLAMA_CPP_MODELS_DIR}
 LLAMA_CPP_HOST_PORT=11435
 # Loopback only: PlexMind uses the Docker network and llama.cpp has no API key.
 LLAMA_CPP_BIND_ADDRESS=127.0.0.1
@@ -324,11 +324,11 @@ ENVEOF
 prepare_models() {
     info "Checking llama.cpp model configuration..."
 
-    if [[ -f "${LLAMA_CPP_MODEL_PATH}" ]]; then
-        ok "llama.cpp model found: ${LLAMA_CPP_MODEL_PATH}"
+    if [[ -f "${LLAMA_CPP_MODELS_DIR}/${LLAMA_CPP_MODEL_ALIAS}.gguf" ]]; then
+        ok "llama.cpp model found: ${LLAMA_CPP_MODELS_DIR}/${LLAMA_CPP_MODEL_ALIAS}.gguf"
     else
-        warn "llama.cpp model file not found: ${LLAMA_CPP_MODEL_PATH}"
-        warn "Place a GGUF model there or edit LLAMA_CPP_MODEL_PATH in .env before using recommendations or translation."
+        warn "llama.cpp model file not found: ${LLAMA_CPP_MODELS_DIR}/${LLAMA_CPP_MODEL_ALIAS}.gguf"
+        warn "Place a GGUF model in that folder or edit LLAMA_CPP_MODELS_DIR in .env before using recommendations or translation."
     fi
 
     ok "Whisper model (${WHISPER_MODEL}) will download on first transcription"

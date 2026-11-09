@@ -125,14 +125,14 @@ async def lifespan(app: FastAPI):
 
     ok = await llm_client.health_check()
     if not ok and llama_lifecycle.ON_DEMAND:
-        print(f"llama.cpp is on standby; it starts on demand ({llm_client.LLAMA_CPP_MODEL}).")
+        print(f"llama.cpp is on standby; it starts on demand ({llm_client.current_model()}).")
     elif not ok:
         print(
-            f"WARNING: llama.cpp model '{llm_client.LLAMA_CPP_MODEL}' not found at "
+            f"WARNING: llama.cpp model '{llm_client.current_model()}' not found at "
             f"{llm_client.LLAMA_CPP_URL}. Recommendations will fail until resolved."
         )
     else:
-        print(f"LLM ready: {llm_client.LLAMA_CPP_MODEL} @ {llm_client.LLAMA_CPP_URL}")
+        print(f"LLM ready: {llm_client.current_model()} @ {llm_client.LLAMA_CPP_URL}")
 
     async def _launch_scheduled_script(job: str) -> dict:
         return await _scripts_request("POST", f"/jobs/{job}/start", json={"run_now": True})
@@ -499,7 +499,7 @@ async def health():
         recommendation_worker_ready = False
     return {
         "status": "ok" if llm_available and scripts["status"] == "ok" and recommendation_worker_ready else "degraded",
-        "llm": llm_client.LLAMA_CPP_MODEL,
+        "llm": llm_client.current_model(),
         "llm_ready": llm_ok,
         "llm_state": llm_state,
         "llm_on_demand": llama_lifecycle.ON_DEMAND,
@@ -731,7 +731,27 @@ async def available_whisper_models():
 @app.get("/api/model-advisor", dependencies=[Depends(_require_key)])
 def advise_models(context_tokens: int = Query(8192, ge=2048, le=32768)):
     """Recommend compatible quantizations without downloading or switching models."""
-    return model_advisor.recommendations(scheduler.gpu_info(), context_tokens)
+    return model_advisor.recommendations(scheduler.gpu_info(), context_tokens, llm_client.current_model())
+
+
+class ModelChoice(BaseModel):
+    model: str = Field(min_length=1, max_length=200)
+
+
+@app.get("/api/models", dependencies=[Depends(_require_key)])
+async def available_models():
+    """Models this server can use, and which one is selected."""
+    return await llm_client.list_models()
+
+
+@app.post("/api/models", dependencies=[Depends(_require_key)])
+async def select_model(choice: ModelChoice):
+    """Use MODEL from now on. The choice is remembered across restarts."""
+    available = await llm_client.list_models()
+    if choice.model not in {item["id"] for item in available["models"]}:
+        raise HTTPException(status_code=422, detail=f"{choice.model} is not available on this server")
+    llm_client.save_model(choice.model)
+    return await llm_client.list_models()
 
 
 @app.get("/api/scripts/jobs", dependencies=[Depends(_require_key)])

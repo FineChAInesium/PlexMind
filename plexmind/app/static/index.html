@@ -155,13 +155,18 @@
         <div class="rounded-2xl bg-slate-800/40 border border-slate-700/60 p-5">
           <div class="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3">
             <div>
-              <div class="flex items-center gap-2"><i data-lucide="sparkles" class="w-4 h-4 text-violet-400"></i><h3 class="font-semibold">Model Advisor</h3><span class="text-[10px] uppercase tracking-wide text-slate-500 border border-slate-700 rounded px-1.5 py-0.5">Advisory only</span></div>
+              <div class="flex items-center gap-2"><i data-lucide="sparkles" class="w-4 h-4 text-violet-400"></i><h3 class="font-semibold">Model Advisor</h3></div>
               <p id="model-advisor-summary" class="text-sm text-slate-400 mt-1">Checking the designated GPU and compatible GGUF quantizations…</p>
             </div>
             <button id="refresh-model-advisor" class="text-xs px-3 py-2 rounded-lg bg-slate-900 hover:bg-slate-800 border border-slate-700 flex items-center gap-1.5"><i data-lucide="refresh-cw" class="w-3.5 h-3.5"></i>Check models</button>
           </div>
+          <div class="rounded-xl bg-slate-900/70 border border-slate-800 p-4 mt-4 flex flex-col sm:flex-row sm:items-center gap-3">
+            <label for="llm-model-select" class="text-sm font-medium shrink-0">Model in use</label>
+            <select id="llm-model-select" disabled class="w-full bg-slate-950 border border-slate-700 rounded-lg px-2.5 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-violet-500/50"><option>Loading…</option></select>
+            <span id="llm-model-note" class="text-xs text-slate-400 sm:w-1/2"></span>
+          </div>
           <div id="model-advisor-list" class="grid grid-cols-1 lg:grid-cols-2 gap-3 mt-4"></div>
-          <p class="text-[11px] text-slate-500 mt-3">Recommendations never download, replace, or restart a model. Benchmark experimental candidates before promotion.</p>
+          <p class="text-[11px] text-slate-500 mt-3">The selector switches between models already on this server and remembers your choice. Recommendations below never download or replace a model.</p>
         </div>
 
         <!-- Stats -->
@@ -533,7 +538,7 @@ function escapeHtml(value) {
 const DEMO = !!window.__PLEXMIND_DEMO__;
 
 const MOCK = {
-  health: { status: 'ok', llm: 'gemma-4-12b-q5_k_m', llm_ready: true },
+  health: { status: 'ok', llm: 'gemma-4-12b-it-Q5_K_M', llm_ready: true },
   scheduler: { next_run_utc: '2026-05-01T03:00:00Z', gpu_utilization_pct: 4, gpu_threshold_pct: 30, gpu_busy: false },
   storage: { total_bytes: 6e12, used_bytes: 3.41e12, free_bytes: 2.59e12, used_pct: 56.8 },
   users: [
@@ -769,6 +774,58 @@ async function fetchSchedulerStatus() {
     document.getElementById('gpu-status').textContent = 'Unavailable';
     document.getElementById('gpu-label').textContent = 'GPU';
     document.getElementById('gpu-sub').textContent = 'No utilization tool detected';
+  }
+}
+
+function modelLabel(model) {
+  return model.id + (model.loaded ? ' (loaded)' : '');
+}
+
+function renderModelSelector(data) {
+  const select = document.getElementById('llm-model-select');
+  const note = document.getElementById('llm-model-note');
+  select.innerHTML = data.models.map(m => `<option value="${escapeHtml(m.id)}">${escapeHtml(modelLabel(m))}</option>`).join('');
+  select.value = data.current;
+  select.disabled = data.models.length < 2;
+  note.textContent = data.models.length < 2
+    ? 'Only one model is available. Run llama.cpp with --models-dir to choose between several.'
+    : data.live ? 'Translation switches at its next file. The first request after a switch takes longer while the model loads.'
+    : 'llama.cpp is on standby, so this is the list from when it last ran.';
+}
+
+async function fetchModelSelector() {
+  if (DEMO) {
+    renderModelSelector({ current: 'gemma-4-12b-it-Q5_K_M', live: true, models: [
+      { id: 'gemma-4-12b-it-Q5_K_M', loaded: true }, { id: 'Qwen3.5-9B-Q5_K_M', loaded: false } ] });
+    return;
+  }
+  try {
+    const res = await apiFetch(`${API_BASE}/api/models`, { signal: AbortSignal.timeout(8000) });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    renderModelSelector(await res.json());
+  } catch (error) {
+    document.getElementById('llm-model-note').textContent = `Models unavailable: ${error.message}`;
+  }
+}
+
+async function selectModel(event) {
+  const select = event.target;
+  const model = select.value;
+  if (DEMO) { toast('Demo mode: the model is not changed', 'info'); return; }
+  select.disabled = true;
+  try {
+    const res = await apiFetch(`${API_BASE}/api/models`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model }), signal: AbortSignal.timeout(8000),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(typeof data.detail === 'string' ? data.detail : `HTTP ${res.status}`);
+    renderModelSelector(data);
+    toast(`Now using ${model}`);
+    fetchModelAdvisor();
+  } catch (error) {
+    toast(`Could not change the model: ${error.message}`, 'error');
+    fetchModelSelector();
   }
 }
 
@@ -1247,8 +1304,10 @@ document.addEventListener('DOMContentLoaded', async () => {
   setInterval(fetchStorage, 60000);
   setInterval(async () => updateScriptStatsUI(await fetchScriptStats()), 60000);
 
+  document.getElementById('llm-model-select').addEventListener('change', selectModel);
+  fetchModelSelector();
   document.getElementById('refresh-model-advisor').onclick = withLoading(
-    document.getElementById('refresh-model-advisor'), fetchModelAdvisor
+    document.getElementById('refresh-model-advisor'), () => Promise.all([fetchModelSelector(), fetchModelAdvisor()])
   );
   renderRecs(await fetchRecentRecs());
   renderUsers(await fetchUsers());

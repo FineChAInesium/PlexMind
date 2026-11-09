@@ -65,7 +65,12 @@ CATALOG = (
 )
 
 
-def recommendations(gpu: dict, context_tokens: int | None = None) -> dict:
+def _same_model(catalog_id: str, name: str) -> bool:
+    """Router mode names a model after its file: gemma-4-12b-it-Q5_K_M."""
+    return catalog_id.lower() == name.lower().replace("-it-", "-")
+
+
+def recommendations(gpu: dict, context_tokens: int | None = None, active: str | None = None) -> dict:
     """Rank known candidates against conservatively usable VRAM; never mutates runtime."""
     context = context_tokens or int(os.getenv("MODEL_ADVISOR_CONTEXT_TOKENS", "8192"))
     total_mb = gpu.get("memory_total_mb")
@@ -78,7 +83,7 @@ def recommendations(gpu: dict, context_tokens: int | None = None) -> dict:
 
     # Conservative 8K baseline: KV/cache + CUDA buffers scale with context, plus reserve.
     runtime_overhead = 1.35 + (max(context, 1) / 8192) * 0.75
-    active_model = os.getenv("LLAMA_CPP_MODEL", "unknown")
+    active_model = active or os.getenv("LLAMA_CPP_MODEL", "unknown")
     ranked = []
     for item in CATALOG:
         # A real measurement beats the estimate, at the context it was measured with.
@@ -87,7 +92,7 @@ def recommendations(gpu: dict, context_tokens: int | None = None) -> dict:
         fit = None if usable_gb is None else required <= usable_gb
         headroom = None if total_gb is None else round(total_gb - required, 2)
         ranked.append({**item, "estimated_vram_gb": required, "headroom_gb": headroom,
-                       "fits": fit, "active": item["id"] == active_model})
+                       "fits": fit, "active": _same_model(item["id"], active_model)})
 
     tier_order = {"production": 0, "experimental": 1, "alternative": 2, "speed": 3}
     ranked.sort(key=lambda x: (not x["active"], x["fits"] is False, tier_order[x["tier"]]))

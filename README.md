@@ -49,7 +49,7 @@ Fill missing subtitles with local speech-to-text.
 Translate existing or newly generated SRTs with the same local LLM stack.
 
 - Uses llama.cpp OpenAI-compatible chat API through `LLAMA_CPP_API_URL`.
-- Defaults to `gemma-4-12b-q5_k_m` in Docker Compose, and works with any model llama.cpp can load.
+- Defaults to `gemma-4-12b-it-Q5_K_M` in Docker Compose, and works with any model llama.cpp can load.
 - Targets `TARGET_LANGUAGES`, default `zh,es-MX`.
 - Sends up to `TRANSLATION_BATCH_CUES` (default 8) consecutive cues per request, so the model sees neighbouring lines and a file needs far fewer requests. Any cue a batch does not deliver is retried on its own.
 - A cue the model still cannot translate keeps its original line instead of failing the whole file; the file fails only if more than `TRANSLATION_MAX_FALLBACK_PCT` (default 10%) of its cues fall back.
@@ -90,7 +90,7 @@ PlexMind is a coordinator. The best results come from giving it the right local 
 | Component | Used For | Default / Recommended |
 |---|---|---|
 | Plex Media Server | Library metadata, users, watch history, Watchlist/playlists | `PLEX_URL` + admin `PLEX_TOKEN` |
-| llama.cpp | Recommendations and subtitle translation | Compose default: `gemma-4-12b-q5_k_m`; any compatible GGUF works |
+| llama.cpp | Recommendations and subtitle translation | Compose default: `gemma-4-12b-it-Q5_K_M`; any compatible GGUF works |
 | Whisper ASR webservice | Speech-to-text subtitle generation | Digest-pinned in Compose and `.env.example` |
 | Whisper model | Transcription model loaded by the ASR service | `WHISPER_MODEL=turbo` |
 | FFmpeg / ffprobe | Audio extraction and media inspection | included in the PlexMind image |
@@ -99,20 +99,20 @@ PlexMind is a coordinator. The best results come from giving it the right local 
 
 ### llama.cpp Models
 
-**PlexMind is model-agnostic.** It talks to llama.cpp's OpenAI-compatible API and nothing in it is tied to one model, so you can use any GGUF that llama.cpp can load and that follows a JSON schema. Changing model takes two settings: `LLAMA_CPP_MODEL_PATH` and `LLAMA_CPP_MODEL_ALIAS`.
+**PlexMind is model-agnostic.** It talks to llama.cpp's OpenAI-compatible API and nothing in it is tied to one model, so you can use any GGUF that llama.cpp can load and that follows a JSON schema. Put GGUF files in `LLAMA_CPP_MODELS_DIR` and pick one from the **Model Advisor** card on the dashboard. PlexMind remembers your choice; `LLAMA_CPP_MODEL_ALIAS` only sets the default before one is made. Choosing between models uses llama.cpp's router mode (`--models-dir`), which Docker Compose turns on.
 
 The default is **Gemma 4 12B (Q5_K_M)**. In blind Chinese and Spanish subtitle comparisons on real episodes it made about a third of the meaning errors of Qwen 3.5 9B, at roughly 25% lower speed. Qwen 3.5 9B also works, as should other models of similar size.
 
 Docker Compose wires PlexMind to `http://llama-cpp:8080` and sets:
 
 ```bash
-LLAMA_CPP_MODEL_ALIAS=gemma-4-12b-q5_k_m
+LLAMA_CPP_MODEL_ALIAS=gemma-4-12b-it-Q5_K_M
 ```
 
 Place the configured GGUF model before expecting recommendation or translation work to succeed. The default model is an 8.4 GB download and uses about 8.9 GB of GPU memory:
 
 ```bash
-curl -L -o /mnt/cache/appdata/llama-cpp/models/gemma-4-12b-it-Q5_K_M.gguf \
+curl -L -o "$LLAMA_CPP_MODELS_DIR/gemma-4-12b-it-Q5_K_M.gguf" \
   https://huggingface.co/unsloth/gemma-4-12b-it-GGUF/resolve/main/gemma-4-12b-it-Q5_K_M.gguf
 ```
 
@@ -121,12 +121,12 @@ Suggested model sizing:
 | Hardware | Suggested GGUF model |
 |---|---|
 | 16GB+ VRAM | a larger GGUF |
-| 12GB+ VRAM | `gemma-4-12b-q5_k_m` or another compatible GGUF alias |
+| 12GB+ VRAM | `gemma-4-12b-it-Q5_K_M` or another compatible GGUF alias |
 | 8GB VRAM | a 4B to 9B-class GGUF, such as Qwen 3.5 9B at a lower quantization |
 | 4-7GB VRAM | a 4B-class GGUF |
 | Low VRAM / CPU-only | a 1B-4B GGUF, depending on RAM |
 
-Set `LLAMA_CPP_MODEL_PATH` to a GGUF file and keep `LLAMA_CPP_MODEL_ALIAS` aligned with the llama.cpp `--alias` value.
+In router mode a model's name is its file name without `.gguf`. If you run llama.cpp with a single `--model` instead, set `LLAMA_CPP_MODEL_ALIAS` to its `--alias`; the selector then shows just that model.
 
 ### Whisper ASR Webservice
 
@@ -181,7 +181,7 @@ PLEX_TOKEN=your_plex_token
 PLEXMIND_API_KEY=$(openssl rand -hex 32)
 MOVIES_HOST_PATH=/mnt/media/Movies
 TV_HOST_PATH=/mnt/media/TV
-LLAMA_CPP_MODEL_ALIAS=gemma-4-12b-q5_k_m
+LLAMA_CPP_MODEL_ALIAS=gemma-4-12b-it-Q5_K_M
 WHISPER_MODEL=turbo
 TARGET_LANGUAGES=zh,es-MX
 ```
@@ -207,7 +207,7 @@ docker compose --profile whisper create whisper
 Place the configured GGUF model before starting recommendations or translation:
 
 ```bash
-# place a GGUF model at LLAMA_CPP_MODEL_PATH
+# place a GGUF model at LLAMA_CPP_MODELS_DIR
 ```
 
 Open:
@@ -311,7 +311,7 @@ when `WHISPER_MODEL` does not match a cached model artifact.
 | `LLAMA_CPP_API_URL` | Optional explicit script endpoint; otherwise derived from `LLAMA_CPP_URL`. | derived |
 | `MOVIES_HOST_PATH` / `TV_HOST_PATH` | Host directories bind-mounted into the containers. | platform-specific |
 | `MOVIE_DIR` / `TV_DIR` | Internal scan roots; normally `/media/movies` and `/media/tv`. | fixed in Compose/template |
-| `LLAMA_CPP_MODEL_ALIAS` | Recommendation and translation model alias. Must match llama.cpp `--alias`. | `gemma-4-12b-q5_k_m` in Compose |
+| `LLAMA_CPP_MODEL_ALIAS` | Recommendation and translation model alias. Must match llama.cpp `--alias`. | `gemma-4-12b-it-Q5_K_M` in Compose |
 | `LLAMA_CPP_HOST_PORT` | Host port for the bundled llama.cpp sidecar. Keep `8080` free for Chip Hedge Bot. | `11435` |
 | `LLAMA_CPP_BIND_ADDRESS` | Host address for that port. llama.cpp has no API key and PlexMind uses the Docker network, so it stays on loopback unless a LAN client needs it. | `127.0.0.1` |
 | `WHISPER_API_URL` | Whisper ASR endpoint used by scripts. | `http://whisper:9000/asr` |

@@ -9,7 +9,7 @@
   <Support>https://github.com/FineChAInesium/PlexMind/issues</Support>
   <Project>https://github.com/FineChAInesium/PlexMind</Project>
   <Overview>
-    AI-powered Plex recommendations using a fully local llama.cpp LLM. Analyzes each user&apos;s watch history and generates personalized movie/TV picks with no cloud, no API costs, and no data leaving your server.&#xD;&#xA;&#xD;&#xA;Also includes: Whisper ASR subtitle generation, llama.cpp-powered subtitle translation, and library maintenance tools.&#xD;&#xA;&#xD;&#xA;Requires a llama.cpp server with the configured GGUF model (default alias: gemma-4-12b-q5_k_m).&#xD;&#xA;&#xD;&#xA;Web dashboard at http://[IP]:[PORT:8000]/
+    AI-powered Plex recommendations using a fully local llama.cpp LLM. Analyzes each user&apos;s watch history and generates personalized movie/TV picks with no cloud, no API costs, and no data leaving your server.&#xD;&#xA;&#xD;&#xA;Also includes: Whisper ASR subtitle generation, llama.cpp-powered subtitle translation, and library maintenance tools.&#xD;&#xA;&#xD;&#xA;Requires a llama.cpp server with the configured GGUF model (default alias: gemma-4-12b-it-Q5_K_M).&#xD;&#xA;&#xD;&#xA;Web dashboard at http://[IP]:[PORT:8000]/
   </Overview>
   <Category>MediaApp:Other Tools:</Category>
   <WebUI>http://[IP]:[PORT:8000]/</WebUI>
@@ -90,7 +90,7 @@
       <Description>Whisper ASR endpoint reachable from the PlexMind container. The repository Compose Whisper binds 127.0.0.1 by default; set WHISPER_BIND_ADDRESS=0.0.0.0 in its .env for LAN access.</Description>
     </Variable>
     <Variable>
-      <Value>gemma-4-12b-q5_k_m</Value>
+      <Value>gemma-4-12b-it-Q5_K_M</Value>
       <Name>LLAMA_CPP_MODEL_ALIAS</Name>
       <Mode/>
       <Description>llama.cpp model alias configured on the server</Description>
