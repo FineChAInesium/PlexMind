@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.9.13 - 2026-11-09
 
 - New logo: a P with a brain inside.
 - Choose the model from the dashboard's Model Advisor card. It lists every GGUF in `LLAMA_CPP_MODELS_DIR`, remembers the last one used, and applies to recommendations at once and to translation at its next file. Compose now runs llama.cpp in router mode; `LLAMA_CPP_MODELS_DIR` replaces `LLAMA_CPP_MODEL_PATH`, and a model's name is its file name without `.gguf`.
