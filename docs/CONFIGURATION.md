@@ -19,7 +19,71 @@ Values shown are the defaults.
 | `PLEXMIND_SECURE_COOKIE` | 0 | 1 when the dashboard is only reached over HTTPS. |
 | `PLEXMIND_ADMIN_USERNAME` | from Plex | Display name for the server owner. |
 
-## Everything else
+## Settings explained
+
+| Setting | What it does | Default |
+|---|---|---|
+| `CORS_ORIGINS` | Comma-separated browser origins allowed to call the API from another site. | blank (same-origin only) |
+| `TMDB_API_KEY` | Optional metadata enrichment. | unset |
+| `TVDB_API_KEY` | Optional TV metadata fallback. | unset |
+| `OMDB_API_KEY` | Optional IMDb/OMDB enrichment. | unset |
+| `LLAMA_CPP_URL` | llama.cpp base URL for recommendations. | `http://llama-cpp:8080` |
+| `LLAMA_CPP_API_URL` | Optional explicit script endpoint; otherwise derived from `LLAMA_CPP_URL`. | derived |
+| `MOVIES_HOST_PATH` / `TV_HOST_PATH` | Host directories bind-mounted into the containers. | platform-specific |
+| `LLAMA_CPP_MODEL_ALIAS` | Recommendation and translation model alias. The model used until one is chosen on the dashboard. | `gemma-4-12b-it-Q5_K_M` in Compose |
+| `LLAMA_CPP_HOST_PORT` | Host port for the bundled llama.cpp sidecar. | `11435` |
+| `LLAMA_CPP_BIND_ADDRESS` | Host address for that port. llama.cpp has no API key and PlexMind uses the Docker network, so it stays on loopback unless a LAN client needs it. | `127.0.0.1` |
+| `WHISPER_API_URL` | Whisper ASR endpoint used by scripts. | `http://whisper:9000/asr` |
+| `WHISPER_IMAGE` | Whisper ASR Docker image. | Digest-pinned; see `.env.example` |
+| `WHISPER_MODEL` | Whisper model: `tiny`, `base`, `small`, `medium`, `large`, `turbo`. | `turbo` |
+| `WHISPER_DEVICE` | Whisper device. Use `cuda` or `cpu`. | `cuda` |
+| `WHISPER_HOST_PORT` | Host port for the bundled Whisper sidecar. | `9001` |
+| `WHISPER_BIND_ADDRESS` | Host address for that port. Set `0.0.0.0` if Bazarr or another LAN client uses Whisper. | `127.0.0.1` |
+| `WHISPER_TMP_DIR` | Whisper `/tmp` scratch space: a host directory, or blank for the `whisper-tmp` Docker volume. | `whisper-tmp` volume |
+| `TRANSLATION_BATCH_CUES` | Consecutive subtitle cues per llama.cpp translation request; `1` sends one cue per request. | `8` |
+| `TRANSLATION_MAX_FALLBACK_PCT` | Fail a file only if more than this percentage of its cues kept their original line. | `10` |
+| `CHUNK_RETRY_ATTEMPTS` | Attempts per cue before it keeps its original line (or, for llama.cpp errors, the file stops and resumes later). | `3` |
+| `FAILED_RETRY_HOURS` | Hours before a failed file is tried again. | `24` |
+| `TRANSCRIBE_FAILED_RETRY_DAYS` | Days before transcription retries a video that failed permanently (validation, no usable audio); `0` never retries. | `30` |
+| `SUBTITLE_INVENTORY_TTL_HOURS` | Transcription and translation skip a video that already has a full subtitle in that language: a `.srt` beside it, a track inside the file, or any subtitle Plex lists for it (including ones Plex downloaded). Forced tracks don't count, and languages match on their base (any Spanish covers `es-MX`). The answer is cached per file for this many hours. | `24` |
+| `THROTTLE_GPU_TEMP` / `THROTTLE_CPU_TEMP` / `THROTTLE_NVME_TEMP` / `THROTTLE_DISK_TEMP` / `THROTTLE_RAM_PCT` | Jobs hold while a sensor is at its limit (degrees C, or percent of memory used). Blank turns that sensor off; a sensor that can't be read is skipped. Translation checks between batches, recommendations between users, maintenance between phases, and transcription between files and upload chunks, so a Whisper upload in progress finishes first. Hard drive temperatures need `UNRAID_EMHTTP_DIR=/var/local/emhttp`. | blank |
+| `THROTTLE_RESUME_MARGIN` / `THROTTLE_CHECK_SECONDS` | Jobs resume once every enabled sensor is this far below its limit; sensors are read at most this often. | `5` / `30` |
+| `LLAMA_ON_DEMAND` | Start llama.cpp when needed and stop it when idle. | `0` |
+| `LLAMA_IDLE_STOP_MINUTES` | Idle minutes before an on-demand llama.cpp is stopped. | `15` |
+| `LLAMA_STARTUP_TIMEOUT_SECONDS` | How long to wait for an on-demand llama.cpp to load its model. | `180` |
+| `LLAMA_CPP_PARALLEL` | llama.cpp request slots (`--parallel`). | `1` |
+| `GPU_PROBE_CONTAINERS` | Containers the GPU-busy check runs `nvidia-smi` in, in order. | `llama-cpp` |
+| `PLEXMIND_GPU_PROBE_CONTAINERS` | Extra containers the broker may run the fixed GPU probe in. | blank |
+| `PGS_CLEANUP_ALLOW_UNKNOWN` | Let PGS cleanup act on image subtitles with no language tag. | `0` |
+| `PGS_CLEANUP_ALLOW_GENERATED` | `1` lets PlexMind's own Whisper or LLM subtitles replace authored image subtitles in PGS cleanup; by default only other text subtitles (with at least 20 cues, or any forced track) replace them. | `0` |
+| `OMDB_NOT_FOUND_TTL_SECONDS` | How long an OMDb "not found" is cached. Errors and rate limits are never cached. | `604800` (7 days) |
+| `TARGET_LANGUAGES` | Comma-separated subtitle translation targets. | `zh,es-MX` |
+| `MAX_RECOMMENDATIONS` | Picks per user. | `10` |
+| `CANDIDATE_POOL_SIZE` | Prefiltered candidate count before LLM. | `40` |
+| `MIN_HISTORY_ITEMS` | Minimum watch history before batch generation. | `3` |
+| `REC_REFRESH_DAYS` | A user's picks are kept while they are newer than this and untouched; older ones are replaced even if none were watched. | `25` |
+| `SUPPRESSION_DAYS` | Days before a shown recommendation can return. | `60` |
+| `GPU_THRESHOLD_PCT` | Pause batch work at or above this GPU utilization. | `30` |
+| `GPU_BACKOFF_MINUTES` | Wait time before checking a busy GPU again. | `30` |
+| `GPU_BUSY_SAMPLES` | Consecutive GPU readings that must all be at or above the threshold before work backs off. | `3` |
+| `GPU_SAMPLE_INTERVAL_SECONDS` | Seconds between those readings. | `5` |
+| `SCRIPT_START_RATE_LIMIT` | Rate limit for script Start buttons. | `60/hour` |
+| `WHISPER_CONTAINER_NAME` | Exact dedicated Whisper container to manage. | `whisper-asr-webservice` in Compose |
+| `LLAMA_CPP_CONTAINER_NAME` | Exact llama.cpp container identity when lifecycle management is enabled. | `llama-cpp` |
+| `MANAGE_LLAMA_CPP_CONTAINER` | Manage llama.cpp per translation job. Keep `0` for the shared recommendation service. | `0` |
+| `START_SIDECAR_CONTAINERS` | Start AI sidecars before script jobs. | `1` |
+| `STOP_SIDECAR_CONTAINERS` | Stop AI sidecars when script jobs exit. | `1` |
+| `ALLOW_EMPTY_MEDIA_ROOTS` | Permit intentionally empty media roots. Leave disabled in production. | `0` |
+| `LOG_RETENTION_DAYS` | Retain dated script logs under `/app/data/logs`. | `7` |
+| `MAX_RUNTIME_MINUTES` | Optional per-run cap for scripts. `0` means no cap. | `0` |
+| `TRANSCRIBE_START_HOUR` / `TRANSCRIBE_END_HOUR` | Window in which PlexMind starts transcription. A running translation is paused for it and resumes afterwards. | `5` / `12` |
+| `TRANSLATE_START_HOUR` / `TRANSLATE_END_HOUR` | Window in which PlexMind starts translation. A run keeps going through the backlog after the window closes (set `MAX_RUNTIME_MINUTES` to cap it), pausing for transcription and the monthly recommendation batch. | `23` / `3` |
+| `MONTHLY_RETRY_HOURS` / `MONTHLY_RETRY_LIMIT` | A monthly recommendation batch that was skipped or failed is retried hourly, up to this many times within this many hours. | `72` / `12` |
+| `TZ` | Timezone used by the PlexMind script scheduler and logs. | `UTC` |
+
+The dashboard's **Throttle** page sets the `THROTTLE_*` limits too; once saved there they replace the ones here, and running jobs pick them up.
+
+## Every setting, with its default
 
 ```
 # --- OPTIONAL: API KEYS ---

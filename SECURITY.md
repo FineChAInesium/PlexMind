@@ -28,20 +28,41 @@ The following values are read from environment variables and are not returned by
 
 ### Authentication
 
-`PLEXMIND_API_KEY` and a distinct `PLEXMIND_WEBHOOK_SECRET` are required. The
-internal control and broker tokens are generated at each start unless set.
+PlexMind always has an API key and a distinct webhook secret: `PLEXMIND_API_KEY`
+and `PLEXMIND_WEBHOOK_SECRET` when set, otherwise values generated once on first
+start and kept in `DATA_DIR/secrets.json` (mode 600, readable by root only; the API
+gets them from the supervisor). The internal control and broker tokens are
+generated at each start unless set.
 
 Non-health endpoints require either:
 
 - `X-API-Key: <key>` header, or
-- a same-origin HttpOnly session cookie created by `POST /api/session`.
+- a same-origin HttpOnly session cookie, created by `POST /api/session` (API key)
+  or by Sign in with Plex.
+
+### Sign in with Plex
+
+The dashboard signs people in with Plex's PIN flow: the browser approves
+PlexMind on app.plex.tv and the API collects the token from plex.tv. No Plex
+password or token is typed into PlexMind.
+
+- Before PlexMind has a Plex token, the first sign-in connects it to a server the
+  signing-in account owns, saves the token and address to `DATA_DIR/plex_auth.json`
+  (mode 600), and logs that browser in. Like any first-run setup, do this before
+  anyone else on your network can reach port 8000.
+- After that, only the plex.tv account that owns the configured token can sign in.
+  Any other Plex account is refused.
+- Each sign-in is bound to the browser that started it by a random secret in an
+  HttpOnly cookie, because plex.tv PIN ids are guessable; a sign-in expires after
+  15 minutes. Sign-in endpoints are rate-limited.
+- A `PLEX_TOKEN` in the environment always wins over a saved sign-in.
 
 Key comparison uses `secrets.compare_digest`.
 
 ### Browser dashboard
 
-The dashboard exchanges the API key for a persistent, same-origin HttpOnly session
-cookie. It stores only the API base URL in `localStorage`; the raw key is cleared
+Signing in with Plex, or exchanging the API key, gives a persistent, same-origin
+HttpOnly session cookie. It stores only the API base URL in `localStorage`; the raw key is cleared
 from the form and is not persisted by browser JavaScript. Only one-way session-token
 digests are saved under the persistent data directory. Sessions survive API restarts
 and expire after 30 days by default (`PLEXMIND_SESSION_DAYS`). SSE uses the same cookie.
@@ -63,7 +84,7 @@ cross-origin API access. Add explicit origins only when required:
 CORS_ORIGINS=https://plexmind.example.com
 ```
 
-CORS is not an authentication boundary. Set `PLEXMIND_API_KEY`.
+CORS is not an authentication boundary; authentication is.
 
 ### Rate limiting
 
@@ -111,7 +132,7 @@ PlexMind is one container. `supervisor.py` runs four processes in it:
   write access to the media folders, and `chown` for `SUBTITLE_UID`/`SUBTITLE_GID`,
   so the container keeps Docker's default capabilities.
 - The container mounts the media folders read-write and `/var/run/docker.sock`. Only
-  the broker uses the socket, and only for the containers in `PLEXMIND_ALLOWED_CONTAINERS`
+  the broker uses the socket, and only for the containers named in `WHISPER_CONTAINER_NAME` and `LLAMA_CPP_CONTAINER_NAME` (or `PLEXMIND_ALLOWED_CONTAINERS`)
   (start, stop, inspect) and the fixed GPU probe. The Docker CLI is not installed.
 - The container runs with `no-new-privileges`.
 
@@ -120,7 +141,7 @@ internet-facing risk (the API) never shared a container with the Docker socket o
 writable media. In one container, a remote-code-execution bug in the API, or a
 compromised dependency, could reach both. Docker socket access is effectively root
 on the host. Keep port 8000 on a trusted LAN, do not publish it through a reverse
-proxy or port forward, and set `PLEXMIND_API_KEY`.
+proxy or port forward.
 
 ### Destructive maintenance operations
 
@@ -140,9 +161,6 @@ Quarantined files are never purged automatically. Run `maintenance.sh audit` fir
 ## Hardening Checklist
 
 ```bash
-# Generate an API key
-PLEXMIND_API_KEY=$(openssl rand -hex 32)
-
 # Restrict browser origins behind a proxy
 CORS_ORIGINS=https://plexmind.example.com
 
@@ -165,10 +183,10 @@ Recommended reverse-proxy settings:
 | Area | Status |
 |---|---|
 | Config exposure | No config/env read endpoint. |
-| API auth | Optional key, timing-safe comparison when set. |
+| API auth | Always on: API key (set or generated) or a session from Sign in with Plex (server owner only); timing-safe comparison. |
 | Heavy endpoints | Rate-limited. |
-| Webhook | LAN check plus optional API key. API key required for proxied deployments. |
-| Docker socket | Not mounted after the current audit. |
+| Webhook | LAN check plus a webhook secret distinct from the API key. |
+| Docker socket | Mounted; used only by the broker, for the two named containers and a fixed GPU query. |
 | Dashboard XSS | User and job-provided strings are escaped before dynamic rendering. |
 | Secrets in logs | `httpx`/`httpcore` set to WARNING to reduce TMDB query-key log leakage; TMDB errors carry no URL; uvicorn logs mask secret query values. |
 | File deletion | Limited to mounted media paths; maintenance modes move replaced or duplicate subtitles to `DATA_DIR/quarantine` instead of deleting them. |
@@ -181,4 +199,4 @@ Recommended reverse-proxy settings:
 | Unauthenticated API by default | Closed: startup fails unless all scoped secrets are configured and distinct. |
 | Container ran as root | API container runs as UID `1000`. |
 | No rate limits | GPU-heavy and webhook endpoints are rate-limited. |
-| Docker socket mounted | Removed from Compose scripts service. |
+| Docker socket mounted | Mounted, but only the root broker process on 127.0.0.1 uses it, for two named containers. |

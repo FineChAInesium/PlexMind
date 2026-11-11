@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- A short README; reference material moved to `docs/` (models, configuration, architecture, API and command line, upgrading). SECURITY.md describes Sign in with Plex and the generated keys.
+- Sign in with Plex always shows an "Open Plex sign-in" link, so a blocked pop-up no longer leaves you with nothing to click.
 - The Unraid template uses the `:latest` image, so Unraid offers updates after each release. Existing installs: set Repository to `ghcr.io/finechainesium/plexmind:latest` once.
 
 ## v0.9.15 - 2026-11-10

@@ -110,7 +110,7 @@ class PackagingTests(unittest.TestCase):
         self.assertIsNotNone(grace, "plexmind service has no stop_grace_period")
         self.assertGreater(supervisor_drain, drain)
         self.assertGreater(int(grace.group(1)), supervisor_drain + broker_stop)
-        self.assertIn("--stop-timeout=40", (ROOT / "README.md").read_text(encoding="utf-8"))
+        self.assertIn("--stop-timeout=40", (ROOT / "docs" / "UPGRADING.md").read_text(encoding="utf-8"))
 
     def test_security_docs_match_http_only_session_contract(self):
         docs = "\n".join(

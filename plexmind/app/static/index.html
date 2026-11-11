@@ -1414,8 +1414,14 @@ const signin = {
     this.el('signin-servers').classList.add('hidden');
     try {
       const pin = await this.post('/api/auth/plex/start');
-      if (popup) popup.location = pin.auth_url; else window.open(pin.auth_url, '_blank');
+      if (popup) popup.location = pin.auth_url;
       this.status('Waiting for you to approve PlexMind in the Plex window…');
+      // A blocked pop-up leaves nothing to click, so always offer the link too.
+      const link = document.createElement('a');
+      link.href = pin.auth_url; link.target = '_blank'; link.rel = 'noopener';
+      link.className = 'block mt-2 text-amber-400 hover:text-amber-300 underline';
+      link.textContent = popup ? 'No Plex window? Open Plex sign-in' : 'Open Plex sign-in';
+      this.el('signin-status').appendChild(link);
       const deadline = Date.now() + 10 * 60 * 1000;
       while (Date.now() < deadline) {
         await new Promise(r => setTimeout(r, 2000));
