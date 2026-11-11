@@ -14,7 +14,9 @@ def compose_service(compose, name, next_name):
 class PackagingTests(unittest.TestCase):
     def test_api_badge_uses_liveness_state_not_dependency_health(self):
         dashboard = (ROOT / "plexmind" / "app" / "static" / "index.html").read_text(encoding="utf-8")
-        self.assertIn("const plexOk = apiOnline;", dashboard)
+        # The API badge follows the liveness probe; the Plex card follows Plex itself.
+        self.assertIn("document.getElementById('stat-api').textContent = apiOnline", dashboard)
+        self.assertIn("const plexOk = !!plex?.ready;", dashboard)
         self.assertNotIn("const plexOk = h && h.status === 'ok';", dashboard)
 
     def test_only_one_script_source_tree_exists(self):
@@ -55,7 +57,8 @@ class PackagingTests(unittest.TestCase):
     def test_dashboard_runtime_configuration_avoids_stale_display_defaults(self):
         dashboard = (ROOT / "plexmind" / "app" / "static" / "index.html").read_text(encoding="utf-8")
         self.assertNotIn("Scheduled runs use 23:00-03:00", dashboard)
-        self.assertIn("data.script_windows?.translate", dashboard)
+        self.assertIn("data.script_windows?.[job]", dashboard)
+        self.assertIn("['transcribe', 'tx-window-label']", dashboard)
         self.assertIn("data.cron_hour != null", dashboard)
 
     def test_storage_display_tolerates_media_filesystem_latency(self):

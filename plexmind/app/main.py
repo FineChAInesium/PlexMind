@@ -135,7 +135,12 @@ async def lifespan(app: FastAPI):
         print(f"LLM ready: {llm_client.current_model()} @ {llm_client.LLAMA_CPP_URL}")
 
     async def _launch_scheduled_script(job: str) -> dict:
-        return await _scripts_request("POST", f"/jobs/{job}/start", json={"run_now": True})
+        try:
+            return await _scripts_request("POST", f"/jobs/{job}/start", json={"run_now": True})
+        except HTTPException as exc:
+            if exc.status_code == 409:
+                return {"status": "already_running"}
+            raise
 
     async def _stop_scheduled_script(job: str) -> dict:
         return await _scripts_request("POST", f"/jobs/{job}/stop")
@@ -473,11 +478,23 @@ def health_live():
     return {"status": "ok"}
 
 
+_PLEX_HEALTH: dict = {"checked": 0.0, "value": None}
+
+
+def _plex_health() -> dict:
+    """Whether Plex itself answers, rechecked at most every 30 seconds."""
+    if time.time() - _PLEX_HEALTH["checked"] > 30 or _PLEX_HEALTH["value"] is None:
+        ready, reason = plex_client.server_reachable()
+        _PLEX_HEALTH.update(checked=time.time(), value={"ready": ready, "error": reason})
+    return _PLEX_HEALTH["value"]
+
+
 @app.get("/health")
 async def health():
-    llm_ok, whisper = await asyncio.gather(
+    llm_ok, whisper, plex = await asyncio.gather(
         llm_client.health_check(),
         _whisper_health(),
+        asyncio.to_thread(_plex_health),
     )
     if llm_ok:
         llm_state = "ready"
@@ -499,6 +516,8 @@ async def health():
         recommendation_worker_ready = False
     return {
         "status": "ok" if llm_available and scripts["status"] == "ok" and recommendation_worker_ready else "degraded",
+        "version": app.version,
+        "plex": plex,
         "llm": llm_client.current_model(),
         "llm_ready": llm_ok,
         "llm_state": llm_state,
@@ -909,6 +928,23 @@ def throttle_configure(request: ThrottleRequest):
         Path(temporary).unlink(missing_ok=True)
         raise HTTPException(status_code=500, detail="Could not save the limits") from exc
     return _throttle_status()
+
+
+@app.get("/api/maintenance/report", dependencies=[Depends(_require_key)])
+def maintenance_report():
+    """The newest library audit or maintenance report, as text."""
+    folder = Path(os.getenv("REPORT_DIR") or Path(os.getenv("DATA_DIR", "/app/data")) / "reports")
+    try:
+        reports = sorted((p for p in folder.iterdir() if p.is_file() and p.suffix in (".txt", ".md")),
+                         key=lambda p: p.stat().st_mtime, reverse=True) if folder.is_dir() else []
+        if not reports:
+            return {"name": None, "text": "", "updated": None, "truncated": False}
+        newest = reports[0]
+        data = newest.read_bytes()
+    except OSError as exc:
+        raise HTTPException(status_code=503, detail="Could not read the maintenance reports") from exc
+    return {"name": newest.name, "text": data[:200_000].decode("utf-8", "replace"),
+            "updated": newest.stat().st_mtime, "truncated": len(data) > 200_000}
 
 
 @app.get("/api/storage", dependencies=[Depends(_require_key)])

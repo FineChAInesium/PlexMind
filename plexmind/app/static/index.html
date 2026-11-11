@@ -27,7 +27,7 @@
       </div>
       <div>
         <div class="font-semibold leading-none tracking-tight">PlexMind Suite</div>
-        <div class="text-[11px] text-slate-400 mt-1">v0.9.13 • Self-hosted</div>
+        <div id="app-version" class="text-[11px] text-slate-400 mt-1">Self-hosted</div>
       </div>
     </div>
 
@@ -105,7 +105,7 @@
               <div class="flex items-center gap-1.5"><span id="plex-dot" class="w-2.5 h-2.5 rounded-full bg-slate-600"></span><span id="plex-status" class="text-xs text-slate-400">—</span></div>
             </div>
             <div class="relative mt-4">
-              <div class="text-sm text-slate-400">Plex Server</div>
+              <div class="text-sm text-slate-400">Plex Media Server</div>
               <div id="plex-label" class="text-xl font-semibold mt-1">—</div>
               <div id="plex-sub" class="text-xs text-slate-500 mt-1">—</div>
             </div>
@@ -158,7 +158,7 @@
               <div class="flex items-center gap-2"><i data-lucide="sparkles" class="w-4 h-4 text-violet-400"></i><h3 class="font-semibold">Model Advisor</h3></div>
               <p id="model-advisor-summary" class="text-sm text-slate-400 mt-1">Checking the designated GPU and compatible GGUF quantizations…</p>
             </div>
-            <button id="refresh-model-advisor" class="text-xs px-3 py-2 rounded-lg bg-slate-900 hover:bg-slate-800 border border-slate-700 flex items-center gap-1.5"><i data-lucide="refresh-cw" class="w-3.5 h-3.5"></i>Check models</button>
+            <div class="flex items-center gap-2"><span id="advisor-updated" class="text-[11px] text-slate-500"></span><button id="refresh-model-advisor" class="text-xs px-3 py-2 rounded-lg bg-slate-900 hover:bg-slate-800 border border-slate-700 flex items-center gap-1.5"><i data-lucide="refresh-cw" class="w-3.5 h-3.5"></i>Refresh</button></div>
           </div>
           <div class="rounded-xl bg-slate-900/70 border border-slate-800 p-4 mt-4 flex flex-col sm:flex-row sm:items-center gap-3">
             <label for="llm-model-select" class="text-sm font-medium shrink-0">Model in use</label>
@@ -166,7 +166,7 @@
             <span id="llm-model-note" class="text-xs text-slate-400 sm:w-1/2"></span>
           </div>
           <div id="model-advisor-list" class="grid grid-cols-1 lg:grid-cols-2 gap-3 mt-4"></div>
-          <p class="text-[11px] text-slate-500 mt-3">The selector switches between models already on this server and remembers your choice. Recommendations below never download or replace a model.</p>
+          <p class="text-[11px] text-slate-500 mt-3">The selector switches between models already on this server and remembers your choice. The suggestions below are a fixed list built into PlexMind, ranked against this GPU's memory; nothing is looked up online or downloaded.</p>
         </div>
 
         <!-- Stats -->
@@ -174,7 +174,7 @@
           <div class="rounded-2xl bg-slate-800/40 border border-slate-700/60 p-5">
             <div class="flex items-center justify-between"><span class="text-sm text-slate-400">Plex Users</span><i data-lucide="users" class="w-4 h-4 text-slate-500"></i></div>
             <div id="stat-users" class="text-3xl font-semibold mt-2">—</div>
-            <div class="text-xs text-slate-500 mt-1">Managed + admin</div>
+            <div class="text-xs text-slate-500 mt-1">Admin, managed and shared</div>
           </div>
           <div class="rounded-2xl bg-slate-800/40 border border-slate-700/60 p-5">
             <div class="flex items-center justify-between">
@@ -226,7 +226,7 @@
               <i data-lucide="sparkles" class="w-4 h-4"></i> Generate All Recommendations
             </button>
             <button id="btn-transcribe-scan" class="rounded-xl bg-slate-900 hover:bg-slate-800 border border-slate-700 hover:border-slate-600 transition px-5 py-3.5 font-medium flex items-center justify-center gap-2">
-              <i data-lucide="audio-waveform" class="w-4 h-4 text-violet-400"></i> Run Transcribe Scan
+              <i data-lucide="audio-waveform" class="w-4 h-4 text-violet-400"></i> Start Transcription
             </button>
             <button id="btn-translate-quick" class="rounded-xl bg-slate-900 hover:bg-slate-800 border border-slate-700 hover:border-slate-600 transition px-5 py-3.5 font-medium flex items-center justify-center gap-2">
               <i data-lucide="languages" class="w-4 h-4 text-violet-400"></i> Run Translation
@@ -285,7 +285,7 @@
                 </div>
                 <div class="rounded-xl bg-slate-900 border border-slate-700 p-3 text-xs text-slate-400">
                   <i data-lucide="info" class="w-3.5 h-3.5 inline mr-1 text-violet-400"></i>
-                  Transcription runs through the PlexMind API, so scheduled and manual runs share the same logs, stop button, and status checks.
+                  Scheduled runs start between <span id="tx-window-label">the configured hours</span> and continue until every video is done. Start runs now, for up to the max runtime under Schedule. Scheduled and manual runs share the same log and Stop button.
                 </div>
                 <div class="grid grid-cols-2 gap-2 mt-2">
                   <button id="btn-transcribe" class="rounded-xl bg-violet-600 hover:bg-violet-500 py-3 font-medium flex items-center justify-center gap-2 shadow-glow transition">
@@ -340,13 +340,13 @@
               <h3 class="font-semibold mb-4">Translation Settings</h3>
               <div class="space-y-4">
                 <div>
-                  <label class="text-xs text-slate-400 mb-1.5 block">TARGET_LANGUAGES</label>
-                  <input id="target-langs" class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-violet-500/50" placeholder="Loading configured languages…">
-                  <p class="text-[11px] text-slate-500 mt-1.5">Comma-separated ISO codes</p>
+                  <label class="text-xs text-slate-400 mb-1.5 block">Languages for this run</label>
+                  <input id="target-langs" class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-violet-500/50" placeholder="Server default">
+                  <p class="text-[11px] text-slate-500 mt-1.5">Comma-separated language codes, used only when you press Start. Scheduled runs use the server setting (<code>TARGET_LANGUAGES</code>). Leave blank for the server setting.</p>
                 </div>
                 <div class="rounded-xl bg-slate-900 border border-slate-700 p-3 text-xs text-slate-400">
                   <i data-lucide="info" class="w-3.5 h-3.5 inline mr-1 text-violet-400"></i>
-                  Uses llama.cpp (<span id="tl-model-label">configured model</span>) for chunk-based translation. Scheduled runs use <span id="tl-window-label">the configured worker window</span>; run now with <code>RUN_NOW=1</code> and optional <code>MAX_RUNTIME_MINUTES</code>.
+                  Uses llama.cpp (<span id="tl-model-label">configured model</span>) to translate several subtitle lines per request. Scheduled runs start between <span id="tl-window-label">the configured hours</span> and continue until the backlog is done; Start runs now, for up to the max runtime under Schedule.
                 </div>
                 <div class="grid grid-cols-2 gap-2 mt-2">
                   <button id="btn-translate" class="rounded-xl bg-violet-600 hover:bg-violet-500 py-3 font-medium flex items-center justify-center gap-2 shadow-glow transition">
@@ -395,7 +395,7 @@
           <div class="rounded-2xl bg-slate-800/40 border border-slate-700/60 p-6 hover:border-violet-500/30 transition group flex flex-col">
             <div class="w-12 h-12 rounded-xl bg-slate-900 border border-slate-700 flex items-center justify-center mb-4 group-hover:border-violet-500/50 transition"><i data-lucide="library" class="w-6 h-6 text-violet-400"></i></div>
             <h3 class="font-semibold text-lg">Audit Library</h3>
-            <p class="text-sm text-slate-400 mt-1.5">Scan for missing subtitles, mismatched metadata, and orphaned files.</p>
+            <p class="text-sm text-slate-400 mt-1.5">Lists videos without subtitles, missing translations, broken subtitle files and old failure markers. Changes nothing.</p>
             <button data-action="audit" class="mt-5 w-full rounded-xl bg-slate-900 hover:bg-slate-800 border border-slate-700 py-2.5 text-sm font-medium flex items-center justify-center gap-2"><i data-lucide="search" class="w-4 h-4"></i>Audit Library</button>
             <div class="mt-4 pt-4 border-t border-slate-700/60">
               <div class="text-xs text-slate-400 mb-2 flex items-center gap-1.5"><i data-lucide="clock" class="w-3.5 h-3.5 text-violet-400"></i>Schedule</div>
@@ -405,8 +405,8 @@
           <div class="rounded-2xl bg-slate-800/40 border border-slate-700/60 p-6 hover:border-violet-500/30 transition group flex flex-col">
             <div class="w-12 h-12 rounded-xl bg-slate-900 border border-slate-700 flex items-center justify-center mb-4 group-hover:border-violet-500/50 transition"><i data-lucide="copy" class="w-6 h-6 text-violet-400"></i></div>
             <h3 class="font-semibold text-lg">Find Duplicates</h3>
-            <p class="text-sm text-slate-400 mt-1.5">Detect and remove duplicate subtitle files across your library.</p>
-            <button data-action="dupes" class="mt-5 w-full rounded-xl bg-slate-900 hover:bg-slate-800 border border-slate-700 py-2.5 text-sm font-medium flex items-center justify-center gap-2"><i data-lucide="layers" class="w-4 h-4"></i>Remove Duplicate SRTs</button>
+            <p class="text-sm text-slate-400 mt-1.5">Moves duplicate subtitle files to quarantine, keeping one of each.</p>
+            <button data-action="dupes" class="mt-5 w-full rounded-xl bg-slate-900 hover:bg-slate-800 border border-slate-700 py-2.5 text-sm font-medium flex items-center justify-center gap-2"><i data-lucide="layers" class="w-4 h-4"></i>Quarantine Duplicates</button>
             <div class="mt-4 pt-4 border-t border-slate-700/60">
               <div class="text-xs text-slate-400 mb-2 flex items-center gap-1.5"><i data-lucide="clock" class="w-3.5 h-3.5 text-violet-400"></i>Schedule</div>
               <div data-sched="maintenance-dupes"></div>
@@ -415,13 +415,21 @@
           <div class="rounded-2xl bg-slate-800/40 border border-slate-700/60 p-6 hover:border-violet-500/30 transition group flex flex-col">
             <div class="w-12 h-12 rounded-xl bg-slate-900 border border-slate-700 flex items-center justify-center mb-4 group-hover:border-violet-500/50 transition"><i data-lucide="trash-2" class="w-6 h-6 text-violet-400"></i></div>
             <h3 class="font-semibold text-lg">Clean PGS Subs</h3>
-            <p class="text-sm text-slate-400 mt-1.5">Delete image-based PGS subtitle files where text SRTs already exist.</p>
+            <p class="text-sm text-slate-400 mt-1.5">Moves image-based PGS subtitle files to quarantine where a text SRT of the same language already exists.</p>
             <button data-action="pgs" class="mt-5 w-full rounded-xl bg-slate-900 hover:bg-slate-800 border border-slate-700 py-2.5 text-sm font-medium flex items-center justify-center gap-2"><i data-lucide="file-x" class="w-4 h-4"></i>Clean PGS</button>
             <div class="mt-4 pt-4 border-t border-slate-700/60">
               <div class="text-xs text-slate-400 mb-2 flex items-center gap-1.5"><i data-lucide="clock" class="w-3.5 h-3.5 text-violet-400"></i>Schedule</div>
               <div data-sched="maintenance-pgs"></div>
             </div>
           </div>
+        </div>
+        <div class="rounded-2xl bg-slate-800/40 border border-slate-700/60 mt-4 overflow-hidden">
+          <div class="px-5 py-3 border-b border-slate-700/60 flex items-center justify-between gap-3">
+            <div class="text-sm font-medium flex items-center gap-2"><i data-lucide="file-text" class="w-4 h-4 text-violet-400"></i>Latest report <span id="maint-report-name" class="text-xs text-slate-500 font-normal"></span></div>
+            <button id="refresh-maint-report" class="text-xs px-2.5 py-1.5 rounded-lg bg-slate-900 hover:bg-slate-800 border border-slate-700 flex items-center gap-1.5"><i data-lucide="refresh-cw" class="w-3.5 h-3.5"></i>Refresh</button>
+          </div>
+          <pre id="maint-report" class="p-4 text-[12px] leading-5 font-mono text-slate-300 overflow-auto max-h-[420px]">No report loaded yet.</pre>
+          <p class="px-5 pb-4 text-[11px] text-slate-500">Progress for running jobs is under Logs. Quarantined files are kept in <code>/app/data/quarantine</code>.</p>
         </div>
       </section>
 
@@ -477,7 +485,7 @@
         <div class="rounded-2xl bg-slate-800/40 border border-slate-700/60 overflow-hidden max-w-3xl">
           <div class="px-6 py-4 border-b border-slate-700/60">
             <h3 class="font-semibold">Connection Settings</h3>
-            <p class="text-sm text-slate-400 mt-1">Configure your PlexMind API endpoint. Stored in browser localStorage.</p>
+            <p class="text-sm text-slate-400 mt-1">Where this dashboard finds the PlexMind API. The address is remembered in this browser.</p>
           </div>
           <form id="settings-form" class="p-6 space-y-5">
             <div>
@@ -486,14 +494,14 @@
               <p class="text-[11px] text-slate-500 mt-1.5">PlexMind FastAPI server address</p>
             </div>
             <div>
-              <label class="text-xs text-slate-400 mb-1.5 block">API_KEY (optional)</label>
-              <input id="api-key-input" type="password" placeholder="Required; kept only for this browser session" class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3.5 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-violet-500/50">
-              <p class="text-[11px] text-slate-500 mt-1.5">Matches <code>PLEXMIND_API_KEY</code> in your .env — sent as <code>X-API-Key</code> header</p>
+              <label class="text-xs text-slate-400 mb-1.5 block">API_KEY</label>
+              <input id="api-key-input" type="password" placeholder="Required" class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3.5 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-violet-500/50">
+              <p class="text-[11px] text-slate-500 mt-1.5">Matches <code>PLEXMIND_API_KEY</code> on the server. Saving exchanges it for a 30-day login in this browser; the key itself is not stored.</p>
             </div>
             <div>
-              <label class="text-xs text-slate-400 mb-1.5 block">LLAMA_CPP_MODEL (display only)</label>
+              <label class="text-xs text-slate-400 mb-1.5 block">Model in use</label>
               <input id="llm-model-display" type="text" readonly class="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2.5 text-sm text-slate-400 cursor-default" placeholder="Loaded from /health">
-              <p class="text-[11px] text-slate-500 mt-1.5">Read from the API — set in your .env file</p>
+              <p class="text-[11px] text-slate-500 mt-1.5">Change it in the Model Advisor card on the Dashboard.</p>
             </div>
             <div class="pt-2 flex items-center gap-3">
               <button type="submit" class="rounded-xl bg-violet-600 hover:bg-violet-500 px-5 py-2.5 text-sm font-medium flex items-center gap-2 shadow-glow"><i data-lucide="save" class="w-4 h-4"></i>Save Settings</button>
@@ -586,13 +594,21 @@ function toast(msg, type="success") {
   }, 3400);
 }
 
+let lastHealth = null;
+
+// Dates the server gives in UTC, shown in UTC so they match the labels.
+function fmtUtc(value) {
+  const d = new Date(value);
+  return `${d.toLocaleString(undefined, { timeZone: 'UTC', month: 'short', day: 'numeric', year: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false })} UTC`;
+}
+
 // ─── API Status ─────────────────────────────────────────────────────────────
 function setApiStatus(online) {
   apiOnline = online;
   const el = document.getElementById('api-status');
   el.innerHTML = online
     ? `<span class="w-2 h-2 rounded-full bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,.6)]"></span><span>Connected</span>`
-    : `<span class="w-2 h-2 rounded-full bg-amber-500 animate-pulse"></span><span>Demo Mode</span>`;
+    : `<span class="w-2 h-2 rounded-full bg-red-500"></span><span>Offline</span>`;
   el.className = 'hidden sm:flex items-center gap-2 px-2.5 py-1.5 rounded-full border text-xs ' +
     (online ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-300'
             : 'bg-slate-800/80 border-slate-700 text-slate-300');
@@ -667,14 +683,14 @@ function updateScriptStatsUI(stats) {
 function updateHealthUI(h) {
   // API reachability comes from the dependency-free /health/live probe. A slow or
   // degraded sidecar health response must not make the API itself look offline.
-  const plexOk = apiOnline;
-  const dependenciesDegraded = h && h.status !== 'ok';
-  document.getElementById('plex-dot').className = `w-2.5 h-2.5 rounded-full ${plexOk ? 'bg-emerald-500 shadow-[0_0_10px_rgba(16,185,129,.5)]' : 'bg-red-500'}`;
-  document.getElementById('plex-status').textContent = plexOk ? 'Online' : 'Offline';
-  document.getElementById('plex-label').textContent = 'PlexMind API';
-  document.getElementById('plex-sub').textContent = plexOk
-    ? (dependenciesDegraded ? 'Reachable · dependency degraded' : (h ? 'Reachable' : 'Reachable · health delayed'))
-    : 'Unreachable';
+  const plex = h?.plex;
+  const plexOk = !!plex?.ready;
+  document.getElementById('plex-dot').className = `w-2.5 h-2.5 rounded-full ${plexOk ? 'bg-emerald-500 shadow-[0_0_10px_rgba(16,185,129,.5)]' : plex ? 'bg-red-500' : 'bg-slate-500'}`;
+  document.getElementById('plex-status').textContent = plexOk ? 'Online' : plex ? 'Offline' : 'Not checked';
+  document.getElementById('plex-label').textContent = plexOk ? 'Reachable' : plex ? 'Unreachable' : '—';
+  document.getElementById('plex-sub').textContent = plexOk ? 'Answering PlexMind' : plex ? `PlexMind cannot reach Plex${plex.error ? ' · ' + plex.error : ''}` : (apiOnline ? 'Waiting for the health check' : 'PlexMind API is offline');
+  if (h?.version) document.getElementById('app-version').textContent = `v${h.version} • Self-hosted`;
+  lastHealth = h || lastHealth;
 
   // LLM
   const llmOk = h && h.llm_ready;
@@ -690,33 +706,40 @@ function updateHealthUI(h) {
   const whisper = h?.whisper;
   const whisperOk = !!whisper?.ready;
   const whisperStandby = whisper?.state === 'standby';
-  document.getElementById('whisper-dot').className = `w-2.5 h-2.5 rounded-full ${whisperOk ? 'bg-emerald-500 shadow-[0_0_10px_rgba(16,185,129,.5)]' : whisperStandby ? 'bg-slate-500' : whisper ? 'bg-red-500' : 'bg-amber-500'}`;
-  document.getElementById('whisper-status').textContent = whisperOk ? 'Ready' : whisperStandby ? 'Standby' : whisper ? 'Fault' : 'Not checked';
+  const whisperStarting = whisper?.state === 'starting';
+  document.getElementById('whisper-dot').className = `w-2.5 h-2.5 rounded-full ${whisperOk ? 'bg-emerald-500 shadow-[0_0_10px_rgba(16,185,129,.5)]' : whisperStandby ? 'bg-slate-500' : whisperStarting ? 'bg-amber-500 animate-pulse' : whisper ? 'bg-red-500' : 'bg-amber-500'}`;
+  document.getElementById('whisper-status').textContent = whisperOk ? 'Ready' : whisperStandby ? 'Standby' : whisperStarting ? 'Starting' : whisper ? 'Fault' : 'Not checked';
   document.getElementById('whisper-label').textContent = 'Whisper ASR';
-  document.getElementById('whisper-sub').textContent = whisper
-    ? (whisperOk ? `Reachable at ${escapeHtml(whisper.url || 'configured URL')}` : `Unreachable: ${escapeHtml(whisper.error || ('HTTP ' + whisper.status_code))}`)
-    : 'Health probe pending API restart';
+  document.getElementById('whisper-sub').textContent = !whisper ? 'Not checked yet'
+    : whisperOk ? `Reachable at ${whisper.url || 'configured URL'}`
+    : whisperStandby ? 'Starts when transcription runs'
+    : whisperStarting ? 'Container is up; waiting for the service'
+    : `Unreachable${whisper.error ? ': ' + whisper.error : whisper.status_code ? ': HTTP ' + whisper.status_code : ''}`;
 
-  document.getElementById('stat-api').textContent = plexOk ? 'Online' : 'Offline';
+  document.getElementById('stat-api').textContent = apiOnline ? 'Online' : 'Offline';
 }
 
 // ─── Users ──────────────────────────────────────────────────────────────────
 async function fetchUsers() {
   if (DEMO) return MOCK.users;
   try {
-    const res = await apiFetch(`${API_BASE}/api/users`, { signal: AbortSignal.timeout(3000) });
+    const res = await apiFetch(`${API_BASE}/api/users`, { signal: AbortSignal.timeout(15000) });
     if (res.status === 403) {
       setApiStatus(true); // API is up, just needs key
       renderUsers('forbidden');
       return 'forbidden';
     }
-    if (!res.ok) throw new Error();
+    if (!res.ok) {
+      // The API answered, so it is online; Plex (or plex.tv) is what failed.
+      let detail = `HTTP ${res.status}`;
+      try { detail = (await res.json()).detail || detail; } catch {}
+      return { error: detail };
+    }
     setApiStatus(true);
     const data = await res.json();
     return data.users || [];
   } catch {
-    setApiStatus(false);
-    return null; // null = API unreachable, render empty state
+    return null; // null = API unreachable or too slow, render empty state
   }
 }
 
@@ -724,7 +747,7 @@ async function fetchSchedulerStatus() {
   if (DEMO) {
     const data = MOCK.scheduler;
     const d = new Date(data.next_run_utc);
-    document.getElementById('stat-schedule').textContent = d.toLocaleDateString(undefined, {month:'short',day:'numeric',year:'numeric'});
+    document.getElementById('stat-schedule').textContent = fmtUtc(d);
     document.getElementById('gpu-dot').className = 'w-2.5 h-2.5 rounded-full bg-emerald-500 shadow-[0_0_10px_rgba(16,185,129,.5)]';
     document.getElementById('gpu-status').textContent = 'Available';
     document.getElementById('gpu-label').textContent = `${data.gpu_utilization_pct}% utilized`;
@@ -732,14 +755,13 @@ async function fetchSchedulerStatus() {
       return;
     }
     try {
-    const res = await apiFetch(`${API_BASE}/api/scheduler/status`, { signal: AbortSignal.timeout(2000) });
-    if (!res.ok) throw new Error();
+    const res = await apiFetch(`${API_BASE}/api/scheduler/status`, { signal: AbortSignal.timeout(8000) });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
 
     // Scheduler next run
     if (data.next_run_utc) {
-      const d = new Date(data.next_run_utc);
-      document.getElementById('stat-schedule').textContent = d.toLocaleDateString(undefined, {month:'short',day:'numeric',year:'numeric'});
+      document.getElementById('stat-schedule').textContent = fmtUtc(data.next_run_utc);
     } else {
       document.getElementById('stat-schedule').textContent = '—';
     }
@@ -747,10 +769,10 @@ async function fetchSchedulerStatus() {
     if (data.cron_day != null)    document.getElementById('sched-day').value    = data.cron_day;
     if (data.cron_hour != null)   document.getElementById('sched-hour').value   = data.cron_hour;
     if (data.cron_minute != null) document.getElementById('sched-minute').value = data.cron_minute;
-    const translateWindow = data.script_windows?.translate;
-    if (translateWindow) {
-      const padHour = value => String(value).padStart(2, '0') + ':00';
-      document.getElementById('tl-window-label').textContent = `${padHour(translateWindow.start_hour)}-${padHour(translateWindow.end_hour)} ${data.script_timezone || 'configured timezone'}`;
+    const padHour = value => String(value).padStart(2, '0') + ':00';
+    for (const [job, id] of [['translate', 'tl-window-label'], ['transcribe', 'tx-window-label']]) {
+      const win = data.script_windows?.[job];
+      if (win) document.getElementById(id).textContent = `${padHour(win.start_hour)} and ${padHour(win.end_hour)} ${data.script_timezone || 'server time'}`;
     }
 
     // GPU from real data
@@ -768,12 +790,10 @@ async function fetchSchedulerStatus() {
     document.getElementById('gpu-sub').textContent = hasUtil
       ? `Threshold: ${data.gpu_threshold_pct}% · ${vendorLabels[vendor] || 'GPU'}${sourceLabel ? ' · ' + sourceLabel : ''}`
       : `No GPU detected${probeError ? ' · ' + probeError : ''}`;
-  } catch {
-    document.getElementById('stat-schedule').textContent = '—';
-    document.getElementById('gpu-dot').className = 'w-2.5 h-2.5 rounded-full bg-slate-500';
-    document.getElementById('gpu-status').textContent = 'Unavailable';
-    document.getElementById('gpu-label').textContent = 'GPU';
-    document.getElementById('gpu-sub').textContent = 'No utilization tool detected';
+  } catch (error) {
+    // Keep the last good reading; only say what went wrong.
+    document.getElementById('gpu-status').textContent = 'Reading delayed';
+    document.getElementById('gpu-sub').textContent = `Could not read the GPU just now (${error.message || 'timeout'})`;
   }
 }
 
@@ -839,18 +859,19 @@ async function fetchModelAdvisor() {
     const data = await res.json();
     const gpu = data.gpu || {};
     summary.textContent = gpu.name
-      ? `${gpu.name} · ${gpu.memory_total_gb ?? '?'} GB VRAM · active: ${data.active_model}`
+      ? `${gpu.name} · ${gpu.memory_total_gb ?? '?'} GiB VRAM · active: ${data.active_model}`
       : `GPU VRAM unavailable · active: ${data.active_model} · fit must be verified manually`;
     list.innerHTML = (data.recommendations || []).map((item, index) => {
       const fit = item.fits === true ? 'Fits' : item.fits === false ? 'Does not fit safely' : 'Fit unknown';
       const fitClass = item.fits === true ? 'text-emerald-400' : item.fits === false ? 'text-rose-400' : 'text-amber-400';
       const badge = item.active ? 'Active' : item.tier === 'production' ? 'Recommended' : item.tier;
       return `<div class="rounded-xl bg-slate-900/70 border ${index === 0 ? 'border-violet-500/40' : 'border-slate-800'} p-4">
-        <div class="flex justify-between gap-3"><div><div class="font-medium">${escapeHtml(item.model)} <span class="text-slate-400">${escapeHtml(item.quantization)}</span></div><div class="text-[11px] text-violet-400 uppercase mt-0.5">${escapeHtml(badge)} · ${escapeHtml(item.provenance)}</div></div><div class="text-right text-xs"><div class="${fitClass}">${fit}</div><div class="text-slate-500 mt-1">~${item.estimated_vram_gb} GB</div></div></div>
+        <div class="flex justify-between gap-3"><div><div class="font-medium">${escapeHtml(item.model)} <span class="text-slate-400">${escapeHtml(item.quantization)}</span></div><div class="text-[11px] text-violet-400 uppercase mt-0.5">${escapeHtml(badge)} · ${escapeHtml(item.provenance)}</div></div><div class="text-right text-xs"><div class="${fitClass}">${fit}</div><div class="text-slate-500 mt-1">~${item.estimated_vram_gb} GiB</div></div></div>
         <p class="text-xs text-slate-400 mt-2">${escapeHtml(item.summary)}</p>
-        <a href="${escapeHtml(item.url)}" target="_blank" rel="noopener noreferrer" class="inline-block text-xs text-violet-400 hover:text-violet-300 mt-2">View trusted source →</a>
+        <a href="${escapeHtml(item.url)}" target="_blank" rel="noopener noreferrer" class="inline-block text-xs text-violet-400 hover:text-violet-300 mt-2">View source →</a>
       </div>`;
     }).join('');
+    document.getElementById('advisor-updated').textContent = `Updated ${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`;
   } catch (error) {
     summary.textContent = `Model recommendations unavailable: ${error.message}`;
     list.innerHTML = '';
@@ -896,15 +917,20 @@ function renderUsers(users) {
     document.getElementById('stat-users').textContent = '—';
     return;
   }
+  if (users && users.error) {
+    tbody.innerHTML = `<tr><td colspan="4" class="px-5 py-8 text-center text-slate-500 text-sm">Could not list Plex users: ${escapeHtml(users.error)}</td></tr>`;
+    document.getElementById('stat-users').textContent = '—';
+    return;
+  }
   if (!users || users.length === 0) {
-    tbody.innerHTML = `<tr><td colspan="4" class="px-5 py-8 text-center text-slate-500 text-sm">${!users ? 'API unreachable — check connection' : 'No Plex users found'}</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="4" class="px-5 py-8 text-center text-slate-500 text-sm">${!users ? 'No answer from the PlexMind API — check the connection under Settings' : 'No Plex users found'}</td></tr>`;
     document.getElementById('stat-users').textContent = users ? '0' : '—';
     return;
   }
   document.getElementById('stat-users').textContent = users.length;
   tbody.innerHTML = users.map(u => {
     const isAdmin = u.type === 'admin' || u.is_admin;
-    const displayType = isAdmin ? 'Admin' : 'Managed';
+    const displayType = isAdmin ? 'Admin' : u.type === 'shared' ? 'Shared' : 'Managed';
     const displayName = escapeHtml(u.username || u.id || '?');
     const userId = escapeHtml(u.id || u.username || '');
     const initials = escapeHtml((u.username || u.id || '?').slice(0, 2).toUpperCase());
@@ -931,7 +957,7 @@ function renderUsers(users) {
       </td>
       <td class="px-5 py-3.5 text-right">
         <button data-user="${userId}" class="btn-gen inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-900 hover:bg-slate-800 border border-slate-700 text-xs font-medium transition hover:border-violet-500/50">
-          <i data-lucide="sparkles" class="w-3.5 h-3.5"></i>Generate
+          <i data-lucide="sparkles" class="w-3.5 h-3.5"></i>Generate &amp; send
         </button>
       </td>
     </tr>`;
@@ -978,7 +1004,7 @@ function renderRecs(recs = []) {
 }
 
 async function generateFor(userId, btn) {
-  if (DEMO) { toast(`Demo mode — deploy locally to generate real recommendations for ${escapeHtml(userId)}`, 'info'); return; }
+  if (DEMO) { toast(`Demo mode — deploy locally to generate real recommendations for ${(userId)}`, 'info'); return; }
   const original = btn.innerHTML;
   btn.disabled = true;
   btn.innerHTML = `<svg class="w-3.5 h-3.5 animate-spin" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" fill="none" opacity=".2"/><path d="M22 12a10 10 0 0 1-10 10" stroke="currentColor" stroke-width="4" fill="none" stroke-linecap="round"/></svg> Generating`;
@@ -993,10 +1019,18 @@ async function generateFor(userId, btn) {
     }
     const recs = await res.json();
     setApiStatus(true);
-    renderRecs(recs);
-    toast(`Recommendations generated for ${escapeHtml(userId)}`, 'success');
+    renderRecs(await fetchRecentRecs());
+    const sync = await apiFetch(`${API_BASE}/api/users/${encodeURIComponent(userId)}/sync`, {
+      method: 'POST', signal: AbortSignal.timeout(300000),
+    });
+    if (!sync.ok) {
+      let detail = `HTTP ${sync.status}`;
+      try { detail = (await sync.json()).detail || detail; } catch {}
+      throw new Error(`generated ${recs.length}, but sending to Plex failed: ${detail}`);
+    }
+    toast(`${recs.length} recommendations generated and sent to Plex for ${userId}`, 'success');
   } catch (e) {
-    toast(`Recommendation generation failed — ${escapeHtml(e.message || 'unknown error')}`, 'error');
+    toast(`Recommendations for ${userId}: ${e.message || 'unknown error'}`, 'error');
   }
   btn.disabled = false;
   btn.innerHTML = original;
@@ -1012,7 +1046,7 @@ function withLoading(btn, fn) {
     try {
       await fn();
     } catch (e) {
-      toast(escapeHtml(e.message || 'Action failed'), 'error');
+      toast((e.message || 'Action failed'), 'error');
     } finally {
       btn.disabled = false;
       btn.innerHTML = orig;
@@ -1300,7 +1334,6 @@ document.addEventListener('DOMContentLoaded', async () => {
   setInterval(fetchApiLive, 10000);
   setInterval(async () => { const health = await fetchHealth(); updateHealthUI(health); syncTranslationTargets(health); }, 30000);
   setInterval(fetchSchedulerStatus, 30000);
-  setInterval(fetchModelAdvisor, 7 * 24 * 60 * 60 * 1000);
   setInterval(fetchStorage, 60000);
   setInterval(async () => updateScriptStatsUI(await fetchScriptStats()), 60000);
 
@@ -1344,6 +1377,9 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (activeEventSource) { toast('A batch run is already in progress', 'info'); return; }
 
     const btn = document.getElementById('btn-generate-all');
+    if (lastHealth && lastHealth.recommendation_worker_ready === false) {
+      toast('The recommendation worker is not running, so this batch would wait until it starts. Check the PlexMind container log.', 'error');
+    }
     const orig = btn.innerHTML;
     btn.disabled = true;
     btn.innerHTML = `<svg class="w-4 h-4 animate-spin" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" fill="none" opacity=".2"/><path d="M22 12a10 10 0 0 1-10 10" stroke="currentColor" stroke-width="4" fill="none" stroke-linecap="round"/></svg> Starting…`;
@@ -1351,6 +1387,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     let jobData;
     try {
       const res = await apiFetch(`${API_BASE}/api/run-all`, { method: 'POST', signal: AbortSignal.timeout(5000) });
+      if (res.status === 429) throw new Error('too many batch runs started this hour; try again later');
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       jobData = await res.json();
       setApiStatus(true);
@@ -1396,6 +1433,8 @@ document.addEventListener('DOMContentLoaded', async () => {
         jobUserList.insertAdjacentHTML('beforeend',
           `<div class="flex items-center gap-2 ${color}"><span>${icon}</span><span class="text-slate-200">${escapeHtml(ev.user)}</span><span class="text-slate-500">${escapeHtml(detail)}</span></div>`);
         jobUserList.scrollTop = jobUserList.scrollHeight;
+      } else if (ev.type === 'waiting') {
+        jobStatusLbl.textContent = `${ev.reason || 'Waiting'}…`;
       } else if (ev.type === 'gpu_wait') {
         jobStatusLbl.textContent = `GPU busy (${ev.pct}%) — waiting…`;
       } else if (ev.type === 'done') {
@@ -1405,11 +1444,14 @@ document.addEventListener('DOMContentLoaded', async () => {
         const icon = document.querySelector('#job-progress .lucide-loader');
         if (icon) icon.classList.remove('animate-spin');
         finishRun();
+        fetchRecentRecs().then(renderRecs);
         toast(`Batch complete — ${s.ok} updated, ${s.skipped} skipped`, s.errors > 0 ? 'error' : 'success');
       } else if (ev.type === 'already_running') {
         jobProgress.classList.add('hidden');
         finishRun();
-        toast('A batch run is already in progress — check back shortly', 'info');
+        toast(ev.owner === 'media_job'
+          ? 'Transcription, translation or maintenance is using the GPU right now. Try again when it finishes, or stop it first.'
+          : 'A batch run is already in progress — check back shortly', 'info');
       } else if (ev.type === 'error') {
         jobStatusLbl.textContent = `Error: ${ev.error}`;
         finishRun();
@@ -1456,18 +1498,12 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   document.getElementById('btn-transcribe-scan').addEventListener('click', withLoading(
     document.getElementById('btn-transcribe-scan'),
-    async () => {
-      await new Promise(r => setTimeout(r, 600));
-      await startScriptJob('transcribe', txLog);
-    }
+    async () => startScriptJob('transcribe', txLog)
   ));
 
   document.getElementById('btn-translate-quick').addEventListener('click', withLoading(
     document.getElementById('btn-translate-quick'),
-    async () => {
-      await new Promise(r => setTimeout(r, 600));
-      await startScriptJob('translate', tlLog);
-    }
+    async () => startScriptJob('translate', tlLog)
   ));
 
   document.getElementById('btn-maintenance-quick').addEventListener('click', withLoading(
@@ -1488,14 +1524,17 @@ document.addEventListener('DOMContentLoaded', async () => {
       const minute = document.getElementById('sched-minute').value;
       try {
         const res = await apiFetch(`${API_BASE}/api/scheduler/configure?day=${day}&hour=${hour}&minute=${minute}`, { method: 'POST', signal: AbortSignal.timeout(5000) });
-        if (!res.ok) throw new Error();
+        if (!res.ok) {
+          let detail = `HTTP ${res.status}`;
+          try { const body = await res.json(); detail = typeof body.detail === 'string' ? body.detail : (body.detail?.[0]?.msg || detail); } catch {}
+          throw new Error(detail);
+        }
         const data = await res.json();
-        const next = new Date(data.next_run_utc);
-        document.getElementById('stat-schedule').textContent = next.toLocaleDateString(undefined, {month:'short',day:'numeric',year:'numeric'});
+        document.getElementById('stat-schedule').textContent = fmtUtc(data.next_run_utc);
         document.getElementById('sched-editor').classList.add('hidden');
-        toast(`Schedule saved — next run: ${next.toLocaleDateString(undefined, {month:'short',day:'numeric',year:'numeric', hour:'2-digit',minute:'2-digit'})} UTC`, 'success');
-      } catch {
-        toast('Failed to save schedule — check API connection', 'error');
+        toast(`Schedule saved — next run: ${fmtUtc(data.next_run_utc)}`, 'success');
+      } catch (error) {
+        toast(`Could not save the schedule: ${error.message}`, 'error');
       }
     }
   );
@@ -1517,10 +1556,11 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   const scriptPollers = {};
   const scriptLogFailures = {};
-  function getScriptDuration(job, fallback) {
-    const vals = JSON.parse(localStorage.getItem(`pm_sched_${job}`) || 'null') || {};
-    const n = parseInt(vals.duration || fallback, 10);
-    return Number.isFinite(n) && n >= 0 ? n : fallback;
+  // The max runtime shown under Schedule, as it is on screen right now.
+  function getScriptDuration(job) {
+    const field = document.querySelector(`[data-sched="${job}"] [data-f="duration"]`);
+    const n = parseInt(field?.value ?? '0', 10);
+    return Number.isFinite(n) && n >= 0 ? n : 0;
   }
   const SCRIPT_LOG_JOBS = [
     { job: "recommendations", title: "Recommendations", page: "recommendations", log_file: "/app/data/recommendations.log", api: "recommendations" },
@@ -1702,8 +1742,9 @@ async function refreshScriptLog(job, logEl) {
   }
   async function startScriptJob(job, logEl) {
     if (DEMO) { toast('Demo mode — deploy locally to start script jobs', 'info'); return; }
-    const payload = { run_now: true, max_runtime_minutes: getScriptDuration(job, job === 'translate' ? 60 : 60) };
-    if (job === 'translate') payload.target_languages = document.getElementById('target-langs').value.trim();
+    const payload = { run_now: true, max_runtime_minutes: getScriptDuration(job) };
+    const languages = job === 'translate' ? document.getElementById('target-langs').value.trim() : '';
+    if (languages) payload.target_languages = languages;
     logEl.textContent = '';
     appendLogLine(logEl, `Starting ${job} job via scripts service...`);
     const res = await apiFetch(`${API_BASE}/api/scripts/${job}/start`, {
@@ -1726,7 +1767,7 @@ async function refreshScriptLog(job, logEl) {
       throw new Error(typeof detail === 'string' ? detail : (detail.detail || `HTTP ${res.status}`));
     }
     const data = await res.json();
-    appendLogLine(logEl, `Started ${job} pid ${data.pid || 'pending'}; max runtime ${payload.max_runtime_minutes || 'none'} minutes.`);
+    appendLogLine(logEl, `Started ${job} pid ${data.pid || 'pending'}; ${payload.max_runtime_minutes ? 'stops after ' + payload.max_runtime_minutes + ' minutes' : 'runs until done'}.`);
     toast(`${job} job started`, 'success');
     await refreshScriptLog(job, logEl);
     scheduleScriptLogPoll(job, logEl);
@@ -1777,8 +1818,8 @@ async function refreshScriptLog(job, logEl) {
     'transcribe': 'The built-in worker uses its configured transcription window. This helper creates a separate external cron command; stop or watch logs here.',
     'translate': 'The built-in worker uses its configured translation window. This helper creates a separate external cron command; stop or watch logs here.',
     'maintenance-audit': 'Usually minutes; reads media folders and writes an audit report.',
-    'maintenance-dupes': 'Usually minutes; can delete duplicate SRT files.',
-    'maintenance-pgs': 'Usually minutes; can delete PGS/image subtitles when SRTs exist.',
+    'maintenance-dupes': 'Usually minutes; moves duplicate SRT files to quarantine.',
+    'maintenance-pgs': 'Usually minutes; moves PGS/image subtitles to quarantine when SRTs exist.',
   };
 
   function initScheduleWidgets() {
@@ -1853,6 +1894,7 @@ async function refreshScriptLog(job, logEl) {
               </select>` : ''}
               ${freq==='monthly' ? `<input data-f="monthday" type="number" min="1" max="28" value="${monthday}" placeholder="Day of month (1–28)" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-2 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-violet-500/50">` : ''}
             </div>
+            <div class="text-slate-500">Start uses this max runtime too. 0 runs until done.</div>
             <label class="block text-slate-500">Max runtime minutes
               <input data-f="duration" type="number" min="0" max="9999" value="${duration}" class="mt-1 w-full bg-slate-900 border border-slate-700 rounded-lg px-2 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-violet-500/50">
             </label>
@@ -1894,7 +1936,7 @@ async function refreshScriptLog(job, logEl) {
 
   async function startMaintenanceJob(job) {
     if (DEMO) { toast('Demo mode — deploy locally to start maintenance', 'info'); return; }
-    if (['maintenance-dupes', 'maintenance-pgs', 'maintenance-all'].includes(job) && !confirm('This maintenance job can delete subtitle files. Start it now?')) return;
+    if (['maintenance-dupes', 'maintenance-pgs', 'maintenance-all'].includes(job) && !confirm('This job moves subtitle files to quarantine (/app/data/quarantine). Start it now?')) return;
     const res = await apiFetch(`${API_BASE}/api/scripts/${job}/start`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -1912,8 +1954,25 @@ async function refreshScriptLog(job, logEl) {
       throw new Error(typeof detail === 'string' ? detail : (detail.detail || `HTTP ${res.status}`));
     }
     const data = await res.json();
-    toast(`${job.replace('maintenance-', 'Maintenance ')} started${data.pid ? ` — pid ${data.pid}` : ''}`, 'success');
+    toast(`${job.replace('maintenance-', 'Maintenance ')} started${data.pid ? ` — pid ${data.pid}` : ''}. Follow it under Logs; the report appears below when it finishes.`, 'success');
   }
+
+  async function loadMaintenanceReport() {
+    if (DEMO) return;
+    const pre = document.getElementById('maint-report');
+    try {
+      const res = await apiFetch(`${API_BASE}/api/maintenance/report`, { signal: AbortSignal.timeout(10000) });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      document.getElementById('maint-report-name').textContent = data.name
+        ? `${data.name} · ${new Date(data.updated * 1000).toLocaleString()}${data.truncated ? ' · first 200 KB' : ''}` : '';
+      pre.textContent = data.name ? data.text : 'No report yet. Run Audit Library to create one.';
+    } catch (error) {
+      pre.textContent = `Could not load the report: ${error.message}`;
+    }
+  }
+  document.getElementById('refresh-maint-report').onclick = withLoading(document.getElementById('refresh-maint-report'), loadMaintenanceReport);
+  loadMaintenanceReport();
 
   // Maintenance
   document.querySelectorAll('[data-action]').forEach(b => {
@@ -1931,17 +1990,23 @@ async function refreshScriptLog(job, logEl) {
     const apiKey = document.getElementById('api-key-input').value.trim();
     API_BASE = apiBaseUrl;
     API_KEY  = apiKey;
-    if (API_KEY) {
-      const session = await apiFetch(`${API_BASE}/api/session`, { method: 'POST' });
-      if (!session.ok) {
-        toast('API key rejected', 'error');
-        return;
+    try {
+      if (API_KEY) {
+        const session = await apiFetch(`${API_BASE}/api/session`, { method: 'POST', signal: AbortSignal.timeout(10000) });
+        if (!session.ok) {
+          toast(session.status === 403 ? 'API key rejected' : `Could not log in: HTTP ${session.status}`, 'error');
+          return;
+        }
+        API_KEY = '';
+        document.getElementById('api-key-input').value = '';
       }
-      API_KEY = '';
-      document.getElementById('api-key-input').value = '';
+    } catch (error) {
+      toast(`Could not reach the API: ${error.message}`, 'error');
+      return;
     }
     persistApiSettings();
-    toast('Settings saved', 'success');
+    toast('Settings saved — reloading', 'success');
+    setTimeout(() => location.reload(), 800);
   };
   document.getElementById('test-conn').onclick = withLoading(
     document.getElementById('test-conn'),
@@ -1951,7 +2016,12 @@ async function refreshScriptLog(job, logEl) {
       await fetchApiLive();
       const h = await fetchHealth();
       updateHealthUI(h);
-      toast(apiOnline ? `Connected — LLM: ${h?.llm || 'unknown'}` : 'Unreachable — check API_BASE_URL', apiOnline ? 'success' : 'error');
+      if (!apiOnline) { toast('Unreachable — check API_BASE_URL', 'error'); return; }
+      // /health needs no key, so check one route that does.
+      const authed = await apiFetch(`${API_BASE}/api/scheduler/status`, { signal: AbortSignal.timeout(8000) }).catch(() => null);
+      if (authed?.status === 403) toast('The API answers, but the key or login was rejected', 'error');
+      else if (authed?.ok) toast(`Connected and logged in — model: ${h?.llm || 'unknown'}`, 'success');
+      else toast(`The API answers, but a check failed${authed ? ': HTTP ' + authed.status : ''}`, 'error');
     }
   );
 });

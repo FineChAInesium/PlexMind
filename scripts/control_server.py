@@ -408,7 +408,7 @@ class Handler(BaseHTTPRequestHandler):
         if action == "start":
             pid = _running_pid(job)
             if pid:
-                return self._json(409, {**_status(job), "detail": "already running"})
+                return self._json(409, {**_status(job), "status": "already_running", "detail": "already running"})
             env = os.environ.copy()
             env["RUN_NOW"] = "1" if body.get("run_now", True) else "0"
             try:

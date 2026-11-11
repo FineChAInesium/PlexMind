@@ -707,6 +707,8 @@ async def _do_run_all_users(triggered_by: str, on_progress=None) -> dict:
                 pass  # Never let progress reporting break the run
 
     _append_recommendation_log(f"Recommendation Batch starting; triggered_by={triggered_by}")
+    # Tell the dashboard before a possibly long wait, so it does not sit at "Connecting".
+    await _emit({"type": "waiting", "reason": "Waiting for the GPU to be free"})
     await _wait_for_idle_gpu()
 
     # Write sentinel so translation/transcription scripts know PlexMind is active.

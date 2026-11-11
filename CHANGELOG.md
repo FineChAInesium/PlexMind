@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+- Dashboard fixes from an audit of every control:
+  - Per-user Generate now also sends the recommendations to Plex, and says so.
+  - Start uses the max runtime shown under Schedule (0 runs until done) instead of a hidden 60-minute limit.
+  - Starting a job that is already running attaches to it instead of showing an error, and the scheduler no longer logs that as a failed launch.
+  - Dates labelled UTC are shown in UTC.
+  - The Plex card checks Plex itself; the header says Offline rather than Demo Mode; a Plex error no longer marks the API offline.
+  - Maintenance cards say quarantine instead of delete, and the latest audit report is shown on the Maintenance page.
+  - Settings: the API key is marked required, Test Connection checks the key, and saving handles errors.
+  - Clearer wording for schedules, target languages, Whisper standby, the GPU card, Generate All waits and the Model Advisor (GiB, Refresh with a time, fixed list explained); shared Plex users are labelled Shared.
 ## v0.9.13 - 2026-11-09
 
 - New logo: a P with a brain inside.

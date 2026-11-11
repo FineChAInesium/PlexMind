@@ -88,7 +88,8 @@ def recommendations(gpu: dict, context_tokens: int | None = None, active: str | 
     for item in CATALOG:
         # A real measurement beats the estimate, at the context it was measured with.
         measured = item.get("measured_vram_gb") if context == 8192 else None
-        required = round(measured or item["weights_gb"] + runtime_overhead, 2)
+        # Catalog weights are file sizes in GB; VRAM and the measurement are GiB.
+        required = round(measured or item["weights_gb"] * 1e9 / 2**30 + runtime_overhead, 2)
         fit = None if usable_gb is None else required <= usable_gb
         headroom = None if total_gb is None else round(total_gb - required, 2)
         ranked.append({**item, "estimated_vram_gb": required, "headroom_gb": headroom,

@@ -108,6 +108,15 @@ def _local_accounts(server: PlexServer) -> list[dict]:
     return accounts
 
 
+def server_reachable(timeout: float = 3.0) -> tuple[bool, str]:
+    """(answers, reason) for a quick request to the Plex server itself."""
+    try:
+        res = requests.get(f"{PLEX_URL.rstrip('/')}/identity", headers={"Accept": "application/json"}, timeout=timeout)
+    except requests.RequestException as exc:
+        return False, type(exc).__name__
+    return (res.status_code == 200, "" if res.status_code == 200 else f"HTTP {res.status_code}")
+
+
 def get_users() -> list[dict]:
     """Return list of managed users + admin. Each dict has id and username."""
     server = _get_server()
@@ -117,7 +126,8 @@ def get_users() -> list[dict]:
         users.append({"id": "admin", "username": _admin_username(account.username), "type": "admin"})
         try:
             for u in account.users():
-                users.append({"id": str(u.id), "username": u.title, "type": "managed"})
+                # Home users are managed by this account; anyone else is a friend the library is shared with.
+                users.append({"id": str(u.id), "username": u.title, "type": "managed" if getattr(u, "home", False) else "shared"})
         except Exception:
             pass
         _write_cached_users(users)
