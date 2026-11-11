@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.9.15 - 2026-11-10
 
 - Simpler install, on the way to 1.0:
   - Sign in with Plex: the dashboard and `setup.sh` use Plex's own sign-in link, so there is no token to find and paste. On first run it connects PlexMind to the server the account owns (asking which, if there are several); after that it is the dashboard login, for the server owner only. An API key still works for scripts.
