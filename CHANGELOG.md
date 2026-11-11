@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- The Unraid template uses the `:latest` image, so Unraid offers updates after each release. Existing installs: set Repository to `ghcr.io/finechainesium/plexmind:latest` once.
+
 ## v0.9.15 - 2026-11-10
 
 - Simpler install, on the way to 1.0:

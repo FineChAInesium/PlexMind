@@ -1,7 +1,7 @@
 <?xml version="1.0"?>
 <Container version="2">
   <Name>PlexMind</Name>
-  <Repository>ghcr.io/finechainesium/plexmind:0.9.15</Repository>
+  <Repository>ghcr.io/finechainesium/plexmind:latest</Repository>
   <Registry>https://github.com/FineChAInesium/PlexMind/pkgs/container/plexmind</Registry>
   <Network>bridge</Network>
   <Shell>bash</Shell>

@@ -40,6 +40,8 @@ class PackagingTests(unittest.TestCase):
         for name in ("SCRIPTS_API_URL", "DOCKER_BROKER_URL", "PLEXMIND_CONTROL_TOKEN", "PLEXMIND_BROKER_TOKEN"):
             self.assertNotIn(f"<Name>{name}</Name>", template)
         self.assertIn("<ExtraParams>--stop-timeout=40</ExtraParams>", template)
+        # A moving tag, so Unraid can tell when a newer image is published.
+        self.assertIn("<Repository>ghcr.io/finechainesium/plexmind:latest</Repository>", template)
 
     def test_dashboard_api_key_is_not_persisted_in_browser_storage(self):
         dashboard = (ROOT / "plexmind" / "app" / "static" / "index.html").read_text(encoding="utf-8")

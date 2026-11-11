@@ -191,6 +191,8 @@ https://raw.githubusercontent.com/FineChAInesium/PlexMind/main/templates/PlexMin
 2. Set your Movies and TV Shows paths, and `LLAMA_CPP_URL` / `WHISPER_API_URL` for your llama.cpp and Whisper containers (LAN IP and host port, or container names on a shared custom network).
 3. Need a model? From the Unraid terminal: `./setup.sh --model /mnt/user/appdata/llama-cpp/models` downloads one that fits your GPU.
 4. Start the container, open `http://[unraid-ip]:8000` and sign in with Plex.
+
+Updates: the template uses `ghcr.io/finechainesium/plexmind:latest`, so Unraid's Docker tab shows **update ready** after each release. If you installed before v0.9.15, edit the container once and set Repository to that.
 PlexMind is one container. It mounts your media read-write and the Docker socket, which its built-in broker uses only to start and stop the Whisper and llama.cpp containers named in `WHISPER_CONTAINER_NAME` and `LLAMA_CPP_CONTAINER_NAME`. Keep port 8000 on your LAN; do not forward it to the internet.
 
 The template sets `--stop-timeout=40` in Extra Parameters. Docker's default 10-second stop timeout is shorter than the 25 seconds PlexMind gives running jobs to finish their cleanup (stopping Whisper, releasing llama.cpp), so keep it if you create the container by hand. Compose sets this with `stop_grace_period: 40s`.
