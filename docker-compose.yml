@@ -12,7 +12,7 @@ services:
     ports:
       - "${LLAMA_CPP_BIND_ADDRESS:-127.0.0.1}:${LLAMA_CPP_HOST_PORT:-11435}:8080"
     volumes:
-      - ${LLAMA_CPP_MODELS_DIR:-/mnt/cache/appdata/llama-cpp/models}:/models:ro
+      - ${LLAMA_CPP_MODELS_DIR:-./models}:/models:ro
     command:
       - --host
       - 0.0.0.0
@@ -106,11 +106,13 @@ services:
     environment:
       - DATA_DIR=/app/data
       - PLEX_URL=${PLEX_URL:-http://host.docker.internal:32400}
-      - PLEX_TOKEN=${PLEX_TOKEN}
+      # Blank: the sign-in saved in data/plex_auth.json is used.
+      - PLEX_TOKEN=${PLEX_TOKEN:-}
+      # API key and webhook secret: generated into data/secrets.json when blank.
       - PLEXMIND_API_KEY=${PLEXMIND_API_KEY:-}
       - PLEXMIND_SESSION_DAYS=${PLEXMIND_SESSION_DAYS:-30}
       - PLEXMIND_SECURE_COOKIE=${PLEXMIND_SECURE_COOKIE:-0}
-      - PLEXMIND_WEBHOOK_SECRET=${PLEXMIND_WEBHOOK_SECRET}
+      - PLEXMIND_WEBHOOK_SECRET=${PLEXMIND_WEBHOOK_SECRET:-}
       # Internal tokens; generated at each start when left empty.
       - PLEXMIND_CONTROL_TOKEN=${PLEXMIND_CONTROL_TOKEN:-}
       - PLEXMIND_BROKER_TOKEN=${PLEXMIND_BROKER_TOKEN:-}

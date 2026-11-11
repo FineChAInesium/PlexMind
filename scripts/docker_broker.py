@@ -12,7 +12,12 @@ from urllib.parse import parse_qs, urlparse
 
 SOCKET = os.getenv("DOCKER_SOCKET", "/var/run/docker.sock")
 TOKEN = os.getenv("PLEXMIND_BROKER_TOKEN", "")
-ALLOWED = {x for x in os.getenv("PLEXMIND_ALLOWED_CONTAINERS", "whisper-asr-webservice,llama-cpp").split(",") if x}
+# Default: the Whisper and llama.cpp containers PlexMind is configured to use.
+_DEFAULT_ALLOWED = ",".join((
+    os.getenv("WHISPER_CONTAINER_NAME", "") or "whisper-asr-webservice",
+    os.getenv("LLAMA_CPP_CONTAINER_NAME", "") or "llama-cpp",
+))
+ALLOWED = {x.strip() for x in (os.getenv("PLEXMIND_ALLOWED_CONTAINERS", "") or _DEFAULT_ALLOWED).split(",") if x.strip()}
 # Containers where only the fixed nvidia-smi GPU probe may run (e.g. an
 # always-on Plex container), so GPU telemetry works while sidecars are stopped.
 GPU_PROBE_ONLY = {x.strip() for x in os.getenv("PLEXMIND_GPU_PROBE_CONTAINERS", "").split(",") if x.strip()}

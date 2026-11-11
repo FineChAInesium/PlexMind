@@ -495,8 +495,8 @@
             </div>
             <div>
               <label class="text-xs text-slate-400 mb-1.5 block">API_KEY</label>
-              <input id="api-key-input" type="password" placeholder="Required" class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3.5 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-violet-500/50">
-              <p class="text-[11px] text-slate-500 mt-1.5">Matches <code>PLEXMIND_API_KEY</code> on the server. Saving exchanges it for a 30-day login in this browser; the key itself is not stored.</p>
+              <input id="api-key-input" type="password" placeholder="Not needed if you sign in with Plex" class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3.5 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-violet-500/50">
+              <p class="text-[11px] text-slate-500 mt-1.5">For scripts and other tools. It is <code>PLEXMIND_API_KEY</code>, or the one PlexMind generated in <code>data/secrets.json</code>. Saving exchanges it for a 30-day login in this browser; the key itself is not stored.</p>
             </div>
             <div>
               <label class="text-xs text-slate-400 mb-1.5 block">Model in use</label>
@@ -511,6 +511,19 @@
         </div>
       </section>
     </main>
+  </div>
+</div>
+
+<!-- Sign in with Plex (first run connects the server; afterwards it is the login) -->
+<div id="signin" class="hidden fixed inset-0 z-[150] bg-slate-950/95 backdrop-blur-sm flex items-center justify-center p-4">
+  <div class="w-full max-w-md rounded-2xl bg-slate-900 border border-slate-700/60 p-8 text-center shadow-glow">
+    <img src="/static/icon.png" alt="" class="w-16 h-16 mx-auto rounded-xl border border-slate-700">
+    <h2 id="signin-title" class="text-xl font-semibold mt-5">Sign in to PlexMind</h2>
+    <p id="signin-text" class="text-sm text-slate-400 mt-2">Use the Plex account that owns this server.</p>
+    <div id="signin-servers" class="hidden mt-5 space-y-2"></div>
+    <button id="signin-btn" class="mt-6 w-full rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 px-5 py-3 text-sm font-semibold">Sign in with Plex</button>
+    <p id="signin-status" class="text-sm text-slate-400 mt-4 min-h-[1.25rem]"></p>
+    <button id="signin-apikey" class="text-xs text-slate-500 hover:text-slate-300 underline mt-2">Use an API key instead</button>
   </div>
 </div>
 
@@ -1261,9 +1274,105 @@ function toggleSidebar(open) {
 }
 
 // ─── Init ────────────────────────────────────────────────────────────────────
+// ─── Sign in with Plex ──────────────────────────────────────────────────────
+// First run: connects PlexMind to the server the account owns. Afterwards:
+// the dashboard login, for the server owner only.
+const signin = {
+  el: id => document.getElementById(id),
+  status(text, error = false) {
+    const s = this.el('signin-status');
+    s.textContent = text;
+    s.className = `text-sm mt-4 min-h-[1.25rem] ${error ? 'text-red-300' : 'text-slate-400'}`;
+  },
+  show(setup) {
+    this.el('signin').classList.remove('hidden');
+    this.el('signin-title').textContent = setup ? 'Connect PlexMind to Plex' : 'Sign in to PlexMind';
+    this.el('signin-text').textContent = setup
+      ? 'Sign in with the Plex account that owns your server. PlexMind finds the server and its libraries for you.'
+      : 'Use the Plex account that owns this server.';
+  },
+  async check() {
+    if (DEMO) return true;
+    try {
+      const res = await fetch(`${API_BASE}/api/auth/status`, { signal: AbortSignal.timeout(8000) });
+      if (!res.ok) return true;  // older API without Plex sign-in: keep the API key flow
+      const s = await res.json();
+      if (s.signed_in && s.plex_configured) return true;
+      this.show(!s.plex_configured);
+      return false;
+    } catch { return true; }
+  },
+  async post(path, body) {
+    const res = await fetch(`${API_BASE}${path}`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: body ? JSON.stringify(body) : undefined, signal: AbortSignal.timeout(20000),
+    });
+    let data = {};
+    try { data = await res.json(); } catch {}
+    if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
+    return data;
+  },
+  async start() {
+    // Open the window now, in the click, so popup blockers allow it.
+    const popup = window.open('', 'plexmind-plex-auth', 'width=600,height=720');
+    this.el('signin-btn').disabled = true;
+    this.el('signin-servers').classList.add('hidden');
+    try {
+      const pin = await this.post('/api/auth/plex/start');
+      if (popup) popup.location = pin.auth_url; else window.open(pin.auth_url, '_blank');
+      this.status('Waiting for you to approve PlexMind in the Plex window…');
+      const deadline = Date.now() + 10 * 60 * 1000;
+      while (Date.now() < deadline) {
+        await new Promise(r => setTimeout(r, 2000));
+        const result = await this.post('/api/auth/plex/poll');
+        if (result.status === 'waiting') continue;
+        try { popup?.close(); } catch {}
+        return this.done(result);
+      }
+      throw new Error('Timed out waiting for Plex; try again');
+    } catch (error) {
+      try { popup?.close(); } catch {}
+      this.status(error.message, true);
+    } finally {
+      this.el('signin-btn').disabled = false;
+    }
+  },
+  async done(result) {
+    if (result.status === 'signed_in') { this.status('Signed in'); location.reload(); return; }
+    if (result.status === 'choose_server') {
+      this.status('This account owns more than one server. Which one should PlexMind use?');
+      const box = this.el('signin-servers');
+      box.innerHTML = result.servers.map(s =>
+        `<button data-server="${escapeHtml(s.id)}" class="w-full rounded-xl bg-slate-800 hover:bg-slate-700 border border-slate-700 px-4 py-2.5 text-sm font-medium">${escapeHtml(s.name)}</button>`).join('');
+      box.classList.remove('hidden');
+      box.querySelectorAll('[data-server]').forEach(b => b.onclick = async () => {
+        try { await this.done(await this.post('/api/auth/plex/server', { server_id: b.dataset.server })); }
+        catch (error) { this.status(error.message, true); }
+      });
+      return;
+    }
+    if (result.status === 'configured') {
+      this.el('signin-servers').classList.add('hidden');
+      this.status(`Connected to ${result.server}. Restarting PlexMind with it…`);
+      await new Promise(r => setTimeout(r, 4000));
+      for (let i = 0; i < 30; i++) {
+        try { if ((await fetch(`${API_BASE}/health/live`, { signal: AbortSignal.timeout(3000) })).ok) break; } catch {}
+        await new Promise(r => setTimeout(r, 2000));
+      }
+      location.reload();
+    }
+  },
+};
+
 document.addEventListener('DOMContentLoaded', async () => {
   lucide.createIcons();
   initNav();
+  document.getElementById('signin-btn').onclick = () => signin.start();
+  document.getElementById('signin-apikey').onclick = () => {
+    document.getElementById('signin').classList.add('hidden');
+    showPage('settings');
+  };
+  await signin.check();
 
   // Demo banner — show on GitHub Pages or when API is explicitly offline
   if (window.__PLEXMIND_DEMO__) {

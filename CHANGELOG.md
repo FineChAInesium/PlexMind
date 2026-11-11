@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- Simpler install, on the way to 1.0:
+  - Sign in with Plex: the dashboard and `setup.sh` use Plex's own sign-in link, so there is no token to find and paste. On first run it connects PlexMind to the server the account owns (asking which, if there are several); after that it is the dashboard login, for the server owner only. An API key still works for scripts.
+  - The API key and webhook secret are generated on first start and kept in `data/secrets.json`; setting them yourself still works and wins.
+  - `setup.sh` finds your Movies and TV folders from your Plex libraries (translating paths when Plex runs in Docker), picks a model for your GPU and downloads it with a checksum check, and writes a `.env` of about ten lines instead of a hundred. `setup.sh --model DIR` only fetches the model, for Unraid.
+  - `.env.example` has the 7 settings people change; the full list moved to `docs/CONFIGURATION.md`. The Unraid template drops the Plex token, URL, keys and other settings that have defaults.
+  - The Docker broker's allowed containers now follow `WHISPER_CONTAINER_NAME` and `LLAMA_CPP_CONTAINER_NAME`.
 ## v0.9.14 - 2026-11-10
 
 - Recommendations no longer stay stuck when someone ignores them. A set nobody watched from was kept forever, so 23 of 25 users were skipped in a recent run, some with picks from April; now a set older than `REC_REFRESH_DAYS` (25) is replaced either way.

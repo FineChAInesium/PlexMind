@@ -9,7 +9,7 @@
   <Support>https://github.com/FineChAInesium/PlexMind/issues</Support>
   <Project>https://github.com/FineChAInesium/PlexMind</Project>
   <Overview>
-    AI-powered Plex recommendations using a fully local llama.cpp LLM. Analyzes each user&apos;s watch history and generates personalized movie/TV picks with no cloud, no API costs, and no data leaving your server.&#xD;&#xA;&#xD;&#xA;Also includes: Whisper ASR subtitle generation, llama.cpp-powered subtitle translation, and library maintenance tools.&#xD;&#xA;&#xD;&#xA;Requires a llama.cpp server with the configured GGUF model (default alias: gemma-4-12b-it-Q5_K_M).&#xD;&#xA;&#xD;&#xA;Web dashboard at http://[IP]:[PORT:8000]/
+    AI-powered Plex recommendations using a fully local llama.cpp LLM. Analyzes each user&apos;s watch history and generates personalized movie/TV picks with no cloud, no API costs, and no data leaving your server.&#xD;&#xA;&#xD;&#xA;Also includes: Whisper ASR subtitle generation, llama.cpp-powered subtitle translation, and library maintenance tools.&#xD;&#xA;&#xD;&#xA;Needs a llama.cpp container with a GGUF model, and a Whisper ASR container for transcription.&#xD;&#xA;&#xD;&#xA;Open http://[IP]:[PORT:8000]/ and sign in with Plex: no token to copy, no API key to make.
   </Overview>
   <Category>MediaApp:Other Tools:</Category>
   <WebUI>http://[IP]:[PORT:8000]/</WebUI>
@@ -17,7 +17,7 @@
   <Icon>https://raw.githubusercontent.com/FineChAInesium/PlexMind/main/templates/icon.png</Icon>
   <ExtraParams>--stop-timeout=40</ExtraParams>
   <Description>
-    PlexMind in one container. Version line: v0.9.14. Runs the dashboard/API, the recommendation worker, the subtitle scripts and a narrow Docker broker. It mounts your media read-write and the Docker socket (used only to start and stop the Whisper and llama.cpp containers), so do not expose port 8000 to the internet.
+    PlexMind in one container. Version line: v0.9.14. Runs the dashboard/API, the recommendation worker, the subtitle scripts and a narrow Docker broker. It mounts your media read-write and the Docker socket (used only to start and stop the Whisper and llama.cpp containers), so do not expose port 8000 to the internet. After install, open the dashboard and sign in with the Plex account that owns your server.
   </Description>
 
   <Networking>
@@ -66,154 +66,64 @@
 
   <Environment>
     <Variable>
-      <Value>http://192.168.1.10:32400</Value>
-      <Name>PLEX_URL</Name>
-      <Mode/>
-      <Description>Your Plex Media Server URL (use LAN IP)</Description>
-    </Variable>
-    <Variable>
-      <Value/>
-      <Name>PLEX_TOKEN</Name>
-      <Mode/>
-      <Description>Your Plex authentication token — find it at plex.tv/claim or in Plex web app preferences URL</Description>
-    </Variable>
-    <Variable>
       <Value>http://192.168.1.10:11435</Value>
       <Name>LLAMA_CPP_URL</Name>
       <Mode/>
-      <Description>llama.cpp API URL — use LAN IP of the host running llama.cpp, not localhost. The repository Compose llama.cpp binds 127.0.0.1 by default; set LLAMA_CPP_BIND_ADDRESS=0.0.0.0 in its .env for LAN access.</Description>
+      <Description>Your llama.cpp container, by LAN IP and host port (not localhost).</Description>
     </Variable>
     <Variable>
       <Value>http://192.168.1.10:9001/asr</Value>
       <Name>WHISPER_API_URL</Name>
       <Mode/>
-      <Description>Whisper ASR endpoint reachable from the PlexMind container. The repository Compose Whisper binds 127.0.0.1 by default; set WHISPER_BIND_ADDRESS=0.0.0.0 in its .env for LAN access.</Description>
+      <Description>Your Whisper ASR container's /asr address, by LAN IP and host port.</Description>
     </Variable>
     <Variable>
       <Value>gemma-4-12b-it-Q5_K_M</Value>
       <Name>LLAMA_CPP_MODEL_ALIAS</Name>
       <Mode/>
-      <Description>llama.cpp model alias configured on the server</Description>
-    </Variable>
-    <Variable>
-      <Value/>
-      <Name>TMDB_API_KEY</Name>
-      <Mode/>
-      <Description>Optional — enriches recommendations with ratings and posters. Free at themoviedb.org/settings/api</Description>
-    </Variable>
-    <Variable>
-      <Value/>
-      <Name>PLEXMIND_API_KEY</Name>
-      <Mode/>
-      <Description>Required API secret. Generate a distinct value with openssl rand -hex 32.</Description>
-    </Variable>
-    <Variable>
-      <Value/>
-      <Name>PLEXMIND_WEBHOOK_SECRET</Name>
-      <Mode/>
-      <Description>Required scoped Plex webhook secret; must differ from PLEXMIND_API_KEY.</Description>
+      <Description>First model to use: a GGUF file name in your models folder, without .gguf. Switch any time in the dashboard. Get one that fits your GPU with: setup.sh --model /mnt/user/appdata/llama-cpp/models</Description>
     </Variable>
     <Variable>
       <Value>zh,es-MX</Value>
       <Name>TARGET_LANGUAGES</Name>
       <Mode/>
-      <Description>Subtitle translation targets, comma-separated</Description>
+      <Description>Languages to translate subtitles into, comma-separated (e.g. zh,es-MX,fr)</Description>
     </Variable>
     <Variable>
-      <Value>whisper-asr-webservice,llama-cpp</Value>
-      <Name>PLEXMIND_ALLOWED_CONTAINERS</Name>
+      <Value/>
+      <Name>TMDB_API_KEY</Name>
       <Mode/>
-      <Description>The only containers the built-in Docker broker may start and stop: your Whisper and llama.cpp container names</Description>
-    </Variable>
-    <Variable>
-      <Value>10</Value>
-      <Name>MAX_RECOMMENDATIONS</Name>
-      <Mode/>
-      <Description>Number of recommendations to generate per user</Description>
-    </Variable>
-    <Variable>
-      <Value>60</Value>
-      <Name>SUPPRESSION_DAYS</Name>
-      <Mode/>
-      <Description>Days before a recommendation can reappear</Description>
+      <Description>Optional: ratings and posters for recommendations. Free at themoviedb.org/settings/api</Description>
     </Variable>
     <Variable>
       <Value>America/New_York</Value>
       <Name>TZ</Name>
       <Mode/>
-      <Description>Timezone for the scheduled monthly batch run</Description>
+      <Description>Your timezone, for the schedules</Description>
     </Variable>
     <Variable>
-      <Value>whisper-asr-webservice</Value>
-      <Name>WHISPER_CONTAINER_NAME</Name>
+      <Value>0</Value>
+      <Name>LLAMA_ON_DEMAND</Name>
       <Mode/>
-      <Description>Docker container to start before transcription and stop when transcription exits</Description>
+      <Description>1: start llama.cpp only when needed and stop it when idle, to free the GPU. 0: leave it running.</Description>
     </Variable>
     <Variable>
       <Value>turbo</Value>
       <Name>WHISPER_MODEL</Name>
       <Mode/>
-      <Description>Configured sidecar model; the dashboard enables transcription only when this model exists in /whisper-cache</Description>
+      <Description>Whisper model your Whisper container uses (turbo, medium, small, base)</Description>
     </Variable>
     <Variable>
-      <Value>/whisper-cache</Value>
-      <Name>WHISPER_MODEL_CACHE_DIR</Name>
+      <Value>whisper-asr-webservice</Value>
+      <Name>WHISPER_CONTAINER_NAME</Name>
       <Mode/>
-      <Description>Read-only container path used to inventory locally downloaded Whisper models</Description>
+      <Description>Name of your Whisper container; PlexMind starts and stops only this one and llama.cpp</Description>
     </Variable>
     <Variable>
       <Value>llama-cpp</Value>
       <Name>LLAMA_CPP_CONTAINER_NAME</Name>
       <Mode/>
-      <Description>Docker container to start before translation and stop when translation exits</Description>
-    </Variable>
-    <Variable>
-      <Value>1</Value>
-      <Name>START_SIDECAR_CONTAINERS</Name>
-      <Mode/>
-      <Description>Set to 1 to start Whisper/llama.cpp sidecars before script jobs</Description>
-    </Variable>
-    <Variable>
-      <Value>0</Value>
-      <Name>MANAGE_LLAMA_CPP_CONTAINER</Name>
-      <Mode/>
-      <Description>Keep 0 when llama.cpp is shared/always-on; set 1 only for a dedicated on-demand container</Description>
-    </Variable>
-    <Variable>
-      <Value>1</Value>
-      <Name>STOP_SIDECAR_CONTAINERS</Name>
-      <Mode/>
-      <Description>Set to 1 to stop Whisper/llama.cpp sidecars when script jobs exit</Description>
-    </Variable>
-    <Variable>
-      <Value/>
-      <Name>THROTTLE_GPU_TEMP</Name>
-      <Mode/>
-      <Description>Hold jobs at this GPU temperature in degrees C (blank = off). Example: 80</Description>
-    </Variable>
-    <Variable>
-      <Value/>
-      <Name>THROTTLE_CPU_TEMP</Name>
-      <Mode/>
-      <Description>Hold jobs at this CPU temperature in degrees C (blank = off). Example: 90</Description>
-    </Variable>
-    <Variable>
-      <Value/>
-      <Name>THROTTLE_NVME_TEMP</Name>
-      <Mode/>
-      <Description>Hold jobs at this NVMe temperature in degrees C (blank = off). Example: 70</Description>
-    </Variable>
-    <Variable>
-      <Value/>
-      <Name>THROTTLE_DISK_TEMP</Name>
-      <Mode/>
-      <Description>Hold jobs at this hard drive temperature in degrees C (blank = off). Example: 50</Description>
-    </Variable>
-    <Variable>
-      <Value/>
-      <Name>THROTTLE_RAM_PCT</Name>
-      <Mode/>
-      <Description>Hold jobs at this percentage of memory used (blank = off). Example: 90</Description>
+      <Description>Name of your llama.cpp container</Description>
     </Variable>
   </Environment>
 

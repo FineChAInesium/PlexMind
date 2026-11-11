@@ -77,15 +77,15 @@ class PackagingTests(unittest.TestCase):
 
     def test_new_runtime_settings_reach_their_services(self):
         compose = (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
-        env_example = (ROOT / ".env.example").read_text(encoding="utf-8")
+        env_example = (ROOT / "docs" / "CONFIGURATION.md").read_text(encoding="utf-8")
         block = compose_service(compose, "plexmind", "ffmpeg")
         for key in ("PLEXMIND_SECURE_COOKIE", "GPU_BUSY_SAMPLES", "GPU_SAMPLE_INTERVAL_SECONDS", "TRANSLATION_BATCH_CUES"):
             self.assertIn(f"- {key}=${{{key}:-", block, f"{key} not passed to plexmind")
-            self.assertIn(f"\n{key}=", env_example, f"{key} not documented in .env.example")
+            self.assertIn(f"\n{key}=", env_example, f"{key} not documented in docs/CONFIGURATION.md")
 
     def test_compose_keeps_sidecar_ports_and_privileges_narrow(self):
         compose = (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
-        env_example = (ROOT / ".env.example").read_text(encoding="utf-8")
+        env_example = (ROOT / "docs" / "CONFIGURATION.md").read_text(encoding="utf-8")
         # llama.cpp has no API key; PlexMind reaches both sidecars on the Docker network.
         self.assertIn('"${LLAMA_CPP_BIND_ADDRESS:-127.0.0.1}:${LLAMA_CPP_HOST_PORT:-11435}:8080"', compose)
         self.assertIn('"${WHISPER_BIND_ADDRESS:-127.0.0.1}:${WHISPER_HOST_PORT:-9001}:9000"', compose)
@@ -117,6 +117,32 @@ class PackagingTests(unittest.TestCase):
         )
         self.assertNotIn("stores its API key in browser localStorage", docs)
         self.assertIn("HttpOnly", docs)
+
+    def test_install_asks_for_no_tokens_or_keys(self):
+        setup = (ROOT / "setup.sh").read_text(encoding="utf-8")
+        template = (ROOT / "templates" / "PlexMind.xml").read_text(encoding="utf-8")
+        compose = (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
+        self.assertNotIn("read -rsp", setup)  # no hidden token/key prompts
+        self.assertIn("/api/v2/pins", setup)
+        for name in ("PLEX_TOKEN", "PLEX_URL", "PLEXMIND_API_KEY", "PLEXMIND_WEBHOOK_SECRET"):
+            self.assertNotIn(f"<Name>{name}</Name>", template)
+        self.assertIn("- PLEX_TOKEN=${PLEX_TOKEN:-}", compose)
+        self.assertIn("- PLEXMIND_WEBHOOK_SECRET=${PLEXMIND_WEBHOOK_SECRET:-}", compose)
+
+    def test_env_example_is_short_and_every_key_reaches_compose(self):
+        example = (ROOT / ".env.example").read_text(encoding="utf-8")
+        compose = (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
+        keys = re.findall(r"(?m)^([A-Z][A-Z0-9_]*)=", example)
+        self.assertLessEqual(len(keys), 10)
+        for key in keys:
+            self.assertIn("${" + key, compose, f"{key} in .env.example is not used by docker-compose.yml")
+
+    def test_setup_downloads_are_checksummed(self):
+        setup = (ROOT / "setup.sh").read_text(encoding="utf-8")
+        shas = re.findall(r"MODEL_SHA=([0-9a-f]+)", setup)
+        self.assertTrue(shas)
+        self.assertTrue(all(len(sha) == 64 for sha in shas))
+        self.assertIn('sha256sum "${file}.part"', setup)
 
     def test_setup_has_read_only_preflight(self):
         setup = (ROOT / "setup.sh").read_text(encoding="utf-8")

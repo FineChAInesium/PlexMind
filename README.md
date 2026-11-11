@@ -170,51 +170,12 @@ Compose starts llama.cpp with `--parallel ${LLAMA_CPP_PARALLEL:-1}`: PlexMind se
 ```bash
 git clone https://github.com/FineChAInesium/PlexMind.git
 cd PlexMind
-cp .env.example .env
-```
-
-Edit `.env` with your Plex and media paths:
-
-```bash
-PLEX_URL=http://192.168.1.10:32400
-PLEX_TOKEN=your_plex_token
-PLEXMIND_API_KEY=$(openssl rand -hex 32)
-MOVIES_HOST_PATH=/mnt/media/Movies
-TV_HOST_PATH=/mnt/media/TV
-LLAMA_CPP_MODEL_ALIAS=gemma-4-12b-it-Q5_K_M
-WHISPER_MODEL=turbo
-TARGET_LANGUAGES=zh,es-MX
-```
-
-Start the stack:
-
-```bash
 ./setup.sh
 ```
 
-Or use Compose directly:
+`setup.sh` signs you in with Plex (open the link it prints), finds your Movies and TV folders from your Plex libraries, picks a model that fits your GPU and downloads it (checksum-verified), writes a short `.env`, and starts PlexMind. Then open `http://<server>:8000` and sign in with Plex. There is no token to copy and no API key to make; one for scripts is generated in `data/secrets.json`. Every other setting is optional: see [docs/CONFIGURATION.md](docs/CONFIGURATION.md).
 
-```bash
-docker compose up -d --build plexmind
-```
-
-If you plan to use transcription, create the profiled Whisper sidecar at least once so PlexMind can start and stop it by container name:
-
-```bash
-docker compose --profile whisper create whisper
-```
-
-Place the configured GGUF model before starting recommendations or translation:
-
-```bash
-# place a GGUF model at LLAMA_CPP_MODELS_DIR
-```
-
-Open:
-
-```text
-http://localhost:8000
-```
+`./setup.sh --check` shows what it would pick without changing anything.
 
 ---
 
@@ -226,14 +187,11 @@ Community Applications submission is still pending. Manual template install:
 https://raw.githubusercontent.com/FineChAInesium/PlexMind/main/templates/PlexMind.xml
 ```
 
-1. Open Community Applications.
-2. Use the template URL/folder option.
-3. Paste the template URL above.
-4. Set your Movies and TV Shows paths, `PLEX_URL`, `PLEX_TOKEN`, and `LLAMA_CPP_URL`. PlexMind must reach llama.cpp and Whisper: put all three containers on one custom Docker network and use the container names, or set `LLAMA_CPP_BIND_ADDRESS=0.0.0.0` / `WHISPER_BIND_ADDRESS=0.0.0.0` and use the LAN IP.
-5. Generate two distinct values for `PLEXMIND_API_KEY` and `PLEXMIND_WEBHOOK_SECRET` (`openssl rand -hex 32`).
-6. Start the container and open `http://[unraid-ip]:8000`.
-
-PlexMind is one container. It mounts your media read-write and the Docker socket, which its built-in broker uses only to start and stop the Whisper and llama.cpp containers named in `PLEXMIND_ALLOWED_CONTAINERS`. Keep port 8000 on your LAN; do not forward it to the internet.
+1. Open Community Applications, use the template URL option and paste the URL above.
+2. Set your Movies and TV Shows paths, and `LLAMA_CPP_URL` / `WHISPER_API_URL` for your llama.cpp and Whisper containers (LAN IP and host port, or container names on a shared custom network).
+3. Need a model? From the Unraid terminal: `./setup.sh --model /mnt/user/appdata/llama-cpp/models` downloads one that fits your GPU.
+4. Start the container, open `http://[unraid-ip]:8000` and sign in with Plex.
+PlexMind is one container. It mounts your media read-write and the Docker socket, which its built-in broker uses only to start and stop the Whisper and llama.cpp containers named in `WHISPER_CONTAINER_NAME` and `LLAMA_CPP_CONTAINER_NAME`. Keep port 8000 on your LAN; do not forward it to the internet.
 
 The template sets `--stop-timeout=40` in Extra Parameters. Docker's default 10-second stop timeout is shorter than the 25 seconds PlexMind gives running jobs to finish their cleanup (stopping Whisper, releasing llama.cpp), so keep it if you create the container by hand. Compose sets this with `stop_grace_period: 40s`.
 

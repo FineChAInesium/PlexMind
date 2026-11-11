@@ -80,7 +80,7 @@ from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 
-from app import cache, llama_lifecycle, llm_client, model_advisor, plex_client, plex_sync, recommender, scheduler, tmdb_client, whisper_models, recommendation_jobs
+from app import cache, llama_lifecycle, llm_client, model_advisor, plex_auth, plex_client, plex_sync, recommender, scheduler, tmdb_client, whisper_models, recommendation_jobs
 
 # ---------------------------------------------------------------------------
 # Startup
@@ -288,25 +288,149 @@ async def _require_webhook_key(request: Request) -> None:
         raise HTTPException(status_code=403, detail="Invalid webhook secret")
 
 
+def _secure_cookie() -> bool:
+    return os.getenv("PLEXMIND_SECURE_COOKIE", "").lower() in ("1", "true", "yes")
+
+
+def _start_session(request: Request, response: JSONResponse) -> None:
+    """Give this browser a new login, replacing the one it had."""
+    if not _API_KEY:
+        return
+    _prune_sessions()
+    previous = request.cookies.get(_API_KEY_COOKIE, "")
+    if previous:
+        _SESSIONS.pop(_session_id(previous), None)
+    session_token = secrets.token_urlsafe(32)
+    _SESSIONS[_session_id(session_token)] = time.time() + _SESSION_MAX_AGE
+    _save_sessions()
+    response.set_cookie(
+        _API_KEY_COOKIE, session_token, httponly=True,
+        samesite="strict", secure=_secure_cookie(), max_age=_SESSION_MAX_AGE,
+    )
+
+
 @app.post("/api/session", include_in_schema=False)
 @limiter.limit("10/minute")
 async def create_session(request: Request, _: None = Depends(_require_header_key)):
     response = JSONResponse({"status": "ok"})
-    if _API_KEY:
-        _prune_sessions()
-        previous = request.cookies.get(_API_KEY_COOKIE, "")
-        if previous:
-            _SESSIONS.pop(_session_id(previous), None)
-        session_token = secrets.token_urlsafe(32)
-        _SESSIONS[_session_id(session_token)] = time.time() + _SESSION_MAX_AGE
-        _save_sessions()
-        response.set_cookie(
-            _API_KEY_COOKIE, session_token, httponly=True,
-            samesite="strict",
-            secure=os.getenv("PLEXMIND_SECURE_COOKIE", "").lower() in ("1", "true", "yes"),
-            max_age=_SESSION_MAX_AGE,
-        )
+    _start_session(request, response)
     return response
+
+
+# ---------------------------------------------------------------------------
+# Sign in with Plex. Before PlexMind has a Plex token this connects it to the
+# server the signing-in account owns; afterwards only that owner may log in.
+# ---------------------------------------------------------------------------
+_PLEX_PIN_COOKIE = "plexmind_plex_pin"
+_PENDING_PINS = plex_auth.PendingPins()
+_OWNER_ID: dict[str, str] = {}
+
+
+async def _owner_account_id(client: httpx.AsyncClient) -> str:
+    """The plex.tv account id of the token PlexMind runs with."""
+    saved_id = plex_auth.saved().get("account_id")
+    if saved_id and plex_auth.saved().get("token") == os.getenv("PLEX_TOKEN", ""):
+        return str(saved_id)
+    if "id" not in _OWNER_ID:
+        _OWNER_ID["id"] = str((await plex_auth.account(client, os.getenv("PLEX_TOKEN", ""))).get("id", ""))
+    return _OWNER_ID["id"]
+
+
+def _session_valid(request: Request) -> bool:
+    cookie = request.cookies.get(_API_KEY_COOKIE, "")
+    return bool(cookie and _SESSIONS.get(_session_id(cookie), 0) > time.time())
+
+
+@app.get("/api/auth/status", include_in_schema=False)
+async def auth_status(request: Request):
+    return {
+        "signed_in": not _API_KEY or _session_valid(request),
+        "plex_configured": plex_auth.configured(),
+    }
+
+
+@app.post("/api/auth/plex/start", include_in_schema=False)
+@limiter.limit("10/minute")
+async def plex_sign_in_start(request: Request):
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            pin = await plex_auth.create_pin(client)
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=502, detail=f"Could not reach plex.tv: {type(exc).__name__}")
+    secret = _PENDING_PINS.add(pin)
+    response = JSONResponse({"auth_url": pin["auth_url"], "setup": not plex_auth.configured()})
+    response.set_cookie(
+        _PLEX_PIN_COOKIE, secret, httponly=True, samesite="strict",
+        secure=_secure_cookie(), max_age=plex_auth.PIN_LIFETIME_SECONDS,
+    )
+    return response
+
+
+def _finish_sign_in(request: Request, payload: dict) -> JSONResponse:
+    response = JSONResponse(payload)
+    _start_session(request, response)
+    _PENDING_PINS.drop(request.cookies.get(_PLEX_PIN_COOKIE))
+    response.delete_cookie(_PLEX_PIN_COOKIE, samesite="strict")
+    return response
+
+
+async def _connect_server(request: Request, client: httpx.AsyncClient, pending: dict, server: dict) -> JSONResponse:
+    url = await plex_auth.reachable_url(client, server, pending["token"])
+    if not url:
+        raise HTTPException(status_code=502, detail=f"PlexMind cannot reach {server['name']} from its container")
+    plex_auth.save(url, pending["token"], pending["account"], server["name"])
+    # supervisor.py sees the new file and restarts the API and worker with it.
+    return _finish_sign_in(request, {"status": "configured", "server": server["name"], "url": url, "restarting": True})
+
+
+@app.post("/api/auth/plex/poll", include_in_schema=False)
+@limiter.limit("40/minute")
+async def plex_sign_in_poll(request: Request):
+    pending = _PENDING_PINS.get(request.cookies.get(_PLEX_PIN_COOKIE))
+    if not pending:
+        raise HTTPException(status_code=410, detail="This sign-in expired; start again")
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            if not pending["token"]:
+                token = await plex_auth.pin_token(client, pending["id"])
+                if not token:
+                    return {"status": "waiting"}
+                pending["token"] = token
+                pending["account"] = await plex_auth.account(client, token)
+
+            if plex_auth.configured():
+                if str(pending["account"].get("id", "")) != await _owner_account_id(client):
+                    _PENDING_PINS.drop(request.cookies.get(_PLEX_PIN_COOKIE))
+                    raise HTTPException(status_code=403, detail="Only the owner of this Plex server can sign in to PlexMind")
+                return _finish_sign_in(request, {"status": "signed_in"})
+
+            servers = await plex_auth.owned_servers(client, pending["token"])
+            if not servers:
+                _PENDING_PINS.drop(request.cookies.get(_PLEX_PIN_COOKIE))
+                raise HTTPException(status_code=400, detail="This Plex account does not own a Plex server")
+            pending["servers"] = servers
+            if len(servers) == 1:
+                return await _connect_server(request, client, pending, servers[0])
+            return {"status": "choose_server", "servers": [{"id": s["id"], "name": s["name"]} for s in servers]}
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=502, detail=f"Could not reach plex.tv: {type(exc).__name__}")
+
+
+class PlexServerChoice(BaseModel):
+    server_id: str = Field(min_length=1, max_length=128)
+
+
+@app.post("/api/auth/plex/server", include_in_schema=False)
+@limiter.limit("10/minute")
+async def plex_sign_in_server(request: Request, choice: PlexServerChoice):
+    pending = _PENDING_PINS.get(request.cookies.get(_PLEX_PIN_COOKIE))
+    if not pending or not pending.get("servers") or plex_auth.configured():
+        raise HTTPException(status_code=410, detail="This sign-in expired; start again")
+    server = next((s for s in pending["servers"] if s["id"] == choice.server_id), None)
+    if not server:
+        raise HTTPException(status_code=404, detail="Unknown server")
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        return await _connect_server(request, client, pending, server)
 
 
 @app.delete("/api/session", include_in_schema=False)
@@ -483,9 +607,11 @@ _PLEX_HEALTH: dict = {"checked": 0.0, "value": None}
 
 def _plex_health() -> dict:
     """Whether Plex itself answers, rechecked at most every 30 seconds."""
+    if not plex_auth.configured():
+        return {"ready": False, "error": "Not connected yet: sign in with Plex", "configured": False}
     if time.time() - _PLEX_HEALTH["checked"] > 30 or _PLEX_HEALTH["value"] is None:
         ready, reason = plex_client.server_reachable()
-        _PLEX_HEALTH.update(checked=time.time(), value={"ready": ready, "error": reason})
+        _PLEX_HEALTH.update(checked=time.time(), value={"ready": ready, "error": reason, "configured": True})
     return _PLEX_HEALTH["value"]
 
 
