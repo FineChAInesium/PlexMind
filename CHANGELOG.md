@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.9.14 - 2026-11-10
 
 - Recommendations no longer stay stuck when someone ignores them. A set nobody watched from was kept forever, so 23 of 25 users were skipped in a recent run, some with picks from April; now a set older than `REC_REFRESH_DAYS` (25) is replaced either way.
 
