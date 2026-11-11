@@ -1,0 +1,6 @@
+<?xml version="1.0"?>
+<CommunityApplications>
+  <Profile>PlexMind: recommendations, subtitles and translation for Plex, run on your own GPU. Per-user movie and TV picks from each person's watch history, Whisper subtitles for videos that have none, and subtitle translation with a local llama.cpp model. Nothing leaves your server. Sign in with Plex from the dashboard; no token to copy. Support and bug reports: GitHub issues.</Profile>
+  <Icon>https://raw.githubusercontent.com/FineChAInesium/PlexMind/main/templates/icon.png</Icon>
+  <WebPage>https://github.com/FineChAInesium/PlexMind</WebPage>
+</CommunityApplications>

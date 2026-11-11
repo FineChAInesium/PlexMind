@@ -146,6 +146,16 @@ class PackagingTests(unittest.TestCase):
         self.assertTrue(all(len(sha) == 64 for sha in shas))
         self.assertIn('sha256sum "${file}.part"', setup)
 
+    def test_repository_meets_community_apps_submission_rules(self):
+        import xml.etree.ElementTree as ET
+        self.assertIn("MIT License", (ROOT / "LICENSE").read_text(encoding="utf-8"))
+        profile = ET.parse(ROOT / "ca_profile.xml").getroot()
+        self.assertEqual(profile.tag, "CommunityApplications")
+        self.assertTrue((profile.findtext("Profile") or "").strip())
+        template = ET.parse(ROOT / "templates" / "PlexMind.xml").getroot()
+        for tag in ("Name", "Repository", "Overview", "Support", "Project", "TemplateURL", "Icon"):
+            self.assertTrue((template.findtext(tag) or "").strip(), f"template has no {tag}")
+
     def test_setup_has_read_only_preflight(self):
         setup = (ROOT / "setup.sh").read_text(encoding="utf-8")
         self.assertIn('mode="${1:-install}"', setup)
