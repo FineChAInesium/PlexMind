@@ -165,6 +165,15 @@
             <select id="llm-model-select" disabled class="w-full bg-slate-950 border border-slate-700 rounded-lg px-2.5 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-violet-500/50"><option>Loading…</option></select>
             <span id="llm-model-note" class="text-xs text-slate-400 sm:w-1/2"></span>
           </div>
+          <div class="rounded-xl bg-slate-900/70 border border-slate-800 p-4 mt-3">
+            <div class="flex flex-col sm:flex-row sm:items-center gap-3">
+              <label for="trial-model-select" class="text-sm font-medium shrink-0">Trial</label>
+              <select id="trial-model-select" class="w-full bg-slate-950 border border-slate-700 rounded-lg px-2.5 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-violet-500/50"></select>
+              <button id="trial-start" class="shrink-0 text-xs px-3 py-2 rounded-lg bg-violet-600 hover:bg-violet-500 font-medium flex items-center gap-1.5"><i data-lucide="flask-conical" class="w-3.5 h-3.5"></i>Try on this GPU</button>
+            </div>
+            <p id="trial-status" class="text-xs text-slate-400 mt-2">Runs real subtitle batches and a recommendation request on the model, next to the one in use: GPU memory, speed and broken replies. Takes a few minutes; translation pauses meanwhile. A model that fails cannot be selected.</p>
+            <div id="trial-results" class="mt-3 overflow-x-auto"></div>
+          </div>
           <div id="model-advisor-list" class="grid grid-cols-1 lg:grid-cols-2 gap-3 mt-4"></div>
           <p class="text-[11px] text-slate-500 mt-3">The selector switches between models already on this server and remembers your choice. The suggestions below are a fixed list built into PlexMind, ranked against this GPU's memory; nothing is looked up online or downloaded.</p>
         </div>
@@ -814,9 +823,95 @@ function modelLabel(model) {
   return model.id + (model.loaded ? ' (loaded)' : '');
 }
 
+// ─── Model Trial ────────────────────────────────────────────────────────────
+const trial = { current: null, timer: null, trials: {} };
+
+function trialBadge(t) {
+  if (!t) return '<span class="text-slate-500">not tried</span>';
+  return t.verdict?.pass
+    ? '<span class="text-emerald-300 font-medium">pass</span>'
+    : '<span class="text-red-300 font-medium">fail</span>';
+}
+
+function trialColumn(t) {
+  if (!t) return { verdict: trialBadge(t), fit: '–', speed: '–', translation: '–', recs: '–', notes: '' };
+  const fit = t.fit?.fraction != null
+    ? `${(t.fit.used_mb / 1024).toFixed(1)} of ${(t.fit.total_mb / 1024).toFixed(1)} GiB (${Math.round(t.fit.fraction * 100)}%)` : (t.load_error ? 'did not load' : 'unknown');
+  const translation = Object.entries(t.translation || {}).map(([lang, x]) =>
+    `${escapeHtml(lang)}: ${x.batches_ok}/${x.batches} batches, ${x.cues - x.rejected}/${x.cues} lines`).join('<br>') || '–';
+  const recs = t.recommendations ? (t.recommendations.ok ? 'usable' : 'broken') + (t.recommendations.reason ? ` (${escapeHtml(t.recommendations.reason)})` : '') : '–';
+  const notes = [...(t.verdict?.failures || []), ...(t.verdict?.warnings || [])].map(escapeHtml).join('<br>');
+  return { verdict: trialBadge(t), fit, speed: t.tokens_per_second != null ? `${t.tokens_per_second} tokens/s` : '–', translation, recs, notes };
+}
+
+function renderTrialResults(model, current) {
+  const box = document.getElementById('trial-results');
+  const a = trial.trials[model];
+  if (!a) { box.innerHTML = ''; return; }
+  const b = current && current !== model ? trial.trials[current] : null;
+  const ca = trialColumn(a), cb = b ? trialColumn(b) : null;
+  const rows = [['Verdict', 'verdict'], ['GPU memory', 'fit'], ['Speed', 'speed'], ['Translation', 'translation'], ['Recommendations', 'recs'], ['Notes', 'notes']];
+  const when = a.tested_at ? new Date(a.tested_at * 1000).toLocaleString() : '';
+  box.innerHTML = `<table class="w-full text-xs">
+    <thead><tr class="text-slate-400 text-left"><th class="py-1 pr-3 font-medium"></th><th class="py-1 pr-3 font-medium">${escapeHtml(model)}</th>${cb ? `<th class="py-1 font-medium">${escapeHtml(current)} (in use)</th>` : ''}</tr></thead>
+    <tbody>${rows.map(([label, key]) => `<tr class="border-t border-slate-800 align-top"><td class="py-1.5 pr-3 text-slate-400">${label}</td><td class="py-1.5 pr-3">${ca[key] || '–'}</td>${cb ? `<td class="py-1.5">${cb[key] || '–'}</td>` : ''}</tr>`).join('')}</tbody>
+  </table><p class="text-[11px] text-slate-500 mt-2">Tested ${escapeHtml(when)}. Naturalness is not scored; read a few lines of real output before switching.</p>`;
+}
+
+function renderTrialState(state) {
+  const status = document.getElementById('trial-status');
+  const button = document.getElementById('trial-start');
+  const running = state?.status === 'running';
+  button.disabled = running;
+  button.classList.toggle('opacity-50', running);
+  if (running) status.textContent = `Trying ${state.model}: ${state.step || 'starting'}…`;
+  else if (state?.status === 'error') status.textContent = `Trial failed to run: ${state.error}`;
+  else if (state?.status === 'done') status.textContent = `Trial of ${state.model} finished.`;
+}
+
+async function fetchTrials() {
+  if (DEMO) return;
+  try {
+    const res = await apiFetch(`${API_BASE}/api/models/trial`, { signal: AbortSignal.timeout(8000) });
+    if (!res.ok) return;
+    const data = await res.json();
+    trial.trials = data.trials || {};
+    renderTrialState(data.state);
+    const selected = document.getElementById('trial-model-select').value || data.state?.model;
+    if (selected) renderTrialResults(selected, trial.current);
+    clearTimeout(trial.timer);
+    if (data.state?.status === 'running') trial.timer = setTimeout(fetchTrials, 4000);
+    else if (data.state?.status === 'done') fetchModelSelector();
+  } catch {}
+}
+
+async function startTrial() {
+  const model = document.getElementById('trial-model-select').value;
+  if (!model) return;
+  if (DEMO) { toast('Demo mode: no trial is run', 'info'); return; }
+  try {
+    const res = await apiFetch(`${API_BASE}/api/models/trial`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model }), signal: AbortSignal.timeout(15000),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(typeof data.detail === 'string' ? data.detail : data.error || `HTTP ${res.status}`);
+    toast(`Trying ${model}; this takes a few minutes`);
+    fetchTrials();
+  } catch (error) {
+    toast(`Could not start the trial: ${error.message}`, 'error');
+  }
+}
+
 function renderModelSelector(data) {
   const select = document.getElementById('llm-model-select');
   const note = document.getElementById('llm-model-note');
+  trial.current = data.current;
+  const trialSelect = document.getElementById('trial-model-select');
+  const keep = trialSelect.value;
+  trialSelect.innerHTML = data.models.map(m => `<option value="${escapeHtml(m.id)}">${escapeHtml(m.id)}${m.id === data.current ? ' (in use)' : ''}</option>`).join('');
+  trialSelect.value = keep && data.models.some(m => m.id === keep) ? keep
+    : (data.models.find(m => m.id !== data.current) || data.models[0] || {}).id || '';
   select.innerHTML = data.models.map(m => `<option value="${escapeHtml(m.id)}">${escapeHtml(modelLabel(m))}</option>`).join('');
   select.value = data.current;
   select.disabled = data.models.length < 2;
@@ -1447,6 +1542,9 @@ document.addEventListener('DOMContentLoaded', async () => {
   setInterval(async () => updateScriptStatsUI(await fetchScriptStats()), 60000);
 
   document.getElementById('llm-model-select').addEventListener('change', selectModel);
+  document.getElementById('trial-start').onclick = startTrial;
+  document.getElementById('trial-model-select').addEventListener('change', e => renderTrialResults(e.target.value, trial.current));
+  fetchTrials();
   fetchModelSelector();
   document.getElementById('refresh-model-advisor').onclick = withLoading(
     document.getElementById('refresh-model-advisor'), () => Promise.all([fetchModelSelector(), fetchModelAdvisor()])

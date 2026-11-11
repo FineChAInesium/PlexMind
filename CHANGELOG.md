@@ -8,6 +8,7 @@
   - `setup.sh` finds your Movies and TV folders from your Plex libraries (translating paths when Plex runs in Docker), picks a model for your GPU and downloads it with a checksum check, and writes a `.env` of about ten lines instead of a hundred. `setup.sh --model DIR` only fetches the model, for Unraid.
   - `.env.example` has the 7 settings people change; the full list moved to `docs/CONFIGURATION.md`. The Unraid template drops the Plex token, URL, keys and other settings that have defaults.
   - The Docker broker's allowed containers now follow `WHISPER_CONTAINER_NAME` and `LLAMA_CPP_CONTAINER_NAME`.
+- Model Trial: the Model Advisor card can try any model in the models folder on this GPU before you switch. It runs the subtitle batches translation really sends (same prompts and checks) in up to two of your languages, plus a recommendation request, next to the model in use, and shows GPU memory, speed, unusable batches, rejected lines, word-for-word idioms, Simplified characters in Traditional Chinese, and invented or malformed picks. Translation pauses during a trial and resumes after. A model that fails (too much memory, too slow, or broken replies) cannot be selected.
 ## v0.9.14 - 2026-11-10
 
 - Recommendations no longer stay stuck when someone ignores them. A set nobody watched from was kept forever, so 23 of 25 users were skipped in a recent run, some with picks from April; now a set older than `REC_REFRESH_DAYS` (25) is replaced either way.

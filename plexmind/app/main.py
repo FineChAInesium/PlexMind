@@ -80,7 +80,7 @@ from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 
-from app import cache, llama_lifecycle, llm_client, model_advisor, plex_auth, plex_client, plex_sync, recommender, scheduler, tmdb_client, whisper_models, recommendation_jobs
+from app import cache, llama_lifecycle, llm_client, model_advisor, model_trial, plex_auth, plex_client, plex_sync, recommender, scheduler, tmdb_client, whisper_models, recommendation_jobs
 
 # ---------------------------------------------------------------------------
 # Startup
@@ -895,8 +895,57 @@ async def select_model(choice: ModelChoice):
     available = await llm_client.list_models()
     if choice.model not in {item["id"] for item in available["models"]}:
         raise HTTPException(status_code=422, detail=f"{choice.model} is not available on this server")
+    failures = model_trial.failed(choice.model)
+    if failures:
+        raise HTTPException(status_code=409, detail=f"{choice.model} failed its trial: {'; '.join(failures)}")
     llm_client.save_model(choice.model)
     return await llm_client.list_models()
+
+
+_TRIAL_TASK: dict = {}
+
+
+async def _pause_translation() -> bool:
+    """Stop a running translation for a trial; True if it was running."""
+    try:
+        status = await _scripts_request("GET", "/jobs/translate")
+    except HTTPException:
+        return False
+    if not status.get("running"):
+        return False
+    await _scripts_request("POST", "/jobs/translate/stop")
+    model_trial.STATE["step"] = "Pausing translation (it resumes from where it stopped)"
+    for _ in range(60):
+        await asyncio.sleep(2)
+        if not (await _scripts_request("GET", "/jobs/translate")).get("running"):
+            break
+    return True
+
+
+async def _resume_translation() -> None:
+    await _scripts_request("POST", "/jobs/translate/start", json={"run_now": True})
+
+
+@app.get("/api/models/trial", dependencies=[Depends(_require_key)])
+async def model_trial_status():
+    """The running or last trial, and the saved result of every model tried."""
+    return {"state": model_trial.STATE, "trials": model_trial.saved_trials(),
+            "languages": model_trial.target_languages()}
+
+
+@app.post("/api/models/trial", dependencies=[Depends(_require_key)])
+@limiter.limit("6/hour")
+async def start_model_trial(request: Request, choice: ModelChoice):
+    """Try MODEL on this GPU next to the current one; takes a few minutes."""
+    if model_trial.STATE.get("status") == "running":
+        raise HTTPException(status_code=409, detail=f"A trial of {model_trial.STATE.get('model')} is already running")
+    available = await llm_client.list_models()
+    if choice.model not in {item["id"] for item in available["models"]}:
+        raise HTTPException(status_code=422, detail=f"{choice.model} is not available on this server")
+    model_trial.STATE.update(status="running", model=choice.model, step="Starting", result=None, error=None)
+    _TRIAL_TASK["task"] = asyncio.create_task(model_trial.run_trial(
+        choice.model, available["current"], _pause_translation, _resume_translation))
+    return {"status": "started", "model": choice.model}
 
 
 @app.get("/api/scripts/jobs", dependencies=[Depends(_require_key)])
