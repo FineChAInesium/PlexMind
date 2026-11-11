@@ -345,6 +345,7 @@ The dashboard's **Throttle** page sets the same limits. Once saved there, they r
 | `MAX_RECOMMENDATIONS` | Picks per user. | `10` |
 | `CANDIDATE_POOL_SIZE` | Prefiltered candidate count before LLM. | `40` |
 | `MIN_HISTORY_ITEMS` | Minimum watch history before batch generation. | `3` |
+| `REC_REFRESH_DAYS` | A user's picks are kept while they are newer than this and untouched; older ones are replaced even if none were watched. | `25` |
 | `SUPPRESSION_DAYS` | Days before a shown recommendation can return. | `60` |
 | `GPU_THRESHOLD_PCT` | Pause batch work at or above this GPU utilization. | `30` |
 | `GPU_BACKOFF_MINUTES` | Wait time before checking a busy GPU again. | `30` in Compose, `5` in `.env.example` |

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Recommendations no longer stay stuck when someone ignores them. A set nobody watched from was kept forever, so 23 of 25 users were skipped in a recent run, some with picks from April; now a set older than `REC_REFRESH_DAYS` (25) is replaced either way.
+
 - Dashboard fixes from an audit of every control:
   - Per-user Generate now also sends the recommendations to Plex, and says so.
   - Start uses the max runtime shown under Schedule (0 runs until done) instead of a hidden 60-minute limit.

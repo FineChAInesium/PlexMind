@@ -13,6 +13,7 @@ import logging
 import os
 import tempfile
 import uuid
+from datetime import datetime, timedelta
 import fcntl
 from contextlib import contextmanager
 from pathlib import Path
@@ -32,6 +33,9 @@ WATCHLIST_TRACK_FILE = os.getenv(
 )
 PLAYLIST_MOVIES = "PlexMind Movies"
 PLAYLIST_TV = "PlexMind TV Pilot"
+# Picks nobody has touched are replaced once they are this old, so someone who
+# ignores one set still gets new ones instead of keeping it forever.
+REC_REFRESH_DAYS = int(os.getenv("REC_REFRESH_DAYS", "25"))
 
 log = logging.getLogger("plexmind.plex_sync")
 _track_lock = RLock()
@@ -366,12 +370,10 @@ def _sync_playlist(token: str, user_key: str, recs: list[dict]) -> dict:
 # Public API
 # ---------------------------------------------------------------------------
 
-def user_has_engaged_with_recs(user_id: str, user_token: str | None = None) -> bool:
-    """Check if the user has watched ANY item from their current PlexMind playlists.
-
-    Returns True if they've engaged (meaning we should refresh their recs),
-    or True if they have no existing playlists (first run).
-    Returns False if playlists exist but nothing has been watched.
+def user_has_engaged_with_recs(user_id: str, user_token: str | None = None, now: datetime | None = None) -> bool:
+    """Whether this user's PlexMind playlists are due to be replaced: True if
+    there are none yet, if they watched anything from them, or if the set is
+    older than REC_REFRESH_DAYS. False keeps a recent, untouched set.
     """
     token = PLEX_TOKEN if user_id == "admin" else (user_token or PLEX_TOKEN)
     try:
@@ -380,6 +382,10 @@ def user_has_engaged_with_recs(user_id: str, user_token: str | None = None) -> b
                      if pl.title in (PLAYLIST_MOVIES, PLAYLIST_TV, "PlexMind Picks")]
         if not playlists:
             return True  # No existing playlists — first run, proceed
+
+        updated = [pl.updatedAt for pl in playlists if getattr(pl, "updatedAt", None)]
+        if updated and (now or datetime.now()) - max(updated) > timedelta(days=REC_REFRESH_DAYS):
+            return True  # an old set gets replaced even if it was ignored
 
         for pl in playlists:
             for item in pl.items():

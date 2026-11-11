@@ -740,10 +740,10 @@ async def _do_run_all_users(triggered_by: str, on_progress=None) -> dict:
                     await _emit({"type": "user", "index": i, **entry})
                     continue
 
-                # Skip users who haven't watched any of their current recs
+                # Keep a recent set the user has not touched yet; older sets are replaced.
                 user_token = plex_client.get_user_token(uid)
                 if not plex_sync.user_has_engaged_with_recs(uid, user_token=user_token):
-                    log.info("  Skipping %s — hasn't watched any current recs, retaining playlist.", username)
+                    log.info("  Skipping %s — current recs are under %d days old and unwatched, retaining playlist.", username, plex_sync.REC_REFRESH_DAYS)
                     entry = {"user": username, "status": "skipped", "reason": "recs_unwatched"}
                     results.append(entry)
                     await _emit({"type": "user", "index": i, **entry})
